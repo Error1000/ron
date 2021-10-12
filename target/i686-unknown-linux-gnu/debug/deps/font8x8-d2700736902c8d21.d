@@ -1,0 +1,15 @@
+/home/dan/Documents/Coding/Rust/ron/target/i686-unknown-linux-gnu/debug/deps/font8x8-d2700736902c8d21.rmeta: /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/lib.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/basic.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/block.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/box.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/greek.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/hiragana.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/latin.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/legacy.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/misc.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/sga.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/unicode.rs
+
+/home/dan/Documents/Coding/Rust/ron/target/i686-unknown-linux-gnu/debug/deps/font8x8-d2700736902c8d21.d: /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/lib.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/basic.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/block.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/box.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/greek.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/hiragana.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/latin.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/legacy.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/misc.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/sga.rs /home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/unicode.rs
+
+/home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/lib.rs:
+/home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/basic.rs:
+/home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/block.rs:
+/home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/box.rs:
+/home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/greek.rs:
+/home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/hiragana.rs:
+/home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/latin.rs:
+/home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/legacy.rs:
+/home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/misc.rs:
+/home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/sga.rs:
+/home/dan/.cargo/registry/src/github.com-1ecc6299db9ec823/font8x8-0.3.1/src/unicode.rs:

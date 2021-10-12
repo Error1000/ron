@@ -1,0 +1,33 @@
+TARGET = Some("i686-unknown-linux-gnu")
+OPT_LEVEL = Some("1")
+HOST = Some("x86_64-unknown-linux-gnu")
+CC_i686-unknown-linux-gnu = None
+CC_i686_unknown_linux_gnu = None
+TARGET_CC = None
+CC = None
+CROSS_COMPILE = None
+CFLAGS_i686-unknown-linux-gnu = None
+CFLAGS_i686_unknown_linux_gnu = None
+TARGET_CFLAGS = None
+CFLAGS = None
+CRATE_CC_NO_DEFAULTS = None
+DEBUG = Some("true")
+CARGO_CFG_TARGET_FEATURE = Some("fxsr,sse,sse2")
+running: "cc" "-O1" "-ffunction-sections" "-fdata-sections" "-fPIC" "-g" "-fno-omit-frame-pointer" "-m32" "-march=i686" "-Wall" "-Wextra" "-o" "/home/dan/Documents/Coding/Rust/ron/target/i686-unknown-linux-gnu/debug/build/ron-8da57c2876274125/out/src/asm_init_2mb_paging.o" "-c" "src/asm_init_2mb_paging.s"
+exit status: 0
+AR_i686-unknown-linux-gnu = None
+AR_i686_unknown_linux_gnu = None
+TARGET_AR = None
+AR = None
+running: "ar" "cq" "/home/dan/Documents/Coding/Rust/ron/target/i686-unknown-linux-gnu/debug/build/ron-8da57c2876274125/out/libinit_asm.a" "/home/dan/Documents/Coding/Rust/ron/target/i686-unknown-linux-gnu/debug/build/ron-8da57c2876274125/out/src/asm_init_2mb_paging.o"
+exit status: 0
+running: "ar" "s" "/home/dan/Documents/Coding/Rust/ron/target/i686-unknown-linux-gnu/debug/build/ron-8da57c2876274125/out/libinit_asm.a"
+exit status: 0
+cargo:rustc-link-lib=static=init_asm
+cargo:rustc-link-search=native=/home/dan/Documents/Coding/Rust/ron/target/i686-unknown-linux-gnu/debug/build/ron-8da57c2876274125/out
+cargo:rustc-link-arg=-ffreestanding
+cargo:rustc-link-arg=-nostartfiles
+cargo:rustc-link-arg=-nodefaultlibs
+cargo:rustc-link-arg=-static
+cargo:rustc-link-arg=-Tlink.x
+cargo:rustc-link-arg=-m32
