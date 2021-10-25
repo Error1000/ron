@@ -3,8 +3,10 @@
 #![feature(bench_black_box)]
 #![feature(asm)]
 
+use hio::KeyboardPacketType;
+use ps2_8042::SpecialKeys;
 use uart_16550::UARTDevice;
-use vga::{Text80x25, Vga};
+use vga::{Text80x25, Unblanked, Vga};
 
 macro_rules! wait_for {
   ($cond:expr) => {
@@ -18,12 +20,10 @@ mod ps2_8042;
 mod uart_16550;
 mod vga;
 mod virtmem;
-mod integrated_shell;
+mod hio;
 
 #[panic_handler]
-fn panic(_p: &::core::panic::PanicInfo) -> ! {
-    loop {}
-}
+fn panic(_p: &::core::panic::PanicInfo) -> ! { loop {} }
 
 const MULTIBOOT_MAGIC: u32 = 0x1badb002;
 const MULTIBOOT_FLAGS: u32 = 0x00000000;
@@ -33,7 +33,7 @@ pub static multiboot_header: [u32; 3] = [
     MULTIBOOT_MAGIC,
     MULTIBOOT_FLAGS,
     -((MULTIBOOT_MAGIC + MULTIBOOT_FLAGS) as i32) as u32,
-    // Exec info
+    // Exec info ( omitted because i use elf )
     //	0, 0, 0, 0, 0,
     // Graphics request omitted because it is not guaranteed
     //	0, 0, 0, 0
@@ -43,28 +43,15 @@ pub static multiboot_header: [u32; 3] = [
 // I'm just gonna let the compiler babysit me for now
 #[no_mangle]
 pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
-    for i in 0..n {
-        *dest.offset(i as isize) = *src.offset(i as isize);
-    }
+    for i in 0..n { *dest.offset(i as isize) = *src.offset(i as isize); }
     dest
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn memset(dest: *mut u8, c: i32, n: usize) -> *mut u8 {
-    for i in 0..n {
-        *(dest.offset(i as isize)) = c as u8;
-    }
+    for i in 0..n { *(dest.offset(i as isize)) = c as u8; }
     dest
 }
-
-#[repr(C)]
-#[repr(packed)]
-struct MultibootInfo {
-    flags: u32,
-}
-
-/// TODO:
-/// Clean-room rewrite vendored vga
 
 fn kprint(s: &str, uart: &mut UARTDevice) {
     s.chars().for_each(|c| {
@@ -79,6 +66,14 @@ fn kprint_u8(data: u8, buf: &mut [u8], uart: &mut UARTDevice) {
     kprint("0x", uart);
     kprint(unsafe { from_utf8_unchecked(&buf) }, uart);
     kprint(" ", uart);
+}
+
+fn clear_screen(vga: &mut Vga<Text80x25, Unblanked>){
+    for y in 0..25 {
+        for x in 0..80 {
+            unsafe { vga.write_char(x, y, b' ', 0x0F) }
+        }
+    }
 }
 
 fn u8_to_str_decimal(val: u8, s: &mut [u8]) {
@@ -99,13 +94,12 @@ pub const unsafe fn from_utf8_unchecked(v: &[u8]) -> &str {
     core::mem::transmute(v)
 }
 
-
 // EAX and EBX are used for multiboot
 #[no_mangle]
 pub extern "C" fn main(eax: u32, _ebx: u32) -> ! {
     // Why yes rust i do need the statics i declared, please don't optimise them out of the executable
     core::hint::black_box(core::convert::identity(multiboot_header.as_ptr()));
-    if eax != 0x2BADB002 { panic!("Kernel was not booted by a a multiboot-compatible bootloader! ") }
+    if eax != 0x2BADB002 { panic!("Kernel was not booted by a multiboot-compatible bootloader! ") }
     // let m: &MultibootInfo = unsafe{&*(ebx as *const MultibootInfo)};
     let mut uart = unsafe { uart_16550::UARTDevice::unsafe_default() };
     uart.init();
@@ -117,71 +111,49 @@ pub extern "C" fn main(eax: u32, _ebx: u32) -> ! {
     let vga = unsafe { vga.set_mode::<Text80x25>() };
     let mut vga = unsafe { vga.unblank_screen() };
 
-    // Clear screen
-    for y in 0..25 {
-        for x in 0..80 {
-            unsafe { vga.write_char(x, y, b' ', 0x0A) }
-        }
-    }
+    clear_screen(&mut vga);
 
-    b"Hello, world!"
-        .iter()
-        .enumerate()
-        .for_each(|(x, c)| unsafe {
-            vga.write_char(x, 0, *c, 0x0A);
-        });
+    b"Hello, world!".iter().enumerate().for_each(|(x, c)| unsafe {
+        vga.write_char(x, 0, *c, 0x0A);
+    });
     b"VGA!!!".iter().enumerate().for_each(|(x, c)| unsafe {
         vga.write_char(x, 1, *c, 0x0A);
     });
 
+    kprint("If you see this then that means the vga subsystem didn't instantly crash the kernel :)\n", &mut uart);
 
-    kprint("Got here!", &mut uart);
     // let mut buf  = [0u8; 3];
     let mut ps2 = unsafe { ps2_8042::PS2Device::unsafe_default() };
-    let mut shift = false;
     let mut x = 0isize;
     let mut y = 0isize;
     let mut sub_x_next_time: bool = false;
-    let mut multibyte: bool = false;
     loop {
         sub_x_next_time = false;
         if x >= 0{ unsafe{ vga.set_cursor_position(x as usize, y as usize); }}
-        let b = unsafe { ps2.read_byte() };
-        // kprint_u8(b, &mut buf, &mut uart);
-        let mut c = ps2_8042::scan_code_set_1[b as usize];
+        let b = unsafe { ps2.read_packet() };
+        // kprint_u8(b.scancode, &mut buf, &mut uart);
 
-        if multibyte {
-          if b == 0x48 {
-              y -= 1;
-              if y < 0{ y = 0; }
-          } else if b == 0x50{
-              y += 1;
-              if y > 24 { y = 24; }
-          } else if b == 0x4D {
-            x += 1;
-            if x > 79 { x = 79; }
-          }else if b == 0x4B {
-            x -= 1;
-            if x < 0 { x = 0; }
-          }
-          multibyte = false;
-          continue;
+        if b.typ == KeyboardPacketType::KEY_RELEASED && b.special_keys.contains(SpecialKeys::ESC) { break; }
+        if b.typ == KeyboardPacketType::KEY_RELEASED { continue; }
+
+        if b.special_keys.contains(SpecialKeys::UP_ARROW) {
+            y -= 1;
+            if y < 0{ y = 0; }
+        } else if b.special_keys.contains(SpecialKeys::DOWN_ARROW){
+            y += 1;
+            if y > 24 { y = 24; }
+        } else if b.special_keys.contains(SpecialKeys::RIGHT_ARROW) {
+          x += 1;
+          if x > 79 { x = 79; }
+        }else if b.special_keys.contains(SpecialKeys::LEFT_ARROW) {
+          x -= 1;
+          if x < 0 { x = 0; }
         }
 
-        if b == 0x2A || b == 0x36 {
-            shift = true;
-        }
-        if b == 0xAA || b == 0xB6 {
-            shift = false;
-        }
-
-        if b == 0xE0 {
-          multibyte = true;
-        }
-
-        if c == ' ' && b != 0x39 {
-          continue;
-        }
+        let mut c = match b.char_codepoint {
+            Some(v) => v,
+            None => continue
+        };
 
         if c == '\r' {
             if x > 0 {
@@ -200,48 +172,27 @@ pub extern "C" fn main(eax: u32, _ebx: u32) -> ! {
             }
             continue;
         }
-        if shift {
-            c = c.to_ascii_uppercase();
-            c = match c {
-                '1' => '!',
-                '2' => '@',
-                '3' => '#',
-                '4' => '$',
-                '5' => '%',
-                '6' => '&',
-                '8' => '*',
-                '9' => '(',
-                '0' => ')',
-                '-' => '_',
-                '=' => '+',
-                '[' => '{',
-                ']' => '}',
-                ';' => ':',
-                '\'' => '"',
-                ',' => '<',
-                '.' => '>',
-                '/' => '?',
-                '\\' => '|',
-                _ => c,
-            };
-        }
-        unsafe {
-            vga.write_char(x as usize, y as usize, c as u8, 0x0A);
-        }
+        if b.special_keys.any_shift() { c = b.shift_codepoint().unwrap(); }
+
+        unsafe { vga.write_char(x as usize, y as usize, c as u8, 0x0A); }
         x += 1;
         if sub_x_next_time { x -= 1; }
         if x > 80 {
             y += 1;
             x = 0;
         }
-        if y > 25 {
-            y = 0;
-        }
+        if y > 25 { y = 0; }
+
     }
 
-    loop {
-        unsafe {
-            asm!("hlt");
-        }
+    // Shutdown
+    kprint("\nIt's now safe to turn off your computer!", &mut uart);
+    kprint("\n", &mut uart);
+    clear_screen(&mut vga);
+    unsafe{
+        let s = "It's now safe to turn off your computer!";
+        s.chars().enumerate().for_each(|(ind, c)|vga.write_char(ind+80/2-s.len()/2, 25/2-1/2, c as u8, 0x0E));
     }
+    unsafe{ asm!("cli"); }
+    loop { unsafe { asm!("hlt"); } }
 }
