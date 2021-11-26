@@ -1,1 +1,0 @@
-{"rustc":17121486978319817810,"features":"","target":0,"profile":0,"path":0,"deps":[[6086580274846995078,"build_script_build",false,14381406187154516968]],"local":[{"RerunIfChanged":{"output":"i686-unknown-linux-gnu/debug/build/packed_struct-e36f643b896b84f9/output","paths":["build.rs"]}}],"rustflags":[],"metadata":0,"config":0,"compile_kind":0}

@@ -152,5 +152,3 @@ enable_simd:
 
 goto_kmain:
 	call main
-	cli
-	hlt

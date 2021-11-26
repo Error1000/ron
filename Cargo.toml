@@ -11,6 +11,7 @@ cc = "*"
 [dependencies]
 packed_struct = {version = "0.10", default-features = false }
 bitflags = {version = "1.3.2"}
+
 [profile.dev]
 panic = "abort"
 opt-level = 0
