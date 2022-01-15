@@ -1,4 +1,4 @@
-use crate::{UnsafeDefault, hio::{KeyboardPacket, KeyboardPacketType}, virtmem::KernPointer};
+use crate::{X86Default, hio::{KeyboardPacket, KeyboardPacketType}, virtmem::KernPointer};
 use bitflags::bitflags;
 use packed_struct::prelude::*;
 
@@ -51,8 +51,8 @@ pub struct PS2Device {
     special_keys: SpecialKeys
 }
 
-impl UnsafeDefault for PS2Device {
-    unsafe fn unsafe_default() -> Self {
+impl X86Default for PS2Device {
+    unsafe fn x86_default() -> Self {
         let mut ps2 = Self {
             data: KernPointer::<u8>::from_port(0x60),
             status_and_command: KernPointer::<u8>::from_port(0x64),

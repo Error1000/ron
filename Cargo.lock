@@ -33,6 +33,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1847abb9cb65d566acd5942e94aea9c8f547ad02c98e1649326fc0e8910b8b1e"
 
 [[package]]
+name = "lazy_static"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
+
+[[package]]
 name = "packed_struct"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -83,6 +89,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "cc",
+ "lazy_static",
  "packed_struct",
 ]
 

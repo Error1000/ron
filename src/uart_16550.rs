@@ -1,4 +1,4 @@
-use crate::{virtmem::KernPointer, UnsafeDefault};
+use crate::{virtmem::{KernPointer, PointerLike}, X86Default};
 use packed_struct::prelude::*;
 
 
@@ -190,6 +190,6 @@ impl UARTDevice {
     }
 }
 
-impl UnsafeDefault for UARTDevice {
-    unsafe fn unsafe_default() -> Self { Self::new(KernPointer::<u8>::from_port(0x3f8)) }
+impl X86Default for UARTDevice {
+    unsafe fn x86_default() -> Self { Self::new(KernPointer::<u8>::from_port(0x3f8)) }
 }

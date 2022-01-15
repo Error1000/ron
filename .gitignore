@@ -1,2 +1,3 @@
-iso/
 target/
+iso/boot/*
+!iso/boot/grub

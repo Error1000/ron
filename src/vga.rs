@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use crate::{UnsafeDefault, virtmem::KernPointer};
+use crate::{X86Default, virtmem::{KernPointer, PointerLike}};
 
 
 pub struct Blanked{}
@@ -656,8 +656,8 @@ impl<STATE: MixedRegisterState> Vga<Text80x25, STATE>{
 }
 
 
-impl UnsafeDefault for Vga<UndefinedVgaMode, Unblanked>{
-    unsafe fn unsafe_default() -> Self {
+impl X86Default for Vga<UndefinedVgaMode, Unblanked>{
+    unsafe fn x86_default() -> Self {
         Self{
             misc_register: VGAMiscOutputRegister{reading: KernPointer::<u8>::from_port(0x3CC), writing: KernPointer::<u8>::from_port(0x3C2)},
             attribute_controller_registers_mixed: VGAMixedRegister::<Unblanked>{data_and_ind_write: KernPointer::<u8>::from_port(0x3C0), control: KernPointer::<u8>::from_port(0x3DA), data_read: KernPointer::<u8>::from_port(0x3C1), p: PhantomData},

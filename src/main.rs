@@ -7,8 +7,10 @@ use hio::KeyboardPacketType;
 use ps2_8042::SpecialKeys;
 use uart_16550::UARTDevice;
 use vga::{MixedRegisterState, Text80x25, Unblanked, Vga, VgaMode};
+use core::arch::asm;
 use core::convert::TryInto;
 use core::convert::TryFrom;
+use core::ffi::c_void;
 
 macro_rules! wait_for {
   ($cond:expr) => {
@@ -16,30 +18,18 @@ macro_rules! wait_for {
   };
 }
 
-trait UnsafeDefault { unsafe fn unsafe_default() -> Self; }
+trait X86Default { unsafe fn x86_default() -> Self; }
 
 mod ps2_8042;
 mod uart_16550;
 mod vga;
 mod virtmem;
 mod hio;
+mod ata;
 
 #[panic_handler]
 fn panic(_p: &::core::panic::PanicInfo) -> ! { loop {} }
 
-const MULTIBOOT_MAGIC: u32 = 0x1badb002;
-const MULTIBOOT_FLAGS: u32 = 0x00000000;
-
-#[no_mangle]
-pub static multiboot_header: [u32; 3] = [
-    MULTIBOOT_MAGIC,
-    MULTIBOOT_FLAGS,
-    -((MULTIBOOT_MAGIC + MULTIBOOT_FLAGS) as i32) as u32,
-    // Exec info ( omitted because i use elf )
-    //	0, 0, 0, 0, 0,
-    // Graphics request omitted because it is not guaranteed
-    //	0, 0, 0, 0
-];
 
 // Can't be bothered to make smart implementations
 // I'm just gonna let the compiler babysit me for now
@@ -92,6 +82,13 @@ fn kprint_u8(data: u8, uart: &mut UARTDevice) {
     kprint(" ", uart);
 }
 
+fn kprint_u16(data: u16, uart: &mut UARTDevice){
+    let buf = u16_to_str_hex(data);
+    kprint("0x", uart);
+    kprint(unsafe{ from_utf8_unchecked(&buf)}, uart);
+    kprint(" ", uart);
+}
+
 fn clear_screen(vga: &mut Vga<Text80x25, Unblanked>){
     for y in 0..25 {
         for x in 0..80 {
@@ -102,7 +99,7 @@ fn clear_screen(vga: &mut Vga<Text80x25, Unblanked>){
 
 fn u8_to_str_decimal(val: u8) -> [u8; 3] {
     let mut s: [u8; 3] = [0; 3];
-    // N.B.: Be careful about direction, you might get mirrored numbers otherwise and not realise and spend several hours debugging why your driver doesn't work because it doesn't read the right value even though it does it's just the debugging that's broken >:(
+    // N.B.: Be careful about direction, you might get mirrored numbers otherwise and not realise and spend several hours debugging why your driver doesn't work because it doesn't read the right value even though it does it's just the debugging function that's broken >:(
     s[0] = (val / 100) + b'0';
     s[1] = (val / 10) % 10 + b'0';
     s[2] = (val) % 10 + b'0';
@@ -113,7 +110,16 @@ fn u8_to_str_hex(val: u8) -> [u8; 2] {
     let mut s: [u8; 2] = [0; 2];
     s[0] = val / 16 + if val / 16 >= 10 { b'A' - 10 } else { b'0' };
     s[1] = val % 16 + if val % 16 >= 10 { b'A' - 10 } else { b'0' };
-    return s;
+    s
+}
+
+fn u16_to_str_hex(val: u16) -> [u8; 4] {
+    let mut s: [u8; 4] = [0; 4];
+    for i in 0..=3u16 {
+        let digit = ((val / 16u16.pow(i.into())) % 16) as u8;
+        s[3-i as usize] = digit + if digit >= 10 { b'A' - 10 } else { b'0' };
+    }
+    s
 }
 
 pub const unsafe fn from_utf8_unchecked(v: &[u8]) -> &str {
@@ -122,6 +128,121 @@ pub const unsafe fn from_utf8_unchecked(v: &[u8]) -> &str {
     core::mem::transmute(v)
 }
 
+struct Vga80x25Terminal<'a, STATE: MixedRegisterState> {
+    cursor: (usize/*x*/, usize/*y*/),
+    color: u8,
+    vga: &'a mut Vga<Text80x25, STATE>
+}
+
+impl<'a, STATE: MixedRegisterState> Vga80x25Terminal<'a, STATE>{
+    pub fn new(vga: &'a mut Vga<Text80x25, STATE>, color: u8) -> Self {
+        Self {
+            cursor: (0, 0),
+            color,
+            vga
+        }
+    }
+
+    pub unsafe fn write_char(&mut self, c: char) {
+        match c {
+            '\n' => {
+                self.cursor.0 = 0;
+                if self.cursor.1 < (25-1){
+                    self.cursor.1 += 1;
+                }else{
+                    self.cursor.1 = 0;
+                }
+                self.vga.set_cursor_position(self.cursor.0, self.cursor.1);
+            },
+            '\r' => {
+                if self.cursor.0 > 0 {
+                    self.cursor.0 -= 1;
+                } else if self.cursor.1 > 0 {
+                    self.cursor.1 -= 1;
+                    self.cursor.0 = 79;
+                }
+                self.vga.write_char(self.cursor.0, self.cursor.1, b' ', self.color);
+                self.vga.set_cursor_position(self.cursor.0, self.cursor.1);
+            },
+            _ => {
+                self.vga.write_char(self.cursor.0, self.cursor.1, c as u8, self.color);
+                self.cursor_right();
+            }
+        }
+    }
+
+    pub unsafe fn cursor_right(&mut self){
+        if self.cursor.0 < (80 - 1) {
+            self.cursor.0 += 1;
+        }else{
+            // Wrap forward to start of next line
+            self.cursor_down();
+            self.cursor.0 = 0;
+        }
+        self.vga.set_cursor_position(self.cursor.0, self.cursor.1);
+    }
+
+    pub unsafe fn cursor_left(&mut self){
+        if self.cursor.0 > 0 {
+            self.cursor.0 -= 1;
+        }else{
+            // Wrap back to end of last line
+            self.cursor_up();
+            self.cursor.0 = 79;
+        }
+        self.vga.set_cursor_position(self.cursor.0, self.cursor.1); 
+    }
+
+    pub unsafe fn cursor_down(&mut self){
+        if self.cursor.1 < (25 - 1) {
+            self.cursor.1 += 1;
+        } else {
+            // Wrap to first line
+            self.cursor.1 = 0;
+        }
+        self.vga.set_cursor_position(self.cursor.0, self.cursor.1); 
+    }
+
+    pub unsafe fn cursor_up(&mut self){
+        if self.cursor.1 > 0 {
+            self.cursor.1 -= 1;
+        }else{
+            // Wrap to last line
+            self.cursor.1 = 24;
+        }
+        self.vga.set_cursor_position(self.cursor.0, self.cursor.1); 
+    }
+
+    pub unsafe fn clear(&mut self){
+        for _ in 0..(25-self.cursor.1+1) {
+            self.cursor_down();
+        }
+        for _ in 0..(80-self.cursor.0) {
+            self.cursor_left();
+        }
+        for _ in 0..80*25 { self.write_char(' '); }
+        self.cursor_up();
+    }
+
+}
+
+
+// Multiboot
+
+const MULTIBOOT_MAGIC: u32 = 0x1badb002;
+const MULTIBOOT_FLAGS: u32 = 0x00000000;
+
+#[no_mangle]
+pub static multiboot_header: [u32; 3] = [
+    MULTIBOOT_MAGIC,
+    MULTIBOOT_FLAGS,
+    (-((MULTIBOOT_MAGIC + MULTIBOOT_FLAGS) as i32)) as u32,
+    // Exec info ( omitted because i use elf )
+    //	0, 0, 0, 0, 0,
+    // Graphics request omitted because it is not guaranteed
+    //	0, 0, 0, 0
+];
+
 // EAX and EBX are used for multiboot
 #[no_mangle]
 pub extern "C" fn main(eax: u32, _ebx: u32) -> ! {
@@ -129,10 +250,12 @@ pub extern "C" fn main(eax: u32, _ebx: u32) -> ! {
     core::hint::black_box(core::convert::identity(multiboot_header.as_ptr()));
     if eax != 0x2BADB002 { panic!("Kernel was not booted by a multiboot-compatible bootloader! ") }
     // let m: &MultibootInfo = unsafe{&*(ebx as *const MultibootInfo)};
-    let mut uart = unsafe { uart_16550::UARTDevice::unsafe_default() };
+
+    let mut uart = unsafe { uart_16550::UARTDevice::x86_default() };
     uart.init();
     kprintln("Hello, world!", &mut uart);
-    let vga = unsafe { Vga::unsafe_default() };
+
+    let vga = unsafe { Vga::x86_default() };
 
     // Switch to 80x25 text mode
     let vga = unsafe { vga.blank_screen() };
@@ -141,17 +264,51 @@ pub extern "C" fn main(eax: u32, _ebx: u32) -> ! {
 
     clear_screen(&mut vga);
 
-  
+    let mut term = Vga80x25Terminal::new(&mut vga, 0x0A);
 
 
     kprintln("If you see this then that means the vga subsystem didn't instantly crash the kernel :)", &mut uart);
 
-    let mut ps2 = unsafe { ps2_8042::PS2Device::unsafe_default() };
-    let mut x = 2isize;
-    let mut y = 0isize;
-    b"# ".iter().enumerate().for_each(|(i, c)| unsafe {
-        vga.write_char(i, y.try_into().expect("Y should have valid value"), *c, 0x0A);
-    });
+    // Temporary ATA code to test ata driver
+    // NOTE: master device is not necessarilly the device from which the os was booted
+    let mut ata_bus = unsafe{ ata::ATABus::x86_default() };
+    let master_r = unsafe{ ata_bus.identify(ata::ATADevice::MASTER) };
+    if let Some(id_data) = master_r {
+        kprint_u16(id_data[0], &mut uart);
+        kprint_u16(id_data[83], &mut uart);
+        kprint_u16(id_data[88], &mut uart);
+        kprint_u16(id_data[93], &mut uart);
+
+        kprint_u16(id_data[61], &mut uart);
+        kprint_u16(id_data[60], &mut uart);
+        "Sector count of master device: 0x".chars().for_each(|c|unsafe{term.write_char(c)});
+        u16_to_str_hex(id_data[60]).iter().for_each(|c| unsafe{term.write_char(*c as char)});
+        
+        kprint_u16(id_data[103], &mut uart);
+        kprint_u16(id_data[102], &mut uart);
+        kprint_u16(id_data[101], &mut uart);
+        kprint_u16(id_data[100], &mut uart);
+        
+        kprintln("Found master device on primary ata bus!", &mut uart)
+    }else{
+        "No master device on primary ata bus!\n".chars().for_each(|c|unsafe{term.write_char(c)});
+        panic!();
+    }
+
+    "\nFirst sector on master device on primary ata bus: \n".chars().for_each(|c|unsafe{term.write_char(c)});
+    // Read first sector
+    let sdata = unsafe{ata_bus.read_sector(ata::ATADevice::MASTER, ata::LBA28{low: 0, mid: 0, hi: 0})}.unwrap();
+    for e in sdata{
+        unsafe{
+        u16_to_str_hex(e).iter().for_each(|c|term.write_char(*c as char));
+        term.write_char(' ');
+        }
+    }
+    //////////
+
+    let mut ps2 = unsafe { ps2_8042::PS2Device::x86_default() };
+
+    "# ".chars().for_each(|c| unsafe { term.write_char(c); });
 
     let mut ignore_inc_x: bool = false;
     // Basically an ad-hoc ArrayString (arrayvec crate)
@@ -159,7 +316,6 @@ pub extern "C" fn main(eax: u32, _ebx: u32) -> ! {
     let mut buf_ind = 0; // Also length of buf, a.k.a portion of buf used
     loop {
         ignore_inc_x = false;
-        if x >= 0 { unsafe{ vga.set_cursor_position(x as usize, y as usize); }}
         let b = unsafe { ps2.read_packet() };
         // kprint_u8(b.scancode, &mut uart);
 
@@ -167,17 +323,13 @@ pub extern "C" fn main(eax: u32, _ebx: u32) -> ! {
         if b.typ == KeyboardPacketType::KEY_RELEASED { continue; }
 
         if b.special_keys.contains(SpecialKeys::UP_ARROW) {
-            y -= 1;
-            if y < 0{ y = 0; }
+           unsafe{ term.cursor_up(); }
         } else if b.special_keys.contains(SpecialKeys::DOWN_ARROW){
-            y += 1;
-            if y > 24 { y = 24; }
+           unsafe{ term.cursor_down(); }
         } else if b.special_keys.contains(SpecialKeys::RIGHT_ARROW) {
-          x += 1;
-          if x > 79 { x = 79; }
+           unsafe{ term.cursor_right(); }
         }else if b.special_keys.contains(SpecialKeys::LEFT_ARROW) {
-          x -= 1;
-          if x < 0 { x = 0; }
+           unsafe{ term.cursor_left(); }
         }
 
         let mut c = match b.char_codepoint {
@@ -185,66 +337,41 @@ pub extern "C" fn main(eax: u32, _ebx: u32) -> ! {
             None => continue
         };
 
-        if c == '\r' {
-            ignore_inc_x = true;
-            if x > 0 {
-                x -= 1;
-                buf_ind -= 1;
-            } else if y > 0 { // Implements cursor wrapping-back to the end of the last line
-                y -= 1;
-                x = 77;
-            }
-            c = ' ';
-        } else if c == '\n' {
-            x = 0;
-            y += 1;
-            if y >= 25 {
-              y = 0;
-            }
+        if b.special_keys.any_shift() { c = b.shift_codepoint().unwrap(); }
 
+        unsafe{ term.write_char(c); }
 
+        if c == '\r' { ignore_inc_x = true; if buf_ind > 0 { buf_ind -= 1; } }
+        if c == '\n' {
             let bufs = unsafe{from_utf8_unchecked(&cmd_buf[..buf_ind])};
             buf_ind = 0; // Flush buffer
 
-            // kprintln( bufs, &mut uart);
             let mut splat = bufs.split_inclusive(' ');
             if let Some(cmnd) = splat.next(){
-                // Handle command parsing
+                // Handle shell built ins
                 if cmnd.contains("echo"){
-                    let  mut lx = 0;
                     while let Some(arg) = splat.next(){
-                        arg.chars().enumerate().for_each(|(i, c)| unsafe{
-                            vga.write_char(lx + usize::try_from(x).expect("X should have valid value") + i, y.try_into().expect("Y should have valid value"), c as u8, 0x0A);
+                        arg.chars().for_each(|c| unsafe{
+                            term.write_char(c);
                         });
-                        lx += arg.len();
                     }
-                    y += 1;
+                }else if cmnd.contains("uname"){
+                    "Ron".chars().for_each(|c|unsafe{term.write_char(c)});
+                }else if cmnd.contains("help"){
+                    "echo uname clear help".chars().for_each(|c|unsafe{term.write_char(c)});
+                }else if cmnd.contains("clear"){
+                    unsafe{ term.clear(); }
                 }
+
+                unsafe{ term.write_char('\n'); } // All inbuilt commands leave a \n at the end so that when they end the prompt appears on a new line
             }
 
-            // TODO: Should have a single function that writes to vga, that is called both for user input and application text
-            b"# ".iter().enumerate().for_each(|(i, c)| unsafe {
-                vga.write_char(usize::try_from(x).expect("X should have valid value") + i, y.try_into().expect("Y should have valid value"), *c, 0x0A);
-            });            
-            x += 2;
-            
+            "# ".chars().for_each(|c| unsafe { term.write_char(c); });
             continue;
         }
 
-        if b.special_keys.any_shift() { c = b.shift_codepoint().unwrap(); }
-
         cmd_buf[buf_ind] = c as u8;
         if !ignore_inc_x { buf_ind += 1; }
-        unsafe { vga.write_char(x.try_into().expect("X should have valid value"), y.try_into().expect("Y should have valid value"), c as u8, 0x0A); }
-
-
-        if !ignore_inc_x { x += 1; }
-
-        if x > 80 {
-            y += 1;
-            x = 0;
-        }
-        if y > 25 { y = 0; }
 
     }
 

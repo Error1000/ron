@@ -96,7 +96,7 @@ setup_paging:
 	# According to the amd64 manual, section 5.2.3, enteries are 8 bytes long, with PAE
 	# Level 1 is the lowest
 
-	# All 4*1 gb page directories
+	# One 1 gb page directory
 	DEFAULT_L3_ENTRY = 1 # Just the present bit(bit 0), *NOT* the cache disable bit(bit 4) and *NOT* the write through bit(bit 3) 
 	mov eax, OFFSET l2_pt
 	or eax, DEFAULT_L3_ENTRY # According to the AMD64 manual section 5.4, only the address bits *above* bit 11 are stored in the address field of the entery specifed at section 5.2 page 139
