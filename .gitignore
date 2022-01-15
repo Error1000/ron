@@ -1,3 +1,5 @@
 target/
 iso/boot/*
 !iso/boot/grub
+Cargo.lock
+out.iso
