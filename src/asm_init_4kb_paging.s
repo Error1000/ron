@@ -60,11 +60,6 @@ kernel_stack_size = 16384
 		.hword ((0b00000000 << 8) | 0b11001111 )
 			# base address cont.  G D/B ? ? segment limit cont.
 
-# We need to:
-# 1. Take care of interrupts X ( we just disable them for now )
-# 2. Take care of the stack X   ( easy? )
-# 3. Take care of the gdt	( needed )
-# 4. Take care of paging X ( we just identity map the first 2mb ) ( optional ? )
 .section .text
 	.extern main
 .code32
@@ -104,13 +99,13 @@ setup_paging:
 
 	# Here, since for now we emulate paging in the actual os we can just give access to the pages to everybody as far as the cpu is concerned
 
-	# All 512, 2mb page tables
+	# One, 2mb page table
 	DEFAULT_L2_ENTRY = (1 | (1 << 1) | (1 << 2) ) # The present bit(bit 0), the r/w bit(bit 1), the user access bit(bit 2), *NOT* the write through bit(bit 3), *NOT* the page cache disable bit(bit 4), bit 5 is set by the cpu it indicates access, bit 6 must be ignored, bit 7 must be 0, bit 8 must be ignored, bits 11-9 are available for os use
 	mov eax, DEFAULT_L2_ENTRY
 	or eax, OFFSET l1_pt
 	mov dword ptr [l2_pt], eax
 
-	# All 512, 4kb pages
+	# All 512, 4kb pages of the first and only 2mb page table
 	DEFAULT_L1_ENTRY = (1 | (1 << 1) | (1 << 2) ) # The present bit(bit 0), the r/w bit(bit 1), the user ccess bit(bit 2), *NOT* the write thorugh bit(bit 3), *NOT* the cache disable bit(bit 4), bit 5 is set by the cpu it indicates access, bit 6 is set by the cpu it indicates dirtiness, *NOT* Page Attribute Table (bit 7), *NOT* the global bit(bit 8) we want the tlb(cache) to be flushed of this entery  when cr3 changes otherwise we would need to call invlpg to flush the tlb explicitly, bits 9-11 are available for os use
 	mov ebx, 0
 	l1_loop:
@@ -118,11 +113,13 @@ setup_paging:
 		shl ebx, 12
 		or  eax, ebx # eax = ( DEFAULT_L1_ENTRY | (ebx << 12) ), not shifted back because ebx was not originally an address
 		shr ebx, 9
+		# size of one entry = 8 => offset = ebx*8 or ebx << 3 <=> (ebx >> 12) << 9
 		mov dword ptr [l1_pt+ebx], eax
 		shr ebx, 3 # restore ebx
 		inc ebx
 		cmp ebx, 512 # 512 enteries
 	jl l1_loop
+	
 enable_pae:
         # Enable Physical Address Extension
         mov eax, cr4

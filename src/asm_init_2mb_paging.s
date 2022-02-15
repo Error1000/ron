@@ -51,7 +51,7 @@ kernel_stack_size = 16384
 		.hword 0xffff
 		.hword 0x0000
 		.hword ((0b10011010  << 8) | 0b00000000 )
-			#P DPL S Type(1 CRA) base address cont.
+		    	#P DPL S Type(1 CRA) base address cont.
 		.hword ((0b00000000 << 8 ) | 0b11001111 )
 			#base address cont.    G D ? ? segment limit cont.
 
@@ -130,11 +130,11 @@ setup_paging:
 		or eax, ebx
 		shr ebx, 18
 		mov dword ptr [l2_pt_1+ebx], eax
-		add eax, 0x40000000
+		add eax, (512 << 21) # offset of 512 pages between l2 page tables
 		mov dword ptr [l2_pt_2+ebx], eax
-		add eax, 0x40000000
+		add eax, (512 << 21)
 		mov dword ptr [l2_pt_3+ebx], eax
-		add eax, 0x40000000
+		add eax, (512 << 21)
 		mov dword ptr [l2_pt_4+ebx], eax
 		shr ebx, 3
 		inc ebx
