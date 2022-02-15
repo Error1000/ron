@@ -166,6 +166,15 @@ const TEXT_80X25: VgaModeDump = VgaModeDump{
     graphics_controller_registers: &[(0x00, 0x00), (0x01, 0x00), (0x02, 0x00), (0x03, 0x00), (0x04, 0x00), (0x05, 0x10), (0x06, 0x0E), (0x07, 0x00), (0x08, 0xFF)]
 };
 
+
+const COLOR_320X200: VgaModeDump = VgaModeDump{
+    misc_register: 0x63,  
+    sequencer_registers: &[(0x00, 0x03), (0x1, 0x01), (0x2, 0x0F), (0x3, 0x00), (0x4, 0x0E)],
+    crtc_controller_registers: &[(0x00, 0x5F), (0x01, 0x4F), (0x02, 0x50), (0x03, 0x82), (0x04, 0x54), (0x05, 0x80), (0x06, 0xBF), (0x07, 0x1F), (0x08, 0x00), (0x09, 0x41), (0x0A, 0x00), (0x0B, 0x00), (0x0C, 0x00), (0x0D, 0x00), (0x0E, 0x00), (0x0F, 0x00), (0x10, 0x9C), (0x11, 0x0E), (0x12, 0x8F), (0x13, 0x28), (0x14, 0x40), (0x15, 0x96), (0x16, 0xB9), (0x17, 0xA3), (0x18, 0xFF)],
+    attribute_controller_registers_mixed: &[(0x10, 0x41), (0x11, 0x00), (0x12, 0x0F), (0x13, 0x00), (0x14, 0x00)],
+    graphics_controller_registers: &[(0x0, 0x0), (0x1, 0x0), (0x2, 0x0), (0x3, 0x0), (0x4, 0x0), (0x05, 0x40), (0x06, 0x05), (0x7, 0x0F)]
+};
+
 pub const DEFAULT_PALETTE: [(u8, u8, u8); 256] = [
     (0x0, 0x0, 0x0), (0x0, 0x0, 0x2A), (0x0, 0x2A, 0x0), (0x0, 0x2A, 0x2A), (0x2A, 0x0, 0x0), 
     (0x2A, 0x0, 0x2A), (0x2A, 0x2A, 0x0), (0x2A, 0x2A, 0x2A), (0x0, 0x0, 0x15), (0x0, 0x0, 0x3F), (0x0, 0x2A, 0x15),
@@ -492,12 +501,35 @@ const TEXT_8X16_FONT: [u8; 4096] = [
 
 pub trait VgaMode{}
 
+
+pub struct Color256{}
+impl VgaMode for Color256{}
+
 pub struct Text80x25{}
 impl VgaMode for Text80x25{}
 
 pub struct UndefinedVgaMode{}
 impl VgaMode for UndefinedVgaMode{}
 
+impl X86Default for Vga<UndefinedVgaMode, Unblanked>{
+    unsafe fn x86_default() -> Self {
+        Self{
+            misc_register: VGAMiscOutputRegister{reading: KernPointer::<u8>::from_port(0x3CC), writing: KernPointer::<u8>::from_port(0x3C2)},
+            attribute_controller_registers_mixed: VGAMixedRegister::<Unblanked>{data_and_ind_write: KernPointer::<u8>::from_port(0x3C0), control: KernPointer::<u8>::from_port(0x3DA), data_read: KernPointer::<u8>::from_port(0x3C1), p: PhantomData},
+            sequencer_registers: VGARegisterSpace::new(KernPointer::<u8>::from_port(0x3C4)),
+            graphics_controller_registers: VGARegisterSpace::new(KernPointer::<u8>::from_port(0x3CE)),
+            crtc_controller_registers: VGARegisterSpace::new(KernPointer::<u8>::from_port(0x3D4)),
+            dac: VgaDac{
+                dac_mask: KernPointer::<u8>::from_port(0x3C6),
+                dac_data: KernPointer::<u8>::from_port(0x3C9),
+                dac_index_to_read_from: KernPointer::<u8>::from_port(0x3C7),
+                dac_index_to_write_to: KernPointer::<u8>::from_port(0x3C8)
+            },
+            video_ram: KernPointer::<u8>::from_mem(0x0 as *mut u8),
+            p: PhantomData
+        }
+    }
+}
 
 pub struct Vga<T: VgaMode, STATE: MixedRegisterState>{ 
     pub attribute_controller_registers_mixed: VGAMixedRegister<STATE>,
@@ -562,6 +594,12 @@ impl<T: VgaMode + 'static> Vga<T, Blanked>{
                 self.dac.write_bulk( 0, &DEFAULT_PALETTE); // Reset pallette
                 self.load_font(&TEXT_8X16_FONT, 16, 0);
                 self.video_ram = KernPointer::<u8>::from_mem(0xb8000 as *mut u8);
+                return self.typestate_transmute::<U>();
+            }
+            if core::any::TypeId::of::<U>() == core::any::TypeId::of::<Color256>(){
+                self.load_mode_dump(&COLOR_320X200);
+                self.dac.write_bulk( 0, &DEFAULT_PALETTE); // Reset pallette
+                self.video_ram = KernPointer::<u8>::from_mem(0xa0000 as *mut u8);
                 return self.typestate_transmute::<U>();
             }
             panic!("Invalid vga mode requested!");
@@ -656,22 +694,10 @@ impl<STATE: MixedRegisterState> Vga<Text80x25, STATE>{
 }
 
 
-impl X86Default for Vga<UndefinedVgaMode, Unblanked>{
-    unsafe fn x86_default() -> Self {
-        Self{
-            misc_register: VGAMiscOutputRegister{reading: KernPointer::<u8>::from_port(0x3CC), writing: KernPointer::<u8>::from_port(0x3C2)},
-            attribute_controller_registers_mixed: VGAMixedRegister::<Unblanked>{data_and_ind_write: KernPointer::<u8>::from_port(0x3C0), control: KernPointer::<u8>::from_port(0x3DA), data_read: KernPointer::<u8>::from_port(0x3C1), p: PhantomData},
-            sequencer_registers: VGARegisterSpace::new(KernPointer::<u8>::from_port(0x3C4)),
-            graphics_controller_registers: VGARegisterSpace::new(KernPointer::<u8>::from_port(0x3CE)),
-            crtc_controller_registers: VGARegisterSpace::new(KernPointer::<u8>::from_port(0x3D4)),
-            dac: VgaDac{
-                dac_mask: KernPointer::<u8>::from_port(0x3C6),
-                dac_data: KernPointer::<u8>::from_port(0x3C9),
-                dac_index_to_read_from: KernPointer::<u8>::from_port(0x3C7),
-                dac_index_to_write_to: KernPointer::<u8>::from_port(0x3C8)
-            },
-            video_ram: KernPointer::<u8>::from_mem(0x0 as *mut u8),
-            p: PhantomData
-        }
+impl<STATE: MixedRegisterState> Vga<Color256, STATE>{
+    pub unsafe fn write(&mut self, x: usize, y: usize, pixel_color: u8){
+            let vram: KernPointer::<u8> = core::mem::transmute(self.video_ram);
+            vram.offset((y*320+x) as isize).write(pixel_color);
     }
 }
+

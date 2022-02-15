@@ -235,7 +235,7 @@ impl<'a, STATE: MixedRegisterState> Vga80x25Terminal<'a, STATE>{
 // reg1 and reg2 are used for multiboot
 #[no_mangle]
 pub extern "C" fn main(r1: u32, r2: u32) -> ! {
-    multiboot::init(r1, r2);
+     multiboot::init(r1, r2);
     let mut uart = unsafe { uart_16550::UARTDevice::x86_default() };
     uart.init();
     kprintln("Hello, world!", &mut uart);
