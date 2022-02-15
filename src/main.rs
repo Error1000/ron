@@ -1,16 +1,12 @@
 #![no_std]
 #![no_main]
 #![feature(bench_black_box)]
-#![feature(asm)]
 
 use hio::KeyboardPacketType;
 use ps2_8042::SpecialKeys;
 use uart_16550::UARTDevice;
-use vga::{MixedRegisterState, Text80x25, Unblanked, Vga, VgaMode};
-use core::arch::asm;
-use core::convert::TryInto;
-use core::convert::TryFrom;
-use core::ffi::c_void;
+use vga::{MixedRegisterState, Text80x25, Unblanked, Vga};
+use core::{arch::asm, mem::{uninitialized, MaybeUninit}, ffi};
 
 macro_rules! wait_for {
   ($cond:expr) => {
@@ -20,16 +16,18 @@ macro_rules! wait_for {
 
 trait X86Default { unsafe fn x86_default() -> Self; }
 
+
+#[panic_handler]
+fn panic(_p: &::core::panic::PanicInfo) -> ! { loop {} }
+
+
+mod multiboot;
 mod ps2_8042;
 mod uart_16550;
 mod vga;
 mod virtmem;
 mod hio;
 mod ata;
-
-#[panic_handler]
-fn panic(_p: &::core::panic::PanicInfo) -> ! { loop {} }
-
 
 // Can't be bothered to make smart implementations
 // I'm just gonna let the compiler babysit me for now
@@ -86,6 +84,13 @@ fn kprint_u16(data: u16, uart: &mut UARTDevice){
     let buf = u16_to_str_hex(data);
     kprint("0x", uart);
     kprint(unsafe{ from_utf8_unchecked(&buf)}, uart);
+    kprint(" ", uart);
+}
+
+fn kprint_u32(data: u32, uart: &mut UARTDevice){
+    kprint("0x", uart);
+    kprint(unsafe{ from_utf8_unchecked(&u16_to_str_hex(((data >> 16) & 0xfff) as u16))}, uart);
+    kprint(unsafe{ from_utf8_unchecked(&u16_to_str_hex((data & 0xffff) as u16))}, uart);
     kprint(" ", uart);
 }
 
@@ -227,30 +232,10 @@ impl<'a, STATE: MixedRegisterState> Vga80x25Terminal<'a, STATE>{
 }
 
 
-// Multiboot
-
-const MULTIBOOT_MAGIC: u32 = 0x1badb002;
-const MULTIBOOT_FLAGS: u32 = 0x00000000;
-
+// reg1 and reg2 are used for multiboot
 #[no_mangle]
-pub static multiboot_header: [u32; 3] = [
-    MULTIBOOT_MAGIC,
-    MULTIBOOT_FLAGS,
-    (-((MULTIBOOT_MAGIC + MULTIBOOT_FLAGS) as i32)) as u32,
-    // Exec info ( omitted because i use elf )
-    //	0, 0, 0, 0, 0,
-    // Graphics request omitted because it is not guaranteed
-    //	0, 0, 0, 0
-];
-
-// EAX and EBX are used for multiboot
-#[no_mangle]
-pub extern "C" fn main(eax: u32, _ebx: u32) -> ! {
-    // Why yes rust i do need the statics i declared, please don't optimise them out of the executable
-    core::hint::black_box(core::convert::identity(multiboot_header.as_ptr()));
-    if eax != 0x2BADB002 { panic!("Kernel was not booted by a multiboot-compatible bootloader! ") }
-    // let m: &MultibootInfo = unsafe{&*(ebx as *const MultibootInfo)};
-
+pub extern "C" fn main(r1: u32, r2: u32) -> ! {
+    multiboot::init(r1, r2);
     let mut uart = unsafe { uart_16550::UARTDevice::x86_default() };
     uart.init();
     kprintln("Hello, world!", &mut uart);
@@ -268,7 +253,7 @@ pub extern "C" fn main(eax: u32, _ebx: u32) -> ! {
 
 
     kprintln("If you see this then that means the vga subsystem didn't instantly crash the kernel :)", &mut uart);
-
+    /*
     // Temporary ATA code to test ata driver
     // NOTE: master device is not necessarilly the device from which the os was booted
     let mut ata_bus = unsafe{ ata::ATABus::x86_default() };
@@ -305,7 +290,7 @@ pub extern "C" fn main(eax: u32, _ebx: u32) -> ! {
         }
     }
     //////////
-
+*/
     let mut ps2 = unsafe { ps2_8042::PS2Device::x86_default() };
 
     "# ".chars().for_each(|c| unsafe { term.write_char(c); });
