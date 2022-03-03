@@ -33,36 +33,45 @@ kernel_stack_size = 16384
 .section .data
 	.align 4, 0
 	gdtr:
-		.word 3*8-1
+		.word 4*8-1
 		.long gdt
 
 	.align 4, 0
 	gdt:
 		# Entry 0
-		.hword 0 # Segment Limit 
-		.hword 0 # Base Address
-		.hword 0 # Bade Address cont. + type
-		.hword 0 # Base Address cont. + Segment Limit cont. + type cont.
+		.hword 0
+		.hword 0
+		.hword 0 
+		.hword 0 
+
+		# Another empty entry because of UEFI
+		.hword 0
+		.hword 0
+		.hword 0 
+		.hword 0 
 
 		# Code Segment (cs) entry
-		.hword 0xffff
-		.hword 0x0000
-		.hword ((0b10011010  << 8) | 0b00000000 )
-			#P DPL S Type(1 CRA) base address cont.
-		.hword ((0b00000000 << 8 ) | 0b11001111 )
-			#base address cont.    G D ? ? segment limit cont.
+		.hword 0xffff # limit
+		
+		.hword 0x0000 # base
+		.byte 0b00000000 # base
+
+		.byte 0b10011010 # access byte
+		.byte 0b11111100; # limit cont. ( 4bits ) and flags ( 4bits )
+		.byte 0b00000000 # base cont.
 
 		# Data Segment (ds) entry
-		.hword 0xffff
-		.hword 0x0000
-		.hword ((0b10010010 << 8) | 0b00000000 )
-			# P DPL S Type(0 EWA) base address cont.
-		.hword ((0b00000000 << 8) | 0b11001111 )
-			# base address cont.  G D/B ? ? segment limit cont.
+		.hword 0xffff # limit
+		
+		.hword 0x0000 # base
+		.byte 0b00000000 # base
+
+		.byte 0b10010010 # access byte
+		.byte 0b11111100 # limit cont. ( 4bits ) and flags ( 4bits )
+		.byte 0b00000000 # base cont.
 
 .section .text
 	.extern main
-.code32
 _start:
 	cli # disable interrupts
 	cld # clear direction
@@ -72,14 +81,14 @@ load_gdt:
 	lgdt [gdtr]
 
 	# Load segment registers
-	mov ecx, 0x10
+	mov ecx, 8*3
 	mov ss, ecx
 	mov ds, ecx
 	mov es, ecx
 	mov gs, ecx
 	mov fs, ecx
-	ljmp 0x8, finish_gdt
-finish_gdt: # Only the finest gdt finland can offer
+	ljmp 8*2, finish_gdt # setting cs
+finish_gdt: # Only the finest gdt finland can offer :P
 	
 	# Set up stack
 	mov esp, OFFSET kernel_stack+kernel_stack_size-1
@@ -123,7 +132,7 @@ setup_paging:
 enable_pae:
         # Enable Physical Address Extension
         mov eax, cr4
-        or eax, 1 << 5
+        or ax, 1 << 5
         mov cr4, eax
 enable_paging:
 	# Put a pointer to the Page-Directory-Pointer(a.k.a l3_pt) into cr3

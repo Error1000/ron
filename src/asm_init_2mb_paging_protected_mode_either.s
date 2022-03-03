@@ -36,38 +36,44 @@ kernel_stack_size = 16384
 .section .data
 	.align 4, 0
 	gdtr:
-		.word 3*8-1
+		.hword 4*8-1
 		.long gdt
 
 	.align 4, 0
 	gdt:
 		# Entry 0
-		.hword 0 # Segment Limit 
-		.hword 0 # Base Address
-		.hword 0 # Bade Address cont. + type
-		.hword 0 # Base Address cont. + Segment Limit cont. + type cont.
+		.hword 0
+		.hword 0
+		.hword 0 
+		.hword 0 
+
+		# Another empty entry becaue of UEFI
+		.hword 0
+		.hword 0
+		.hword 0
+		.hword 0
 
 		# Code Segment (cs) entry
-		.hword 0xffff
-		.hword 0x0000
-		.hword ((0b10011010  << 8) | 0b00000000 )
-		    	#P DPL S Type(1 CRA) base address cont.
-		.hword ((0b00000000 << 8 ) | 0b11001111 )
-			#base address cont.    G D ? ? segment limit cont.
+		.hword 0xffff # limit
+		
+		.hword 0x0000 # base
+		.byte 0b00000000 # base
+
+		.byte 0b10011010 # access byte
+		.byte 0b11001111 # limit cont. ( 4bits ) and flags ( 4bits )
+		.byte 0b00000000 # base cont.
 
 		# Data Segment (ds) entry
-		.hword 0xffff
-		.hword 0x0000
-		.hword ((0b10010010 << 8) | 0b00000000 )
-			# P DPL S Type(0 EWA) base address cont.
-		.hword ((0b00000000 << 8) | 0b11001111 )
-			# base address cont.  G D/B ? ? segment limit cont.
+		.hword 0xffff # limit
+		
+		.hword 0x0000 # base
+		.byte 0b00000000 # base
 
-# We need to:
-# 1. Take care of interrupts X ( we just disable them for now )
-# 2. Take care of the stack X   ( easy? )
-# 3. Take care of the gdt	( needed )
-# 4. Take care of paging X ( we just identity map the first 2mb ) ( optional ? )
+		.byte 0b10010010 # access byte
+		.byte 0b11001111 # limit cont. ( 4bits ) and flags ( 4bits )
+		.byte 0b00000000 # base cont.
+
+
 .section .text
 	.extern main
 .code32
@@ -80,18 +86,17 @@ load_gdt:
 	lgdt [gdtr]
 
 	# Load segment registers
-	mov ecx, 0x10
+	mov ecx, 8*3 # offset to data segment
 	mov ss, ecx
 	mov ds, ecx
 	mov es, ecx
 	mov gs, ecx
 	mov fs, ecx
-	ljmp 0x8, finish_gdt
-finish_gdt: # Only the finest gdt finland can offer
+	ljmp 8*2, finish_gdt # setting cs
+finish_gdt: # Only the finest gdt finland can offer :P
 
 	# Set up stack
 	mov esp, OFFSET kernel_stack+kernel_stack_size-1
-
 	# Save multiboot values, these will also be the arguments to the main function
 	push ebx
 	push eax
@@ -103,6 +108,8 @@ setup_paging:
 	# All 4*1 gb page directories
 	DEFAULT_L3_ENTRY = 1 # Just the present bit(bit 0), *NOT* the cache disable bit(bit 4) and *NOT* the write through bit(bit 3) 
 
+	# NOTE: Yes i knwo the entry is 64-bits, but this should be fine
+	# because the address is only 32 bits i can effectively ignore the last 32 bits of the entry
 	mov eax, DEFAULT_L3_ENTRY	# According to the AMD64 manual section 5.4, only the address bits *above* bit 11 are stored in the address field of the entery specifed at section 5.2 page 139
 	or eax, OFFSET l2_pt_1
 	mov dword ptr [l3_pt], eax
@@ -128,25 +135,29 @@ setup_paging:
 		mov eax, DEFAULT_L2_ENTRY
 		shl ebx, 21
 		or eax, ebx
-		shr ebx, 18
+		shr ebx, 21-3
+
 		mov dword ptr [l2_pt_1+ebx], eax
+
 		add eax, (512 << 21) # offset of 512 pages between l2 page tables
 		mov dword ptr [l2_pt_2+ebx], eax
+
 		add eax, (512 << 21)
 		mov dword ptr [l2_pt_3+ebx], eax
+
 		add eax, (512 << 21)
 		mov dword ptr [l2_pt_4+ebx], eax
+
 		shr ebx, 3
 		inc ebx
 		cmp ebx, 512
 	jl l2_loop
 
 	# Level 1 table ( page table ), are not used in legacy 2mb PAE paging
-
 enable_pae:
     # Enable Physical Address Extension
     mov eax, cr4
-    or eax, 1 << 5
+    or ax, 1 << 5
     mov cr4, eax
 
 enable_paging:
@@ -155,7 +166,7 @@ enable_paging:
 	# PCD(Page-Level Cache Disable)/ bit 4 = 0, we want cache :)
 	# PWT(Page-Level Write Through)/ bit 3 = 0, a.k.a writeback policy which means on unexpected system shutdown, if the caches do not get flushed info might be lost
 	mov cr3, eax
-	
+
 	# Enable paging
 	mov eax, cr0
     or eax, (1 << 31)

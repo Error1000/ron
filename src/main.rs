@@ -1,12 +1,14 @@
 #![no_std]
 #![no_main]
 #![feature(bench_black_box)]
+#![feature(abi_efiapi)]
 
+use efi::{EfiGop, EfiBootServices, EfiGopMode};
 use hio::KeyboardPacketType;
 use ps2_8042::SpecialKeys;
 use uart_16550::UARTDevice;
 use vga::{MixedRegisterState, Text80x25, Unblanked, Vga};
-use core::{arch::asm, mem::{uninitialized, MaybeUninit}, ffi};
+use core::{arch::asm, mem::{uninitialized, MaybeUninit}, ffi, ptr};
 
 macro_rules! wait_for {
   ($cond:expr) => {
@@ -18,7 +20,10 @@ trait X86Default { unsafe fn x86_default() -> Self; }
 
 
 #[panic_handler]
-fn panic(_p: &::core::panic::PanicInfo) -> ! { loop {} }
+fn panic(_p: &::core::panic::PanicInfo) -> ! { 
+    unsafe{ asm!("cli"); }
+    loop { unsafe { asm!("hlt"); } }
+}
 
 
 mod multiboot;
@@ -28,6 +33,7 @@ mod vga;
 mod virtmem;
 mod hio;
 mod ata;
+mod efi;
 
 // Can't be bothered to make smart implementations
 // I'm just gonna let the compiler babysit me for now
@@ -89,9 +95,23 @@ fn kprint_u16(data: u16, uart: &mut UARTDevice){
 
 fn kprint_u32(data: u32, uart: &mut UARTDevice){
     kprint("0x", uart);
-    kprint(unsafe{ from_utf8_unchecked(&u16_to_str_hex(((data >> 16) & 0xfff) as u16))}, uart);
+    kprint(unsafe{ from_utf8_unchecked(&u16_to_str_hex(((data >> 16) & 0xffff) as u16))}, uart);
     kprint(unsafe{ from_utf8_unchecked(&u16_to_str_hex((data & 0xffff) as u16))}, uart);
     kprint(" ", uart);
+}
+
+fn kprint_u64(data: u64, uart: &mut UARTDevice){
+    kprint("0x", uart);
+    kprint(unsafe{ from_utf8_unchecked(&u16_to_str_hex(((data >> 48) & 0xffff) as u16))}, uart);
+    kprint(unsafe{ from_utf8_unchecked(&u16_to_str_hex(((data >> 32) & 0xffff) as u16))}, uart);
+    kprint(unsafe{ from_utf8_unchecked(&u16_to_str_hex(((data >> 16) & 0xffff) as u16))}, uart);
+    kprint(unsafe{ from_utf8_unchecked(&u16_to_str_hex((data & 0xffff) as u16))}, uart);
+    kprint(" ", uart);
+}
+
+fn kprint_dump<T>(ptr: *const T, bytes: usize, uart: &mut UARTDevice){
+    let arr = unsafe{core::slice::from_raw_parts(core::mem::transmute::<_, *mut u32>(ptr), bytes/core::mem::size_of::<u32>())};
+    for e in arr{ kprint_u32(*e, uart); }  
 }
 
 fn clear_screen(vga: &mut Vga<Text80x25, Unblanked>){
@@ -235,10 +255,80 @@ impl<'a, STATE: MixedRegisterState> Vga80x25Terminal<'a, STATE>{
 // reg1 and reg2 are used for multiboot
 #[no_mangle]
 pub extern "C" fn main(r1: u32, r2: u32) -> ! {
-     multiboot::init(r1, r2);
+    let multiboot_data= multiboot::init(r1 as usize, r2 as usize);
+
     let mut uart = unsafe { uart_16550::UARTDevice::x86_default() };
     uart.init();
     kprintln("Hello, world!", &mut uart);
+
+    
+    let mut efi_system_table_ptr = 0usize;
+    let mut i = 0;
+    loop{
+        let id = multiboot_data[i];
+        let mut len = multiboot_data[i+1];
+        if len%8 != 0 { len += 8-len%8; }
+        len /= core::mem::size_of::<u32>() as u32;
+        if id == 0 && len == 2 { break; }
+
+        if id == 0xB || id == 0xC {
+            for j in i+2..i+2+(core::mem::size_of::<usize>()/core::mem::size_of::<u32>()){
+                efi_system_table_ptr |= (multiboot_data[j] as usize) << ((j-i-2)*32); // assumes little endian
+            }
+        }
+        i += len as usize;
+    }
+    if efi_system_table_ptr != 0 {
+    let efi_table = unsafe{&*core::mem::transmute::<_, *mut efi::EfiSystemTable>(efi_system_table_ptr)};
+    if unsafe{core::mem::transmute::<_, *const ffi::c_void>(&*efi_table.boot_services)} != ptr::null() {
+    //  gnu-efi, inc/efiprot.h, line 840 { 0x9042a9de, 0x23dc, 0x4a38, {0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a } }
+    // Rando internet forum: 0deh, 0a9h, 42h,90h,0dch,023h,38h,04ah,96h,0fbh,7ah,0deh,0d0h,80h,51h,6ah
+    kprint_dump(efi_table.boot_services, 0xc8, &mut uart);
+
+    let mut gop: *const efi::EfiGop = ptr::null();
+    kprintln("", &mut uart);
+    let res =  (efi_table.boot_services.locate_protocol)(&0xdea94290dc23384a96fb7aded080516a_u128.to_be(), ptr::null(), &mut gop);
+    if (res as isize) < 0{ kprint("BAD EFI!", &mut uart); panic!(); }
+
+    kprint("\nGOP ptr: ", &mut uart);
+    kprint_u32(unsafe{core::mem::transmute::<_, usize>(gop)} as u32, &mut uart);
+    kprint("\n", &mut uart);
+    let gop = unsafe{&*gop};
+  
+    let mut info: *const efi::EfiGopModeInfo = ptr::null();
+    let mut size_of_info: usize = 0;
+    let mut num_modes: usize = 0;
+    let mut native_mode: usize = 0;
+    
+    let res = (gop.query_mode)(&gop, if gop.mode as *const EfiGopMode == ptr::null() {0} else {gop.mode.mode}, &mut size_of_info, &mut info );
+    if (res as isize) == -19 /* EFI_NOT_STARTED */ {
+        (gop.set_mode)(&gop, 0);
+    } else if (res as isize) < 0{ kprint("BAD EFI!", &mut uart); panic!(); }
+    else{
+        native_mode = gop.mode.mode as usize;
+        num_modes = gop.mode.max_mode as usize;
+    }
+    
+/*
+   for i in 0..num_modes{
+       (gop.query_mode)(&gop, i as u32, &mut size_of_info, &mut info);
+       kprintln("Found GOP mode: ", &mut uart);
+       kprint("Horizontal res: ", &mut uart);
+       kprint_u32(unsafe{&*info}.horz_res, &mut uart);
+       kprintln("", &mut uart);
+       kprint("Vertical res: ", &mut uart);
+       kprint_u32(unsafe{&*info}.vert_res, &mut uart);
+       kprintln("", &mut uart);
+       kprintln("", &mut uart);
+   }*/
+
+   (gop.set_mode)(&gop, 2);
+   kprint_u32(gop.mode.framebuffer_base as u32, &mut uart);
+   let fb = unsafe{core::slice::from_raw_parts_mut(gop.mode.framebuffer_base as *mut u32, 640*480*4)};
+   for i in 0..=gop.mode.info.pix_per_scan_line*gop.mode.info.vert_res{fb[i as usize] =0x00_FF_00_00}
+   loop{}
+    }
+   }
 
     let vga = unsafe { Vga::x86_default() };
 
@@ -290,7 +380,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         }
     }
     //////////
-*/
+    */
     let mut ps2 = unsafe { ps2_8042::PS2Device::x86_default() };
 
     "# ".chars().for_each(|c| unsafe { term.write_char(c); });
@@ -367,6 +457,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         let s = "It's now safe to turn off your computer!";
         s.chars().enumerate().for_each(|(ind, c)|vga.write_char(ind+80/2-s.len()/2, 25/2-1/2, c as u8, 0x0E));
     }
+    
     unsafe{ asm!("cli"); }
     loop { unsafe { asm!("hlt"); } }
 }

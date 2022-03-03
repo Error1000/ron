@@ -1,6 +1,6 @@
 fn main() {
     cc::Build::new()
-        .file("src/asm_init_2mb_paging.s")
+        .file("src/asm_init_1gb_paging_long_mode_uefi.s")
         .compile("init_asm");
     for arg in &[
         "-ffreestanding", 
@@ -8,8 +8,7 @@ fn main() {
         "-nodefaultlibs",  // no c default libs
         "-static", // all static because kernels cannot easily be loaded dynamicly
         "-Tlink.x", // linker script
-        "-m32", // set bit width
-    ] {
+        ] {
         println!("cargo:rustc-link-arg={}", arg);
     }
 }
