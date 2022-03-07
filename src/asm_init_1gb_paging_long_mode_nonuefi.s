@@ -1,7 +1,7 @@
 .intel_syntax noprefix
 .global _start
 
-kernel_stack_size = 16384
+kernel_stack_size = 2097152
 .section .bss
 	.lcomm kernel_stack, kernel_stack_size
 

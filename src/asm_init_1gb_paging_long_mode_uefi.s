@@ -1,7 +1,7 @@
 .intel_syntax noprefix
 .global _start
 
-kernel_stack_size = 16384
+kernel_stack_size = 2097152
 .section .bss
 	.lcomm kernel_stack, kernel_stack_size
 	# tables must be page aligned
@@ -38,7 +38,7 @@ _start:
 setup_paging:
 	DEFAULT_L4_ENTRY = 0b111
 
-	mov rax, OFFSET l3_pt_1 # address is 12 bit alignd ( the last 12 bits will be 0's anyways so no point in shifing it to the left and then back)
+    mov rax, OFFSET l3_pt_1 # address is 12 bit alignd ( the last 12 bits will be 0's anyways so no point in shifing it to the left and then back)
 	or ax, DEFAULT_L4_ENTRY
 	mov dword [l4_pt-4], rax
 
@@ -59,11 +59,12 @@ setup_paging:
 	jl l3_loop
 
 enable_paging:
+# FIXME: Crashes on real hardware
 	# Put a pointer to the Page-Directory-Pointer(a.k.a l4_pt) into cr3
-	mov rax, OFFSET l4_pt
+#	mov rax, OFFSET l4_pt
 	# PCD(Page-Level Cache Disable)/ bit 4 = 0, we want cache :)
 	# PWT(Page-Level Write Through)/ bit 3 = 0, a.k.a writeback policy which means on unexpected system shutdown, if the caches do not get flushed info might be lost
-	mov cr3, rax
+#	mov cr3, rax
 
 enable_simd:
 	mov rax, cr0
