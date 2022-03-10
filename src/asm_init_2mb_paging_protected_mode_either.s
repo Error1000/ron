@@ -1,7 +1,7 @@
 .intel_syntax noprefix
 .global _start
 
-kernel_stack_size = 4096
+kernel_stack_size = 8*1024
 .section .bss
 	# tables must be page aligned
 	# Modes that we are interested in: Protected/Compatibility, 64-bit(long mode), 

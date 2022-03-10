@@ -1,6 +1,33 @@
 use core::{sync::atomic::AtomicBool, cell::UnsafeCell};
 use core::ops::{Deref, DerefMut};
 
+pub struct LazyInitialised<T>{
+    inner: Option<T>
+}
+
+impl<T> LazyInitialised<T>{
+    pub const fn new() -> Self{
+        Self{inner: None}
+    }
+
+    pub fn set(&mut self, val: T){
+        self.inner = Some(val);
+    }
+}
+impl<T> Deref for LazyInitialised<T>{
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner.as_ref().expect("Value should be initialised!")
+    }
+}
+
+impl<T> DerefMut for LazyInitialised<T>{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.inner.as_mut().expect("Value should be initialised!")
+    }
+}
+
 pub struct MutexGuard<'lock_lifetime, T>{
     lock_ref: &'lock_lifetime AtomicBool,
     inner_ref: &'lock_lifetime mut T

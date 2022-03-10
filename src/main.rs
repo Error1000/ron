@@ -5,12 +5,14 @@
 #![feature(default_alloc_error_handler)]
 #![feature(const_fn_trait_bound)]
 #![feature(const_ptr_offset)]
+#![feature(lang_items)]
 
 extern crate alloc;
 
+
 use alloc::boxed::Box;
-use primitives::Mutex;
-use virtmem::KernPointer;
+use alloc::string::String;
+use primitives::{Mutex, LazyInitialised};
 
 use crate::alloc::vec::Vec;
 use crate::char_device::CharDevice;
@@ -19,7 +21,6 @@ use crate::hio::KeyboardPacketType;
 use crate::ps2_8042::SpecialKeys;
 use crate::uart_16550::UARTDevice;
 use crate::vga::Vga;
-use core::arch::asm;
 
 macro_rules! wait_for {
   ($cond:expr) => {
@@ -32,10 +33,16 @@ trait X86Default { unsafe fn x86_default() -> Self; }
 
 
 #[panic_handler]
-fn panic(_p: &::core::panic::PanicInfo) -> ! { 
-    kprintln("Panic!", &mut UART.lock());
-    unsafe{ asm!("cli"); }
-    loop { unsafe { asm!("hlt"); } }
+fn panic(p: &::core::panic::PanicInfo) -> ! { 
+    let mut s = String::new();
+    use core::fmt::Write;
+    kprintln("", &mut UART.lock());
+    if write!(s, "Ron {}", p).is_err(){
+        kprintln("Bad panic, panic info cannot be formatted correctly, maybe OOM?", &mut UART.lock());
+    }else{
+        kprintln(&s, &mut UART.lock());
+    }
+    loop{}
 }
 
 
@@ -127,7 +134,8 @@ pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mu
     dest
 }
 
-pub static UART: Mutex<UARTDevice> = Mutex::from(unsafe{ UARTDevice::empty() } );
+
+pub static UART: Mutex<LazyInitialised<UARTDevice>> = Mutex::from(LazyInitialised::new());
 
 fn kprint(s: &str, uart: &mut UARTDevice) {
     s.chars().for_each(|c| {
@@ -302,7 +310,7 @@ impl<'a> Terminal<'a>{
 #[no_mangle]
 pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     let multiboot_data= multiboot::init(r1 as usize, r2 as usize);
-    unsafe{ *UART.lock() = UARTDevice::x86_default(); }
+    unsafe{ UART.lock().set(UARTDevice::x86_default()); }
     UART.lock().init();
     kprintln("Hello, world!", &mut UART.lock());
 
@@ -324,15 +332,6 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         i += len as usize;
     }
     allocator::ALLOCATOR.lock().init((1*1024*1024) as *mut u8, 100*1024);
-    let dumb_box = Box::new(42u32);
-   let mut v = Vec::<u32>::new();
-    for i in 0..1000{
-        v.push(i);
-    }
-    drop(v);
-    kprint_u32(*dumb_box, &mut UART.lock());
-   // drop(dumb_box);
-    kprint_u32(allocator::ALLOCATOR.lock().get_heap_size() as u32, &mut UART.lock());
     let vga;
     let mut fb: Option<&mut dyn framebuffer::FrameBuffer>;
     let o;
@@ -353,7 +352,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
 
 
     kprintln("If you see this then that means the framebuffer subsystem didn't instantly crash the kernel :)", &mut UART.lock());
-    /*
+
     // Temporary ATA code to test ata driver
     // NOTE: master device is not necessarilly the device from which the os was booted
     let mut ata_bus = unsafe{ ata::ATABus::x86_default() };
@@ -366,8 +365,8 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
 
         kprint_u16(id_data[61], &mut UART.lock());
         kprint_u16(id_data[60], &mut UART.lock());
-        "Sector count of master device: 0x".chars().for_each(|c|unsafe{term.write_char(c)});
-        u16_to_str_hex(id_data[60]).iter().for_each(|c| unsafe{term.write_char(*c as char)});
+        "Sector count of master device: 0x".chars().for_each(|c|term.write_char(c));
+        u16_to_str_hex(id_data[60]).iter().for_each(|c| term.write_char(*c as char));
         
         kprint_u16(id_data[103], &mut UART.lock());
         kprint_u16(id_data[102], &mut UART.lock());
@@ -376,28 +375,27 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         
         kprintln("Found master device on primary ata bus!", &mut UART.lock())
     }else{
-        "No master device on primary ata bus!\n".chars().for_each(|c|unsafe{term.write_char(c)});
+        "No master device on primary ata bus!\n".chars().for_each(|c|term.write_char(c));
         panic!();
     }
 
-    "\nFirst sector on master device on primary ata bus: \n".chars().for_each(|c|unsafe{term.write_char(c)});
+    "\nFirst sector on master device on primary ata bus: \n".chars().for_each(|c|term.write_char(c));
     // Read first sector
     let sdata = unsafe{ata_bus.read_sector(ata::ATADevice::MASTER, ata::LBA28{low: 0, mid: 0, hi: 0})}.unwrap();
     for e in sdata{
-        unsafe{
         u16_to_str_hex(e).iter().for_each(|c|term.write_char(*c as char));
         term.write_char(' ');
-        }
     }
+    term.write_char('\n');
     //////////
-    */
+    
     let mut ps2 = unsafe { ps2_8042::PS2Device::x86_default() };
 
     "# ".chars().for_each(|c| { term.write_char(c); });
 
     let mut ignore_inc_x: bool; 
     // Basically an ad-hoc ArrayString (arrayvec crate)
-    let mut cmd_buf: [u8; 100] = [b' '; 100]; 
+    let mut cmd_buf: [u8; 80] = [b' '; 80]; 
     let mut buf_ind = 0; // Also length of buf, a.k.a portion of buf used
     'big_loop: loop {
         ignore_inc_x = false;
@@ -470,7 +468,5 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     let s = "It's now safe to turn off your computer!";
     s.chars().enumerate().for_each(|(ind, c)|{fb.write_char(ind+fb.get_cols()/2-s.len()/2, (fb.get_rows()-1)/2, c, Pixel{r: 0xff ,g: 0xff, b: 0x55});});
     
-    
-    unsafe{ asm!("cli"); }
-    loop { unsafe { asm!("hlt"); } }
+    loop{}
 }

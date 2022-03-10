@@ -49,7 +49,7 @@ unsafe fn port_inh(addr: u16) -> u16 {
 
 
 impl<A: AddressSpace, T> Pointer<A, T>{
-    pub const unsafe fn offset(&self, o: isize) -> Self {
+    pub unsafe fn offset(&self, o: isize) -> Self {
         /// FIXME: Does offsetting a port "address" work the same way as offestting a real memory addres?
         Self {
             inner: self.inner.offset(o),
@@ -62,14 +62,14 @@ impl<A: AddressSpace, T> Pointer<A, T>{
 
 impl<A: AddressSpace> Pointer<A, u8> {
     // SAFTEY: Constructors assume address is in correct space
-    pub const unsafe fn from_mem(a: *mut u8) -> Self {
+    pub unsafe fn from_mem(a: *mut u8) -> Self {
         Self {
             inner: a,
             space: PhantomData,
             is_port: false,
         }
     }
-    pub const unsafe fn from_port(p: u16) -> Self {
+    pub unsafe fn from_port(p: u16) -> Self {
         Self {
             inner: p as *mut u8,
             space: PhantomData,

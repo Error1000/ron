@@ -1,7 +1,7 @@
 .intel_syntax noprefix
 .global _start
 
-kernel_stack_size = 4096
+kernel_stack_size = 8*1024
 .section .bss
 	.lcomm kernel_stack, kernel_stack_size
 	# tables must be page aligned
@@ -28,7 +28,7 @@ _start:
 	cld # clear direction
 
 	# Set up stack
-	mov rsp, OFFSET kernel_stack+kernel_stack_size-512
+	mov rsp, OFFSET kernel_stack+kernel_stack_size-1
 	
 	# Save multiboot values, these will also be the arguments to the main function
 	push rbx
