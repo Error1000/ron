@@ -1,4 +1,4 @@
-use crate::{virtmem::{KernPointer, PointerLike}, X86Default};
+use crate::{virtmem::KernPointer, X86Default};
 use packed_struct::prelude::*;
 
 
@@ -100,6 +100,16 @@ struct FIFOControlRegister {
 }
 
 impl UARTDevice {
+    pub const unsafe fn empty() -> Self{
+        Self{
+            data: KernPointer::<u8>::from_mem(core::ptr::null_mut()),
+            int_en: KernPointer::<u8>::from_mem(core::ptr::null_mut()),
+            fifo_ctrl: KernPointer::<u8>::from_mem(core::ptr::null_mut()),
+            line_ctrl: KernPointer::<u8>::from_mem(core::ptr::null_mut()),
+            modem_ctrl: KernPointer::<u8>::from_mem(core::ptr::null_mut()),
+            line_status: KernPointer::<u8>::from_mem(core::ptr::null_mut()),   
+        }
+    }
     pub unsafe fn new(base: KernPointer<u8>) -> Self {
         Self {
             data: base,

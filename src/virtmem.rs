@@ -48,13 +48,9 @@ unsafe fn port_inh(addr: u16) -> u16 {
 }
 
 
-pub trait PointerLike{
-    unsafe fn offset(&self, o: isize) -> Self;
-}
-
-impl<A:AddressSpace, T>  PointerLike for Pointer<A, T>{
-    unsafe fn offset(&self, o: isize) -> Self {
-        /// TODO: Dose offsetting a port "address" work the same way as offestting a real memory addres?
+impl<A: AddressSpace, T> Pointer<A, T>{
+    pub const unsafe fn offset(&self, o: isize) -> Self {
+        /// FIXME: Does offsetting a port "address" work the same way as offestting a real memory addres?
         Self {
             inner: self.inner.offset(o),
             space: PhantomData,
@@ -66,14 +62,14 @@ impl<A:AddressSpace, T>  PointerLike for Pointer<A, T>{
 
 impl<A: AddressSpace> Pointer<A, u8> {
     // SAFTEY: Constructors assume address is in correct space
-    pub unsafe fn from_mem(a: *mut u8) -> Self {
+    pub const unsafe fn from_mem(a: *mut u8) -> Self {
         Self {
             inner: a,
             space: PhantomData,
             is_port: false,
         }
     }
-    pub unsafe fn from_port(p: u16) -> Self {
+    pub const unsafe fn from_port(p: u16) -> Self {
         Self {
             inner: p as *mut u8,
             space: PhantomData,

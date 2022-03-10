@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use crate::{X86Default, virtmem::{KernPointer, PointerLike}};
+use crate::{X86Default, virtmem::KernPointer};
 
 
 pub struct Blanked{}

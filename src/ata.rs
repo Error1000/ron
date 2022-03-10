@@ -1,5 +1,5 @@
 use core::mem;
-use crate::{virtmem::{KernPointer, PointerLike}, X86Default};
+use crate::{virtmem::KernPointer, X86Default};
 
 struct IORegistersLBA28 {
     pub data: KernPointer<u16>,

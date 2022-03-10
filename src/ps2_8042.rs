@@ -1,27 +1,41 @@
 use crate::{X86Default, hio::{KeyboardPacket, KeyboardPacketType}, virtmem::KernPointer};
-use bitflags::bitflags;
 use packed_struct::prelude::*;
 
-bitflags!{
-pub struct SpecialKeys : u16 {
-    const LEFT_SHIFT = 1 << 0;
-    const RIGHT_SHIFT = 1 << 1;
-    const LEFT_ALT = 1 << 2;
-    const RIGHT_ALT = 1 << 3;
-    const LEFT_CTRL = 1 << 4;
-    const RIGHT_CTRL = 1 << 5;
-    const CAPS_LOCK = 1 << 6;
-    const UP_ARROW = 1 << 7;
-    const DOWN_ARROW = 1 << 8;
-    const LEFT_ARROW = 1 << 9;
-    const RIGHT_ARROW = 1 << 10;
-    const ESC = 1 << 11;
+
+#[derive(PackedStruct, Clone, Copy)]
+#[packed_struct(bit_numbering = "lsb0", size_bytes = "2")]
+pub struct SpecialKeys {
+    #[packed_field(bits = "0")]
+    pub LEFT_SHIFT: bool,
+    #[packed_field(bits = "1")]
+    pub RIGHT_SHIFT: bool,
+    #[packed_field(bits = "2")]
+    pub LEFT_ALT: bool,
+    #[packed_field(bits = "3")]
+    pub RIGHT_ALT: bool,
+    #[packed_field(bits = "4")]
+    pub LEFT_CTRL: bool,
+    #[packed_field(bits = "5")]
+    pub RIGHT_CTRL: bool,
+    #[packed_field(bits = "6")]
+    pub CAPS_LOCK: bool,
+    #[packed_field(bits = "7")]
+    pub UP_ARROW: bool,
+    #[packed_field(bits = "8")]
+    pub DOWN_ARROW: bool,
+    #[packed_field(bits = "9")]
+    pub LEFT_ARROW: bool,
+    #[packed_field(bits = "10")]
+    pub RIGHT_ARROW: bool,
+    #[packed_field(bits = "11")]
+    pub ESC: bool,
 }
-}
+
+
 impl SpecialKeys{
-    pub fn any_shift(&self) -> bool { self.contains(SpecialKeys::LEFT_SHIFT) || self.contains(SpecialKeys::RIGHT_SHIFT) }
-    pub fn any_alt(&self) -> bool { self.contains(SpecialKeys::LEFT_ALT) || self.contains(SpecialKeys::RIGHT_ALT) }
-    pub fn any_ctrl(&self) -> bool { self.contains(SpecialKeys::LEFT_CTRL) || self.contains(SpecialKeys::RIGHT_CTRL) }
+    pub fn any_shift(&self) -> bool { self.LEFT_SHIFT || self.RIGHT_SHIFT }
+    pub fn any_alt(&self) -> bool { self.LEFT_ALT || self.RIGHT_ALT }
+    pub fn any_ctrl(&self) -> bool { self.LEFT_CTRL || self.RIGHT_ALT }
 
 }
 
@@ -56,7 +70,7 @@ impl X86Default for PS2Device {
         let mut ps2 = Self {
             data: KernPointer::<u8>::from_port(0x60),
             status_and_command: KernPointer::<u8>::from_port(0x64),
-            special_keys: SpecialKeys::empty()
+            special_keys: SpecialKeys::unpack(&[0, 0]).unwrap()
         };
         wait_for!(!StatusRegister::unpack_from_slice(&[ps2.status_and_command.read()]).unwrap().is_input_buf_full);
         ps2.status_and_command.write(0xA7);
@@ -92,41 +106,41 @@ impl PS2Device {
         let old_special = self.special_keys;
         
         match b {
-            0x2A => self.special_keys |= SpecialKeys::LEFT_SHIFT,
-            0xAA => self.special_keys &= !SpecialKeys::LEFT_SHIFT,
+            0x2A => self.special_keys.LEFT_SHIFT = true,
+            0xAA => self.special_keys.LEFT_SHIFT = false,
 
-            0x36 => self.special_keys |= SpecialKeys::RIGHT_SHIFT,
-            0xB6 => self.special_keys &= !SpecialKeys::RIGHT_SHIFT,
+            0x36 => self.special_keys.RIGHT_SHIFT = true,
+            0xB6 => self.special_keys.RIGHT_SHIFT = false,
 
-            0x1D if !multibyte => self.special_keys |= SpecialKeys::LEFT_CTRL,
-            0x9D if !multibyte => self.special_keys &= !SpecialKeys::LEFT_CTRL,
+            0x1D if !multibyte => self.special_keys.LEFT_CTRL = true,
+            0x9D if !multibyte => self.special_keys.LEFT_CTRL = false,
 
-            0x1D if multibyte => self.special_keys |= SpecialKeys::RIGHT_CTRL,
-            0x9D if multibyte => self.special_keys &= !SpecialKeys::RIGHT_CTRL,
+            0x1D if multibyte => self.special_keys.RIGHT_CTRL = true,
+            0x9D if multibyte => self.special_keys.RIGHT_CTRL = false,
 
-            0x38 if !multibyte => self.special_keys |= SpecialKeys::LEFT_ALT,
-            0xB8 if !multibyte => self.special_keys &= !SpecialKeys::LEFT_ALT,
+            0x38 if !multibyte => self.special_keys.LEFT_ALT = true,
+            0xB8 if !multibyte => self.special_keys.LEFT_ALT = false,
 
-            0x38 if multibyte => self.special_keys |= SpecialKeys::RIGHT_ALT,
-            0xB8 if multibyte => self.special_keys &= !SpecialKeys::RIGHT_ALT,
+            0x38 if multibyte => self.special_keys.RIGHT_ALT = true,
+            0xB8 if multibyte => self.special_keys.RIGHT_ALT = false,
 
-            0x3A => self.special_keys |= SpecialKeys::CAPS_LOCK,
-            0xBA => self.special_keys &= !SpecialKeys::CAPS_LOCK,
+            0x3A => self.special_keys.CAPS_LOCK = true,
+            0xBA => self.special_keys.CAPS_LOCK = false,
             
-            0x48 => self.special_keys |= SpecialKeys::UP_ARROW,
-            0xC8 => self.special_keys &= !SpecialKeys::UP_ARROW,
+            0x48 => self.special_keys.UP_ARROW = true,
+            0xC8 => self.special_keys.UP_ARROW = false,
 
-            0x50 => self.special_keys |= SpecialKeys::DOWN_ARROW,
-            0xD0 => self.special_keys &= !SpecialKeys::DOWN_ARROW,
+            0x50 => self.special_keys.DOWN_ARROW = true,
+            0xD0 => self.special_keys.DOWN_ARROW = false,
 
-            0x4D => self.special_keys |= SpecialKeys::RIGHT_ARROW,
-            0xCD => self.special_keys &= !SpecialKeys::RIGHT_ARROW,
+            0x4D => self.special_keys.RIGHT_ARROW = true,
+            0xCD => self.special_keys.RIGHT_ARROW = false,
 
-            0x4B => self.special_keys |= SpecialKeys::LEFT_ARROW,
-            0xCB => self.special_keys &= !SpecialKeys::LEFT_ARROW,
+            0x4B => self.special_keys.LEFT_ARROW = true,
+            0xCB => self.special_keys.LEFT_ARROW = false,
 
-            0x01 => self.special_keys |= SpecialKeys::ESC,
-            0x81 => self.special_keys &= !SpecialKeys::ESC,
+            0x01 => self.special_keys.ESC = true,
+            0x81 => self.special_keys.ESC = false,
 
             _ => {},
         }

@@ -2,14 +2,24 @@
 #![no_main]
 #![feature(bench_black_box)]
 #![feature(abi_efiapi)]
+#![feature(default_alloc_error_handler)]
+#![feature(const_fn_trait_bound)]
+#![feature(const_ptr_offset)]
 
-use char_device::CharDevice;
-use framebuffer::{FrameBuffer, Pixel};
-use hio::KeyboardPacketType;
-use ps2_8042::SpecialKeys;
-use uart_16550::UARTDevice;
-use vga::Vga;
-use core::{arch::asm};
+extern crate alloc;
+
+use alloc::boxed::Box;
+use primitives::Mutex;
+use virtmem::KernPointer;
+
+use crate::alloc::vec::Vec;
+use crate::char_device::CharDevice;
+use crate::framebuffer::{FrameBuffer, Pixel};
+use crate::hio::KeyboardPacketType;
+use crate::ps2_8042::SpecialKeys;
+use crate::uart_16550::UARTDevice;
+use crate::vga::Vga;
+use core::arch::asm;
 
 macro_rules! wait_for {
   ($cond:expr) => {
@@ -17,11 +27,13 @@ macro_rules! wait_for {
   };
 }
 
+
 trait X86Default { unsafe fn x86_default() -> Self; }
 
 
 #[panic_handler]
 fn panic(_p: &::core::panic::PanicInfo) -> ! { 
+    kprintln("Panic!", &mut UART.lock());
     unsafe{ asm!("cli"); }
     loop { unsafe { asm!("hlt"); } }
 }
@@ -37,7 +49,8 @@ mod ata;
 mod efi;
 mod framebuffer;
 mod char_device;
-
+mod allocator;
+mod primitives;
 
 #[no_mangle]
 pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
@@ -55,23 +68,23 @@ pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn memcmp(str1: *const u8, str2: *const u8, n: usize) -> i32 {
-    let str1_size = str1 as *mut usize;
-    let str2_size = str2 as *mut usize;
+pub unsafe extern "C" fn memcmp(ptr1: *const u8, ptr2: *const u8, n: usize) -> i32 {
+    let ptr1_size = ptr1 as *mut usize;
+    let ptr2_size = ptr2 as *mut usize;
     let n_size = n/core::mem::size_of::<usize>();
     let mut ineq_i = 0;
     let mut eq: bool = true;
     for i in 0..n_size {
-        if *str1_size.offset(i as isize) != *str2_size.offset(i as isize) { 
+        if *ptr1_size.add(i) != *ptr2_size.add(i) { 
             eq = false; 
             for subi in i*core::mem::size_of::<usize>()..(i+1)*core::mem::size_of::<usize>(){
-                if *str1.offset(i as isize) != *str2.offset(i as isize){ineq_i = subi; break; }
+                if *ptr1.add(i) != *ptr2.add(i){ineq_i = subi; break; }
             } 
             break; 
         } 
     }
-    for i in n_size*core::mem::size_of::<usize>() .. n {if *str1.offset(i as isize) != *str2.offset(i as isize){ eq = false; ineq_i = i; break; } }
-    if eq { return 0; }else { return *str1.offset(ineq_i as isize) as i32 - *str2.offset(ineq_i as isize) as i32; }
+    for i in n_size*core::mem::size_of::<usize>() .. n {if *ptr1.offset(i as isize) != *ptr2.offset(i as isize){ eq = false; ineq_i = i; break; } }
+    if eq { return 0; }else { return *ptr1.add(ineq_i) as i32 - *ptr2.add(ineq_i) as i32; }
 }
 
 #[no_mangle]
@@ -94,11 +107,27 @@ pub unsafe extern "C" fn memset(dest: *mut u8, c: isize, n: usize) -> *mut u8 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn bcmp(str1: *const u8, str2: *const u8, n: usize) -> i32 {
+pub unsafe extern "C" fn bcmp(ptr1: *const u8, ptr2: *const u8, n: usize) -> i32 {
     if n == 0 { return 0; }
-    memcmp(str1, str2, n)
+    memcmp(ptr1, ptr2, n)
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut u8{
+    if (dest as *const u8) == src { return dest; }
+    let src_range = src..src.add(n);
+    let has_overlap =  src_range.contains(&(dest as *const u8)) || src_range.contains(&(dest.add(n) as *const u8));
+    if !has_overlap{
+        memcpy(dest, src, n);
+    } else if (dest as *const u8) < src{
+        for i in 0..n{*dest.add(i) = *src.add(i); }
+    } else if (dest as *const u8) > src{
+        for i in (0..n).rev(){*dest.add(i) = *src.add(i); }
+    }
+    dest
+}
+
+pub static UART: Mutex<UARTDevice> = Mutex::from(unsafe{ UARTDevice::empty() } );
 
 fn kprint(s: &str, uart: &mut UARTDevice) {
     s.chars().for_each(|c| {
@@ -183,7 +212,6 @@ pub const unsafe fn from_utf8_unchecked(v: &[u8]) -> &str {
 struct Terminal<'a>{
     fb: &'a mut dyn FrameBuffer,
     cursor_pos: (usize, usize),
-    char_buf: [char; 100*100], //FIXME: Should replace with a dynamic array(vector)
     cursor_char: char,
     color: Pixel
 }
@@ -192,7 +220,6 @@ impl<'a> Terminal<'a>{
         Terminal{
             fb,
             cursor_pos: (0, 0),
-            char_buf: [' '; 100*100],
             cursor_char: ' ',
             color
         }
@@ -203,7 +230,6 @@ impl<'a> Terminal<'a>{
                 self.fb.set_pixel(j, i,Pixel{r: 0, g: 0, b: 0});
             }
         }
-        for i in 0..100*100 { self.char_buf[i] = ' '; }
         self.cursor_pos = (0, 0);
     }
     fn cursor_up(&mut self){
@@ -246,14 +272,11 @@ impl<'a> Terminal<'a>{
     }
 
     fn update_visual_cursor(&mut self){
-        self.cursor_char = self.char_buf[self.cursor_pos.0 + self.cursor_pos.1*self.fb.get_cols()];
         self.fb.write_char(self.cursor_pos.0, self.cursor_pos.1, '_', self.color);
-        self.char_buf[self.cursor_pos.0 + self.cursor_pos.1*self.fb.get_cols()] = '_';
     }
     
     fn erase_visual_cursor(&mut self){
         self.fb.write_char(self.cursor_pos.0, self.cursor_pos.1, self.cursor_char, self.color);
-        self.char_buf[self.cursor_pos.0 + self.cursor_pos.1*self.fb.get_cols()] = self.cursor_char;
     }
 
     fn write_char(&mut self, c: char){
@@ -269,7 +292,6 @@ impl<'a> Terminal<'a>{
             },
             c => {
                 self.fb.write_char(self.cursor_pos.0, self.cursor_pos.1, c, self.color);
-                self.char_buf[self.cursor_pos.0 + self.cursor_pos.1*self.fb.get_cols()] = c;
                 self.cursor_right();
             }
         }
@@ -280,10 +302,9 @@ impl<'a> Terminal<'a>{
 #[no_mangle]
 pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     let multiboot_data= multiboot::init(r1 as usize, r2 as usize);
-
-    let mut uart = unsafe { uart_16550::UARTDevice::x86_default() };
-    uart.init();
-    kprintln("Hello, world!", &mut uart);
+    unsafe{ *UART.lock() = UARTDevice::x86_default(); }
+    UART.lock().init();
+    kprintln("Hello, world!", &mut UART.lock());
 
     
     let mut efi_system_table_ptr = 0usize;
@@ -302,6 +323,16 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         }
         i += len as usize;
     }
+    allocator::ALLOCATOR.lock().init((1*1024*1024) as *mut u8, 100*1024);
+    let dumb_box = Box::new(42u32);
+   let mut v = Vec::<u32>::new();
+    for i in 0..1000{
+        v.push(i);
+    }
+    drop(v);
+    kprint_u32(*dumb_box, &mut UART.lock());
+   // drop(dumb_box);
+    kprint_u32(allocator::ALLOCATOR.lock().get_heap_size() as u32, &mut UART.lock());
     let vga;
     let mut fb: Option<&mut dyn framebuffer::FrameBuffer>;
     let o;
@@ -321,29 +352,29 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     let mut term = Terminal::new(fb, Pixel{r: 0x0, g: 0xa8, b: 0x54 });
 
 
-    kprintln("If you see this then that means the framebuffer subsystem didn't instantly crash the kernel :)", &mut uart);
+    kprintln("If you see this then that means the framebuffer subsystem didn't instantly crash the kernel :)", &mut UART.lock());
     /*
     // Temporary ATA code to test ata driver
     // NOTE: master device is not necessarilly the device from which the os was booted
     let mut ata_bus = unsafe{ ata::ATABus::x86_default() };
     let master_r = unsafe{ ata_bus.identify(ata::ATADevice::MASTER) };
     if let Some(id_data) = master_r {
-        kprint_u16(id_data[0], &mut uart);
-        kprint_u16(id_data[83], &mut uart);
-        kprint_u16(id_data[88], &mut uart);
-        kprint_u16(id_data[93], &mut uart);
+        kprint_u16(id_data[0], &mut UART.lock());
+        kprint_u16(id_data[83], &mut UART.lock());
+        kprint_u16(id_data[88], &mut UART.lock());
+        kprint_u16(id_data[93], &mut UART.lock());
 
-        kprint_u16(id_data[61], &mut uart);
-        kprint_u16(id_data[60], &mut uart);
+        kprint_u16(id_data[61], &mut UART.lock());
+        kprint_u16(id_data[60], &mut UART.lock());
         "Sector count of master device: 0x".chars().for_each(|c|unsafe{term.write_char(c)});
         u16_to_str_hex(id_data[60]).iter().for_each(|c| unsafe{term.write_char(*c as char)});
         
-        kprint_u16(id_data[103], &mut uart);
-        kprint_u16(id_data[102], &mut uart);
-        kprint_u16(id_data[101], &mut uart);
-        kprint_u16(id_data[100], &mut uart);
+        kprint_u16(id_data[103], &mut UART.lock());
+        kprint_u16(id_data[102], &mut UART.lock());
+        kprint_u16(id_data[101], &mut UART.lock());
+        kprint_u16(id_data[100], &mut UART.lock());
         
-        kprintln("Found master device on primary ata bus!", &mut uart)
+        kprintln("Found master device on primary ata bus!", &mut UART.lock())
     }else{
         "No master device on primary ata bus!\n".chars().for_each(|c|unsafe{term.write_char(c)});
         panic!();
@@ -364,25 +395,25 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
 
     "# ".chars().for_each(|c| { term.write_char(c); });
 
-    let mut ignore_inc_x: bool = false;
+    let mut ignore_inc_x: bool; 
     // Basically an ad-hoc ArrayString (arrayvec crate)
-    let mut cmd_buf: [u8; 100*100] = [b' '; 100*100]; 
+    let mut cmd_buf: [u8; 100] = [b' '; 100]; 
     let mut buf_ind = 0; // Also length of buf, a.k.a portion of buf used
     'big_loop: loop {
         ignore_inc_x = false;
         let b = unsafe { ps2.read_packet() };
-        // kprint_u8(b.scancode, &mut uart);
+        // kprint_u8(b.scancode, &mut UART.lock());
 
-        if b.typ == KeyboardPacketType::KEY_RELEASED && b.special_keys.contains(SpecialKeys::ESC) { break; }
+        if b.typ == KeyboardPacketType::KEY_RELEASED && b.special_keys.ESC { break; }
         if b.typ == KeyboardPacketType::KEY_RELEASED { continue; }
 
-        if b.special_keys.contains(SpecialKeys::UP_ARROW) {
+        if b.special_keys.UP_ARROW {
            term.visual_cursor_up();
-        } else if b.special_keys.contains(SpecialKeys::DOWN_ARROW){
+        } else if b.special_keys.DOWN_ARROW{
            term.visual_cursor_down();
-        } else if b.special_keys.contains(SpecialKeys::RIGHT_ARROW) {
+        } else if b.special_keys.RIGHT_ARROW {
             term.visual_cursor_right();
-        }else if b.special_keys.contains(SpecialKeys::LEFT_ARROW) {
+        }else if b.special_keys.LEFT_ARROW {
             term.visual_cursor_left();
         }
 
@@ -426,13 +457,15 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
             continue;
         }
 
-        if buf_ind < cmd_buf.len() { cmd_buf[buf_ind] = c as u8; }
-        if !ignore_inc_x { buf_ind += 1; }
+        if buf_ind < cmd_buf.len() { 
+            cmd_buf[buf_ind] = c as u8; 
+            if !ignore_inc_x { buf_ind += 1; }
+        }
 
     }
 
     // Shutdown
-    kprintln("\nIt's now safe to turn off your computer!", &mut uart);
+    kprintln("\nIt's now safe to turn off your computer!", &mut UART.lock());
     fb.fill(0, 0, fb.get_width(), fb.get_height(), Pixel{r: 0, g: 0, b: 0});
     let s = "It's now safe to turn off your computer!";
     s.chars().enumerate().for_each(|(ind, c)|{fb.write_char(ind+fb.get_cols()/2-s.len()/2, (fb.get_rows()-1)/2, c, Pixel{r: 0xff ,g: 0xff, b: 0x55});});
