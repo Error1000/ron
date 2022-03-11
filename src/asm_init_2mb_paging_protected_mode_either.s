@@ -9,7 +9,7 @@ kernel_stack_size = 8*1024
 	# Without PAE we can't have long mode and in compatiblity/protected mode it is only 2-level paging
 	# 4 gb per level 3 table
       
-        # According to the AMD64 programmer's manual vol. 2, section 5.2: "The page-directory-pointer table is aligned on a 32-byte boundary"
+    # According to the AMD64 programmer's manual vol. 2, section 5.2: "The page-directory-pointer table is aligned on a 32-byte boundary"
 	.balign 4*8
 	l3_pt:
 	.fill 4, 8, 0

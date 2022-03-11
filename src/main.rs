@@ -74,6 +74,7 @@ pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut
     return dest;
 }
 
+
 #[no_mangle]
 pub unsafe extern "C" fn memcmp(ptr1: *const u8, ptr2: *const u8, n: usize) -> i32 {
     let ptr1_size = ptr1 as *mut usize;
@@ -350,9 +351,10 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     fb.fill(0, 0, fb.get_width(), fb.get_height(), Pixel{r: 0, g: 0, b: 0});    
     let mut term = Terminal::new(fb, Pixel{r: 0x0, g: 0xa8, b: 0x54 });
 
-
+    
     kprintln("If you see this then that means the framebuffer subsystem didn't instantly crash the kernel :)", &mut UART.lock());
-
+    "Hello, world!\n".chars().for_each(|c|term.write_char(c));
+    
     // Temporary ATA code to test ata driver
     // NOTE: master device is not necessarilly the device from which the os was booted
     let mut ata_bus = unsafe{ ata::ATABus::x86_default() };
@@ -444,7 +446,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                 }else if cmnd.contains("clear"){
                     term.clear();
                 }else if cmnd.contains("elp"){
-                    "No elp!\n".chars().for_each(|c|term.write_char(c));
+                    "NOPERS, no elp!\n".chars().for_each(|c|term.write_char(c));
                 }else if cmnd.contains("exit"){
                     break 'big_loop;
                 }
