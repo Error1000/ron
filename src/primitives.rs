@@ -6,13 +6,18 @@ pub struct LazyInitialised<T>{
 }
 
 impl<T> LazyInitialised<T>{
-    pub const fn new() -> Self{
+    pub const fn uninit() -> Self{
         Self{inner: None}
     }
 
+    pub fn unset(&mut self){
+        self.inner = None;
+    }
     pub fn set(&mut self, val: T){
         self.inner = Some(val);
     }
+
+    pub fn is_initialised(&self) -> bool { self.inner.is_some() }
 }
 impl<T> Deref for LazyInitialised<T>{
     type Target = T;
@@ -51,6 +56,10 @@ impl<T> Mutex<T> {
             inner: UnsafeCell::new(val),
             lock: AtomicBool::new(false)
         }
+    }
+
+    pub fn with(&self, f: fn (MutexGuard<T>)){
+        f(self.lock());
     }
 
     pub fn lock(&self) -> MutexGuard<T>{

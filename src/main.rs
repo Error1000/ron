@@ -10,9 +10,16 @@
 extern crate alloc;
 
 
+use core::borrow::Borrow;
+use core::cell::RefCell;
+use core::convert::{TryFrom, TryInto};
+
 use alloc::boxed::Box;
+use alloc::rc::Rc;
 use alloc::string::String;
+use filesystem::VFSNode;
 use primitives::{Mutex, LazyInitialised};
+use vga::{Color256, Unblanked};
 
 use crate::alloc::vec::Vec;
 use crate::char_device::CharDevice;
@@ -36,11 +43,20 @@ trait X86Default { unsafe fn x86_default() -> Self; }
 fn panic(p: &::core::panic::PanicInfo) -> ! { 
     let mut s = String::new();
     use core::fmt::Write;
+    let written = write!(s, "Ron {}", p).is_ok();
     kprintln("", &mut UART.lock());
-    if write!(s, "Ron {}", p).is_err(){
+    if !written{
         kprintln("Bad panic, panic info cannot be formatted correctly, maybe OOM?", &mut UART.lock());
     }else{
         kprintln(&s, &mut UART.lock());
+    }
+    let mut lock = TERMINAL.lock();
+    lock.write_char('\n');
+    if !written{
+        "Bad panic, panic info cannot be formatted correctly, maybe OOM?\n".chars().for_each(|c|lock.write_char(c));
+    }else{
+        s.chars().for_each(|c|lock.write_char(c));
+        lock.write_char('\n');
     }
     loop{}
 }
@@ -55,6 +71,7 @@ mod hio;
 mod ata;
 mod efi;
 mod framebuffer;
+mod filesystem;
 mod char_device;
 mod allocator;
 mod primitives;
@@ -136,7 +153,7 @@ pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mu
 }
 
 
-pub static UART: Mutex<LazyInitialised<UARTDevice>> = Mutex::from(LazyInitialised::new());
+pub static UART: Mutex<LazyInitialised<UARTDevice>> = Mutex::from(LazyInitialised::uninit());
 
 fn kprint(s: &str, uart: &mut UARTDevice) {
     s.chars().for_each(|c| {
@@ -218,6 +235,7 @@ pub const unsafe fn from_utf8_unchecked(v: &[u8]) -> &str {
     core::mem::transmute(v)
 }
 
+static TERMINAL: Mutex<LazyInitialised<Terminal<'static>>> = Mutex::from(LazyInitialised::uninit());
 struct Terminal<'a>{
     fb: &'a mut dyn FrameBuffer,
     cursor_pos: (usize, usize),
@@ -333,6 +351,10 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         i += len as usize;
     }
     allocator::ALLOCATOR.lock().init((1*1024*1024) as *mut u8, 100*1024);
+    filesystem::VFS_ROOT.lock().set(Rc::new(RefCell::new(VFSNode::new_root())));
+    filesystem::VFSNode::new_folder(filesystem::VFS_ROOT.lock().clone(), "dev");
+    filesystem::VFSNode::new_folder(filesystem::VFS_ROOT.lock().clone(), "run");
+
     let vga;
     let mut fb: Option<&mut dyn framebuffer::FrameBuffer>;
     let o;
@@ -343,18 +365,18 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         o = framebuffer::try_setup_vga_framebuffer(vga, 800, 600);
         if o.is_some(){
             uo = o.unwrap();
-            fb = Some((&mut uo) as &mut dyn FrameBuffer);
+            fb = Some(unsafe{ &mut *((&mut uo) as *mut Vga<Color256, Unblanked>) as &mut dyn FrameBuffer});
         }
     }
     let mut fb = fb.unwrap();
 
     fb.fill(0, 0, fb.get_width(), fb.get_height(), Pixel{r: 0, g: 0, b: 0});    
-    let mut term = Terminal::new(fb, Pixel{r: 0x0, g: 0xa8, b: 0x54 });
-
+    TERMINAL.lock().set(Terminal::new(fb, Pixel{r: 0x0, g: 0xa8, b: 0x54 }));
     
     kprintln("If you see this then that means the framebuffer subsystem didn't instantly crash the kernel :)", &mut UART.lock());
-    "Hello, world!\n".chars().for_each(|c|term.write_char(c));
-    
+    "Hello, world!\n".chars().for_each(|c|TERMINAL.lock().write_char(c));
+  
+    /*   
     // Temporary ATA code to test ata driver
     // NOTE: master device is not necessarilly the device from which the os was booted
     let mut ata_bus = unsafe{ ata::ATABus::x86_default() };
@@ -367,8 +389,8 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
 
         kprint_u16(id_data[61], &mut UART.lock());
         kprint_u16(id_data[60], &mut UART.lock());
-        "Sector count of master device: 0x".chars().for_each(|c|term.write_char(c));
-        u16_to_str_hex(id_data[60]).iter().for_each(|c| term.write_char(*c as char));
+        "Sector count of master device: 0x".chars().for_each(|c|TERMINAL.lock().write_char(c));
+        u16_to_str_hex(id_data[60]).iter().for_each(|c| TERMINAL.lock().write_char(*c as char));
         
         kprint_u16(id_data[103], &mut UART.lock());
         kprint_u16(id_data[102], &mut UART.lock());
@@ -377,23 +399,26 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         
         kprintln("Found master device on primary ata bus!", &mut UART.lock())
     }else{
-        "No master device on primary ata bus!\n".chars().for_each(|c|term.write_char(c));
+        "No master device on primary ata bus!\n".chars().for_each(|c|TERMINAL.lock().write_char(c));
         panic!();
     }
 
-    "\nFirst sector on master device on primary ata bus: \n".chars().for_each(|c|term.write_char(c));
+    "\nFirst sector on master device on primary ata bus: \n".chars().for_each(|c|TERMINAL.lock().write_char(c));
     // Read first sector
     let sdata = unsafe{ata_bus.read_sector(ata::ATADevice::MASTER, ata::LBA28{low: 0, mid: 0, hi: 0})}.unwrap();
     for e in sdata{
-        u16_to_str_hex(e).iter().for_each(|c|term.write_char(*c as char));
-        term.write_char(' ');
+        u16_to_str_hex(e).iter().for_each(|c|TERMINAL.lock().write_char(*c as char));
+        TERMINAL.lock().write_char(' ');
     }
-    term.write_char('\n');
+    TERMINAL.lock().write_char('\n');
     //////////
+    */
     
     let mut ps2 = unsafe { ps2_8042::PS2Device::x86_default() };
 
-    "# ".chars().for_each(|c| { term.write_char(c); });
+    let mut cur_dir = filesystem::VFSPath::try_from("/").unwrap();
+    cur_dir.chars().for_each(|c|TERMINAL.lock().write_char(c)); 
+    " # ".chars().for_each(|c|TERMINAL.lock().write_char(c));
 
     let mut ignore_inc_x: bool; 
     // Basically an ad-hoc ArrayString (arrayvec crate)
@@ -408,13 +433,13 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         if b.typ == KeyboardPacketType::KEY_RELEASED { continue; }
 
         if b.special_keys.UP_ARROW {
-           term.visual_cursor_up();
+            TERMINAL.lock().visual_cursor_up();
         } else if b.special_keys.DOWN_ARROW{
-           term.visual_cursor_down();
+            TERMINAL.lock().visual_cursor_down();
         } else if b.special_keys.RIGHT_ARROW {
-            term.visual_cursor_right();
+            TERMINAL.lock().visual_cursor_right();
         }else if b.special_keys.LEFT_ARROW {
-            term.visual_cursor_left();
+            TERMINAL.lock().visual_cursor_left();
         }
 
         let mut c = match b.char_codepoint {
@@ -424,7 +449,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
 
         if b.special_keys.any_shift() { c = b.shift_codepoint().unwrap(); }
 
-        term.write_char(c);
+        TERMINAL.lock().write_char(c);
         if c == '\r' { ignore_inc_x = true; if buf_ind > 0 { buf_ind -= 1; } }
         if c == '\n' {
             let bufs = unsafe{from_utf8_unchecked(&cmd_buf[..buf_ind])}.trim();
@@ -435,25 +460,66 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                 if cmnd.contains("puts"){
                     while let Some(arg) = splat.next(){
                         arg.chars().for_each(|c| {
-                            term.write_char(c);
+                            TERMINAL.lock().write_char(c);
                         });
                     }
-                    term.write_char('\n');
+                    TERMINAL.lock().write_char('\n');
                 }else if cmnd.contains("whoareyou"){
-                    "Ron\n".chars().for_each(|c|term.write_char(c));
+                    "Ron\n".chars().for_each(|c|TERMINAL.lock().write_char(c));
                 }else if cmnd.contains("help"){
-                    "puts whoareyou clear exit help\n".chars().for_each(|c|term.write_char(c));
+                    "puts whoareyou clear exit help\n".chars().for_each(|c|TERMINAL.lock().write_char(c));
                 }else if cmnd.contains("clear"){
-                    term.clear();
+                    TERMINAL.lock().clear();
+                }else if cmnd.contains("ls"){
+                    if let Some(cur_node) = cur_dir.get_node(){
+                        for subnode in (*cur_node).borrow().get_children(){
+                            (**subnode).borrow().get_path().last().expect("Valid path!").chars().for_each(|c| TERMINAL.lock().write_char(c));
+                            TERMINAL.lock().write_char(' ');
+                        }
+                    }else{
+                        "Invalid shell path!".chars().for_each(|c|TERMINAL.lock().write_char(c));
+                    }
+                    TERMINAL.lock().write_char('\n');
+                
+                }else if cmnd.contains("cd"){
+                    if let Some(name) = splat.next(){
+                        if name == ".."{
+                            cur_dir.del_last();
+                        }else if name.starts_with("/"){
+                            cur_dir = name.try_into().expect("Cd path to be valid!");
+                        }else{
+                            cur_dir.append(name);
+                        }
+                    }
+                }else if cmnd.contains("mkdir"){
+                    while let Some(name) = splat.next(){
+                       VFSNode::new_folder(cur_dir.get_node().expect("Shell path to be parsable!"), name);
+                    }
+                }else if cmnd.contains("rmdir"){
+                    while let Some(name) = splat.next(){
+                        let cur_node = cur_dir.get_node().expect("Shell path to be parsable!");
+                        if (*VFSNode::find_folder(cur_node.clone(), name).expect("Child exists!")).borrow().get_children().len() != 0 {
+                            "Couldn't delete non-empty folder: ".chars().for_each(|c|TERMINAL.lock().write_char(c));
+                            name.chars().for_each(|c|TERMINAL.lock().write_char(c));
+                            TERMINAL.lock().write_char('\n');
+                            break;
+                        }
+                        if !VFSNode::del_folder(cur_node, name){
+                            "Couldn't delete folder: ".chars().for_each(|c|TERMINAL.lock().write_char(c));
+                            name.chars().for_each(|c|TERMINAL.lock().write_char(c));
+                            TERMINAL.lock().write_char('\n');
+                        }
+                    }
                 }else if cmnd.contains("elp"){
-                    "NOPERS, no elp!\n".chars().for_each(|c|term.write_char(c));
+                    "NOPERS, no elp!\n".chars().for_each(|c|TERMINAL.lock().write_char(c));
                 }else if cmnd.contains("exit"){
                     break 'big_loop;
                 }
 
             }
 
-            "# ".chars().for_each(|c| { term.write_char(c); });
+            cur_dir.chars().for_each(|c|TERMINAL.lock().write_char(c)); 
+            " # ".chars().for_each(|c| { TERMINAL.lock().write_char(c); });
             continue;
         }
 
@@ -464,11 +530,18 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
 
     }
 
+    kprint("Heap usage: ", &mut UART.lock());
+    kprint_u32(allocator::ALLOCATOR.lock().get_heap_size() as u32, &mut UART.lock());
     // Shutdown
     kprintln("\nIt's now safe to turn off your computer!", &mut UART.lock());
-    fb.fill(0, 0, fb.get_width(), fb.get_height(), Pixel{r: 0, g: 0, b: 0});
+
+    let width = TERMINAL.lock().fb.get_width();
+    let height = TERMINAL.lock().fb.get_height();
+    let cols = TERMINAL.lock().fb.get_cols();
+    let rows = TERMINAL.lock().fb.get_rows();
+    TERMINAL.lock().fb.fill(0, 0, width, height, Pixel{r: 0, g: 0, b: 0});
     let s = "It's now safe to turn off your computer!";
-    s.chars().enumerate().for_each(|(ind, c)|{fb.write_char(ind+fb.get_cols()/2-s.len()/2, (fb.get_rows()-1)/2, c, Pixel{r: 0xff ,g: 0xff, b: 0x55});});
+    s.chars().enumerate().for_each(|(ind, c)|{TERMINAL.lock().fb.write_char(ind+cols/2-s.len()/2, (rows-1)/2, c, Pixel{r: 0xff ,g: 0xff, b: 0x55});});
     
     loop{}
 }

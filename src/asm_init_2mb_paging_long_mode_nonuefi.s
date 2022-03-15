@@ -53,7 +53,7 @@ kernel_stack_size = 8*1024
 		.hword 0 
 		.hword 0 
 
-		# Another empty entry because idk this crashes less  ¯\_(ツ)_/¯
+		# Another empty entry because idk this crashes less, and efi does it, maybe it's supposed to be the TSS?  ¯\_(ツ)_/¯
 		.hword 0
 		.hword 0
 		.hword 0

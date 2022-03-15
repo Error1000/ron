@@ -82,6 +82,16 @@ pub struct LBA28{
     pub hi: u8
 }
 
+impl From<u32> for LBA28{
+    fn from(v: u32) -> Self {
+        LBA28{
+            low: ((v >> 0) & 0xff) as u8,
+            mid: ((v >> 8) & 0xff) as u8,
+            hi: ((v >> 16) & 0xff) as u8
+        }
+    }
+}
+
 impl ATABus{
     pub unsafe fn new(io_base: KernPointer<u8>, cntrl_base: KernPointer<u8>) -> Option<Self>{
         let bus = ATABus{

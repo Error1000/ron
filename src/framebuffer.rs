@@ -145,7 +145,7 @@ pub fn try_setup_efi_framebuffer(efi_table: *mut efi::EfiSystemTable, _desired_r
 }
 
 
-pub fn try_setup_vga_framebuffer<MODE: VgaMode + 'static>(vga: Vga<MODE, Unblanked>, _desired_res_w: u32, _desired_res_h: u32) -> Option<impl FrameBuffer>{
+pub fn try_setup_vga_framebuffer<MODE: VgaMode + 'static>(vga: Vga<MODE, Unblanked>, _desired_res_w: u32, _desired_res_h: u32) -> Option<Vga<Color256, Unblanked>>{
     let vga = unsafe{vga.blank_screen()};
     Some(unsafe{vga.set_mode::<Color256>().unblank_screen()})
 }

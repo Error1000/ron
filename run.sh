@@ -1,8 +1,5 @@
 #!/bin/bash
 
-cargo build
 ./make_iso.sh
-qemu-system-x86_64 -S -s -cdrom out.iso -no-reboot &
-sleep 1
-rust-gdb target/*-unknown-linux-gnu/debug/ron -ex "target remote localhost:1234" -ex "break _start" -ex "c" -ex "break goto_kmain" -ex "tui enable"
+qemu-system-x86_64 -bios /usr/share/ovmf/x64/OVMF.fd -cdrom out.iso -serial stdio -no-reboot test-disk-512b.img
 killall qemu-system-x86_64
