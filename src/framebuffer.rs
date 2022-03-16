@@ -1,4 +1,4 @@
-use core::{ptr, ffi, slice, ops::Add, convert::TryFrom, fmt::Debug};
+use core::{ptr, ffi, slice};
 
 use crate::{efi::{EfiGopMode, self}, vga::{Vga, MixedRegisterState, Color256, self, VgaMode, Unblanked}};
 
@@ -8,13 +8,6 @@ pub struct Pixel{
     pub g: u8,
     pub b: u8
 }
-impl Add for Pixel{
-    type Output = Pixel;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        Pixel{r: self.r+rhs.r, g: self.g+rhs.g, b: self.b+rhs.b}
-    }
-}
 
 impl Pixel{
     pub fn from_u32_rgb(val: u32) -> Pixel{
@@ -23,17 +16,6 @@ impl Pixel{
 
     pub fn from_u32_bgr(val: u32) -> Pixel{
         Pixel{r: ((val&0xFF) >> 0) as u8, g: ((val&0xFF00) >> 8) as u8, b: ((val&0xFF0000) >> 16) as u8 }
-    }
-
-    pub fn mul<T>(&self, val: T) -> Pixel
-    where T: TryFrom<u8> + core::ops::Mul<Output = T> + Copy,
-    <T as TryFrom<u8>>::Error: Debug,
-    u8: TryFrom<T>,
-    <u8 as TryFrom<T>>::Error: Debug{
-        Pixel{r: u8::try_from(T::try_from(self.r).unwrap()*val).unwrap(),
-              g: u8::try_from(T::try_from(self.g).unwrap()*val).unwrap(),
-              b: u8::try_from(T::try_from(self.b).unwrap()*val).unwrap()
-             }
     }
 }
 

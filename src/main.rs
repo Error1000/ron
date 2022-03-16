@@ -10,18 +10,16 @@
 extern crate alloc;
 
 
-use core::borrow::Borrow;
 use core::cell::RefCell;
 use core::convert::{TryFrom, TryInto};
+use core::fmt::Write;
 
-use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::string::String;
 use filesystem::VFSNode;
 use primitives::{Mutex, LazyInitialised};
 use vga::{Color256, Unblanked};
 
-use crate::alloc::vec::Vec;
 use crate::char_device::CharDevice;
 use crate::framebuffer::{FrameBuffer, Pixel};
 use crate::hio::KeyboardPacketType;
@@ -42,8 +40,7 @@ trait X86Default { unsafe fn x86_default() -> Self; }
 #[panic_handler]
 fn panic(p: &::core::panic::PanicInfo) -> ! { 
     let mut s = String::new();
-    use core::fmt::Write;
-    let written = write!(s, "Ron {}", p).is_ok();
+    let written = write!(s, "Ron {}", p).is_ok(); // FIXME: Crashes on virtualbox and real hardware but not on qemu?
     kprintln("", &mut UART.lock());
     if !written{
         kprintln("Bad panic, panic info cannot be formatted correctly, maybe OOM?", &mut UART.lock());
@@ -242,6 +239,14 @@ struct Terminal<'a>{
     cursor_char: char,
     color: Pixel
 }
+
+impl<'a> Write for Terminal<'a>{
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        s.chars().for_each(|c|self.write_char(c));
+        Ok(())
+    }
+}
+
 impl<'a> Terminal<'a>{
     fn new(fb: &'a mut dyn FrameBuffer, color: Pixel) -> Self {
         Terminal{
@@ -268,7 +273,12 @@ impl<'a> Terminal<'a>{
         else {  self.cursor_pos.1 += 1; }
     }
     fn cursor_right(&mut self){
-        if self.cursor_pos.0 >= self.fb.get_cols()-1 {self.cursor_pos.0 = 0; self.cursor_down(); return;}
+        if self.cursor_pos.0 >= self.fb.get_cols()-1 {
+            self.cursor_pos.0 = 0; 
+            self.cursor_down(); 
+            for x in 0..self.fb.get_cols(){self.fb.write_char(x, self.cursor_pos.1, ' ', self.color);}
+            return;
+        }
         self.cursor_pos.0 += 1;
     }
     fn cursor_left(&mut self){
@@ -311,6 +321,7 @@ impl<'a> Terminal<'a>{
         match c{
             '\n' => {
                 self.cursor_down();
+                for x in 0..self.fb.get_cols(){self.fb.write_char(x, self.cursor_pos.1, ' ', self.color);}
                 self.cursor_pos.0 = 0;
             },
             '\r' => {
@@ -368,14 +379,14 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
             fb = Some(unsafe{ &mut *((&mut uo) as *mut Vga<Color256, Unblanked>) as &mut dyn FrameBuffer});
         }
     }
-    let mut fb = fb.unwrap();
+    let fb = fb.unwrap();
 
     fb.fill(0, 0, fb.get_width(), fb.get_height(), Pixel{r: 0, g: 0, b: 0});    
     TERMINAL.lock().set(Terminal::new(fb, Pixel{r: 0x0, g: 0xa8, b: 0x54 }));
     
     kprintln("If you see this then that means the framebuffer subsystem didn't instantly crash the kernel :)", &mut UART.lock());
-    "Hello, world!\n".chars().for_each(|c|TERMINAL.lock().write_char(c));
-  
+    writeln!(TERMINAL.lock(), "Hello, world!").unwrap();
+
     /*   
     // Temporary ATA code to test ata driver
     // NOTE: master device is not necessarilly the device from which the os was booted
@@ -413,12 +424,10 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     TERMINAL.lock().write_char('\n');
     //////////
     */
-    
     let mut ps2 = unsafe { ps2_8042::PS2Device::x86_default() };
 
     let mut cur_dir = filesystem::VFSPath::try_from("/").unwrap();
-    cur_dir.chars().for_each(|c|TERMINAL.lock().write_char(c)); 
-    " # ".chars().for_each(|c|TERMINAL.lock().write_char(c));
+    write!(TERMINAL.lock(), "{} # ", cur_dir).unwrap();
 
     let mut ignore_inc_x: bool; 
     // Basically an ad-hoc ArrayString (arrayvec crate)
@@ -459,67 +468,70 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                 // Handle shell built ins
                 if cmnd.contains("puts"){
                     while let Some(arg) = splat.next(){
-                        arg.chars().for_each(|c| {
-                            TERMINAL.lock().write_char(c);
-                        });
+                        write!(TERMINAL.lock(), "{}", arg).unwrap();
                     }
                     TERMINAL.lock().write_char('\n');
                 }else if cmnd.contains("whoareyou"){
-                    "Ron\n".chars().for_each(|c|TERMINAL.lock().write_char(c));
+                    writeln!(TERMINAL.lock(), "Ron").unwrap();
                 }else if cmnd.contains("help"){
-                    "puts whoareyou clear exit help\n".chars().for_each(|c|TERMINAL.lock().write_char(c));
+                    writeln!(TERMINAL.lock(), "puts whoareyou rmdir mkdir ls cd clear exit help").unwrap();
                 }else if cmnd.contains("clear"){
                     TERMINAL.lock().clear();
                 }else if cmnd.contains("ls"){
-                    if let Some(cur_node) = cur_dir.get_node(){
-                        for subnode in (*cur_node).borrow().get_children(){
-                            (**subnode).borrow().get_path().last().expect("Valid path!").chars().for_each(|c| TERMINAL.lock().write_char(c));
-                            TERMINAL.lock().write_char(' ');
-                        }
-                    }else{
-                        "Invalid shell path!".chars().for_each(|c|TERMINAL.lock().write_char(c));
+                    for subnode in (*cur_dir.get_node().expect("Shell path should be valid at all times!")).borrow().get_children(){
+                        write!(TERMINAL.lock(), "{} ", (**subnode).borrow().get_path().last()).unwrap();
                     }
-                    TERMINAL.lock().write_char('\n');
-                
+                    writeln!(TERMINAL.lock()).unwrap();                
                 }else if cmnd.contains("cd"){
                     if let Some(name) = splat.next(){
+                        let name = name.trim();
+                        let old_dir = cur_dir.clone();
                         if name == ".."{
                             cur_dir.del_last();
                         }else if name.starts_with("/"){
-                            cur_dir = name.try_into().expect("Cd path to be valid!");
+                            if let Ok(new_dir) = name.try_into(){
+                                cur_dir = new_dir;
+                            }else{
+                                writeln!(TERMINAL.lock(), "Invalid cd path!").unwrap();
+                            }
                         }else{
                             cur_dir.append(name);
+                        }
+                        if cur_dir.get_node().is_none(){
+                            writeln!(TERMINAL.lock(), "Invalid cd path: {}!", cur_dir).unwrap();
+                            cur_dir = old_dir;
                         }
                     }
                 }else if cmnd.contains("mkdir"){
                     while let Some(name) = splat.next(){
-                       VFSNode::new_folder(cur_dir.get_node().expect("Shell path to be parsable!"), name);
+                       VFSNode::new_folder(cur_dir.get_node().expect("Shell path should be valid at all times!"), name);
                     }
                 }else if cmnd.contains("rmdir"){
                     while let Some(name) = splat.next(){
-                        let cur_node = cur_dir.get_node().expect("Shell path to be parsable!");
-                        if (*VFSNode::find_folder(cur_node.clone(), name).expect("Child exists!")).borrow().get_children().len() != 0 {
-                            "Couldn't delete non-empty folder: ".chars().for_each(|c|TERMINAL.lock().write_char(c));
-                            name.chars().for_each(|c|TERMINAL.lock().write_char(c));
-                            TERMINAL.lock().write_char('\n');
-                            break;
+                        let cur_node = cur_dir.get_node().expect("Shell path should be valid at all times!");
+                        // Empty folder check
+                        if let Some(child_to_sacrifice) = VFSNode::find_folder(cur_node.clone(), name){
+                            if (*child_to_sacrifice).borrow().get_children().len() != 0 {
+                                writeln!(TERMINAL.lock(), "Folder: \"{}\", is non-empty!", name).unwrap();
+                                break;
+                            }
+                        }else{
+                            writeln!(TERMINAL.lock(), "Folder: \"{}\", does not exist!", name).unwrap();
+                            continue;
                         }
-                        if !VFSNode::del_folder(cur_node, name){
-                            "Couldn't delete folder: ".chars().for_each(|c|TERMINAL.lock().write_char(c));
-                            name.chars().for_each(|c|TERMINAL.lock().write_char(c));
-                            TERMINAL.lock().write_char('\n');
-                        }
+                        // //
+          
+                        if !VFSNode::del_folder(cur_node, name){ writeln!(TERMINAL.lock(), "Couldn't delete folder: \"{}\"!", name).unwrap(); }
                     }
                 }else if cmnd.contains("elp"){
-                    "NOPERS, no elp!\n".chars().for_each(|c|TERMINAL.lock().write_char(c));
+                    writeln!(TERMINAL.lock(), "NOPERS, no elp!").unwrap();
                 }else if cmnd.contains("exit"){
                     break 'big_loop;
                 }
 
             }
 
-            cur_dir.chars().for_each(|c|TERMINAL.lock().write_char(c)); 
-            " # ".chars().for_each(|c| { TERMINAL.lock().write_char(c); });
+            write!(TERMINAL.lock(), "{} # ", cur_dir).unwrap();
             continue;
         }
 

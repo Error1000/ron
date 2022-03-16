@@ -1,4 +1,4 @@
-use core::{convert::TryFrom, ops::Deref, cell::{RefCell, Ref}};
+use core::{convert::TryFrom, ops::Deref, cell::RefCell, fmt::Display};
 
 use alloc::{string::String, vec::Vec, rc::Rc};
 
@@ -29,14 +29,14 @@ impl VFSPath{
         Self{inner: String::from("/")}
     }
 
-    pub fn last(&self) -> Option<&str>{
-        self.inner.split("/").last()
+    pub fn last(&self) -> &str{
+        self.inner.split("/").last().expect("Path should be valid at all times!")
     }
 
     pub fn del_last(&mut self){
         loop{
             if let Some(c) = self.inner.pop(){
-                if c == '/' { self.inner.push('/'); break; }
+                if c == '/' { if self.inner.len() == 0 { self.inner.push('/'); } break; }
             }else{ break; }
         }
     }
@@ -61,6 +61,12 @@ impl VFSPath{
             }
         }
         None
+    }
+}
+
+impl Display for VFSPath{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.inner)
     }
 }
 
@@ -121,7 +127,7 @@ impl VFSNode{
         let mut di = None;
         for (i, c) in (*slf).borrow().children.iter().enumerate(){
             if (**c).borrow().get_children().len() != 0 { continue; }
-            if (**c).borrow().path.last().expect("Child has well-formed path!") == name{
+            if (**c).borrow().path.last() == name{
                 di = Some(i);
                 break;
             }
@@ -136,7 +142,7 @@ impl VFSNode{
 
     pub fn find_folder(slf: Rc<RefCell<VFSNode>>, name: &str) -> Option<Rc<RefCell<VFSNode>>>{
         for c in &(*slf).borrow().children {
-            if (**c).borrow().path.last().expect("Child has well-formed path!") == name{
+            if (**c).borrow().path.last() == name{
                 return Some(c.clone());
             }
         }

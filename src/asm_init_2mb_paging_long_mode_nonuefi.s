@@ -3,6 +3,15 @@
 
 kernel_stack_size = 8*1024
 .section .bss
+	# NOTE for future helpless programmers: this needs to be aligned so that movups and movaps
+	# don't general protection fault when used when the stack pointer is used
+	# because the compiler assumes the stack pointer is aligned
+	#
+	# https://stackoverflow.com/questions/67243284/why-movaps-causes-segmentation-fault
+	# From Intel® 64 and IA-32 architectures software developer’s manual, MOVAPS specification:
+    # 	MOVAPS—Move *Aligned* Packed Single-Precision Floating-Point Values
+    # 	When the source or destination operand is a memory operand, the operand must be aligned on a 16-byte (128-bit version), 32-byte (VEX.256 encoded version) or 64-byte (EVEX.512 encoded version) boundary or a general protection exception (#GP) will be generated.
+	.balign 64
 	.lcomm kernel_stack, kernel_stack_size
 
 	# tables must be page aligned
@@ -66,7 +75,7 @@ kernel_stack_size = 8*1024
 		.byte 0b00000000 # base
 
 		.byte 0b10011010 # access byte
-		.byte 0b10101111 # limit cont. ( 4bits ) and flags ( 4bits )
+		.byte 0b10101111 # flags ( 4bits ) and limit cont. ( 4bits )
 		.byte 0b00000000 # base cont.
 
 		# Data Segment (ds) entry
@@ -76,7 +85,7 @@ kernel_stack_size = 8*1024
 		.byte 0b00000000 # base
 
 		.byte 0b10010010 # access byte
-		.byte 0b11001111 # limit cont. ( 4bits ) and flags ( 4bits )
+		.byte 0b11001111 # flags ( 4bits ) and limit cont. ( 4bits )ter
 		.byte 0b00000000 # base cont.
 
 .section .text
@@ -87,8 +96,10 @@ _start:
 	cld # clear direction
 
 	# Set up stack
-	mov esp, OFFSET kernel_stack+kernel_stack_size-1
-	
+	# NOTE: we push 3*4 bytes just after this, but we pop 8*2
+	# so we subtract -4*(16-3) so when we push 3*4 we get to -4*(16) and when we pop we are still aligned!
+	mov esp, OFFSET kernel_stack+kernel_stack_size-4*(16-3)
+
 	# Save multiboot values, these will also be the arguments to the main function
 	push ebx
 	push 0

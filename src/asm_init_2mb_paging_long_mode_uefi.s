@@ -3,7 +3,17 @@
 
 kernel_stack_size = 8*1024
 .section .bss
+	# NOTE for future helpless programmers: this needs to be aligned so that movups and movaps
+	# don't general protection fault when used when the stack pointer is used
+	# because the compiler assumes the stack pointer is aligned
+	#
+	# https://stackoverflow.com/questions/67243284/why-movaps-causes-segmentation-fault
+	# From Intel® 64 and IA-32 architectures software developer’s manual, MOVAPS specification:
+    # 	MOVAPS—Move *Aligned* Packed Single-Precision Floating-Point Values
+    # 	When the source or destination operand is a memory operand, the operand must be aligned on a 16-byte (128-bit version), 32-byte (VEX.256 encoded version) or 64-byte (EVEX.512 encoded version) boundary or a general protection exception (#GP) will be generated.
+	.balign 64
 	.lcomm kernel_stack, kernel_stack_size
+
 	# tables must be page aligned
 	# Modes that we are interested in: Protected/Compatibility, 64-bit(long mode), 
 	# This is with PAE, 4-level, that is PAE with long mode
@@ -45,7 +55,7 @@ _start:
 	cld # clear direction
 
 	# Set up stack
-	mov rsp, OFFSET kernel_stack+kernel_stack_size-1
+	mov rsp, OFFSET kernel_stack+kernel_stack_size
 	
 	# Save multiboot values, these will also be the arguments to the main function
 	push rbx

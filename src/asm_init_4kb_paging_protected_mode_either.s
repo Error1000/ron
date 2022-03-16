@@ -7,13 +7,23 @@
 
 kernel_stack_size = 8*1024
 .section .bss
+	# NOTE for future helpless programmers: this needs to be aligned so that movups and movaps
+	# don't general protection fault when used when the stack pointer is used
+	# because the compiler assumes the stack pointer is aligned
+	#
+	# https://stackoverflow.com/questions/67243284/why-movaps-causes-segmentation-fault
+	# From Intel® 64 and IA-32 architectures software developer’s manual, MOVAPS specification:
+    # 	MOVAPS—Move *Aligned* Packed Single-Precision Floating-Point Values
+    # 	When the source or destination operand is a memory operand, the operand must be aligned on a 16-byte (128-bit version), 32-byte (VEX.256 encoded version) or 64-byte (EVEX.512 encoded version) boundary or a general protection exception (#GP) will be generated.
+	.lcomm kernel_stack, kernel_stack_size
+
 	# tables must be page aligned
 	# Modes that we are interested in: Protected, Compatibility, 64-bit(long mode), 
 	# This is with PAE, compatibility/protected mode 3-level paging ( not 4-level, that is PAE with long mode )
 	# Without PAE we can't have long mode and in compatiblity/protected mode it is only 2-level paging
 	# 4 gb per level 3 table
       
-        # According to the AMD64 programmer's manual vol. 2, section 5.2: "The page-directory-pointer table is aligned on a 32-byte boundary"
+    # According to the AMD64 programmer's manual vol. 2, section 5.2: "The page-directory-pointer table is aligned on a 32-byte boundary"
 	.balign 4*8
 	l3_pt:
 	.fill 4, 8, 0
@@ -28,7 +38,6 @@ kernel_stack_size = 8*1024
 	l1_pt: 
 	.fill 512, 8, 0
 	
-	.lcomm kernel_stack, kernel_stack_size
 
 .section .data
 	.align 4, 0
@@ -57,7 +66,7 @@ kernel_stack_size = 8*1024
 		.byte 0b00000000 # base
 
 		.byte 0b10011010 # access byte
-		.byte 0b11111100; # limit cont. ( 4bits ) and flags ( 4bits )
+		.byte 0b11111100; # flags ( 4bits ) and limit cont. ( 4bits )
 		.byte 0b00000000 # base cont.
 
 		# Data Segment (ds) entry
@@ -67,7 +76,7 @@ kernel_stack_size = 8*1024
 		.byte 0b00000000 # base
 
 		.byte 0b10010010 # access byte
-		.byte 0b11111100 # limit cont. ( 4bits ) and flags ( 4bits )
+		.byte 0b11111100 # flags ( 4bits ) and limit cont. ( 4bits )
 		.byte 0b00000000 # base cont.
 
 .section .text
@@ -91,7 +100,7 @@ load_gdt:
 finish_gdt: # Only the finest gdt finland can offer :P
 	
 	# Set up stack
-	mov esp, OFFSET kernel_stack+kernel_stack_size-1
+	mov esp, OFFSET kernel_stack+kernel_stack_size
 
 	push ebx
 	push eax
