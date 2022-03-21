@@ -1,30 +1,46 @@
 use core::{convert::TryFrom, ops::Deref, cell::RefCell, fmt::Display};
 
-use alloc::{string::String, vec::Vec, rc::Rc};
+use alloc::{string::String, vec::Vec, rc::Rc, borrow::ToOwned};
 
 use crate::{primitives::{Mutex, LazyInitialised}};
 
 pub static VFS_ROOT: Mutex<LazyInitialised<Rc<RefCell<VFSNode>>>> = Mutex::from(LazyInitialised::uninit());
 
 
-trait INode{
-    type ElementType;
-    fn write(&mut self, element: Self::ElementType, offset: usize) -> Option<()>;
-    fn read(&self, offset: usize) -> Option<Self::ElementType>;
-    fn read_all(&self) -> Option<Vec<Self::ElementType>>;
-    fn size(&self) -> usize;
-    fn insert(&mut self, element: Self::ElementType, offset: usize) -> Option<()>;
-    fn is_readable(&self) -> bool;
-    fn is_writeable(&self) -> bool;
-    fn is_interactable(&self) -> bool;
+
+pub trait INode{
+    fn get_name(&self) -> String;
+}
+
+pub trait IFolder: INode{
+    fn get_children(&self) -> Vec<Node>;
+}
+
+pub trait IFile: INode{
+    fn read(&self, offset: usize, len: usize) -> Option<Vec<u8>>;
+    fn write(&mut self, offset: usize, data: &[u8]);
 }
 
 #[derive(Clone)]
-pub struct VFSPath{
+pub enum Node{
+    File(Rc<RefCell<dyn IFile>>),
+    Folder(Rc<RefCell<dyn IFolder>>)
+}
+impl INode for Node{
+    fn get_name(&self) -> String {
+        match self{
+            Node::File(f) => (*f).borrow().get_name(),
+            Node::Folder(f) => (*f).borrow().get_name()
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Path{
     inner: String
 }
 
-impl VFSPath{
+impl Path{
     pub fn root() -> Self{
         Self{inner: String::from("/")}
     }
@@ -64,13 +80,13 @@ impl VFSPath{
     }
 }
 
-impl Display for VFSPath{
+impl Display for Path{
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.inner)
     }
 }
 
-impl Deref for VFSPath{
+impl Deref for Path{
     type Target = str;
 
     fn deref(&self) -> &Self::Target {
@@ -78,49 +94,51 @@ impl Deref for VFSPath{
     }
 }
 
-impl PartialEq for VFSPath{
+impl PartialEq for Path{
     fn eq(&self, other: &Self) -> bool {
         self.inner == other.inner
     }
 }
 
-impl TryFrom<&str> for VFSPath{
+impl TryFrom<&str> for Path{
     type Error = ();
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         if !value.starts_with("/") { return Err(());}
         if !value.contains("/") { return Err(()); }
-        Ok(VFSPath{inner: String::from(value)})
+        Ok(Path{inner: String::from(value)})
     }
 }
 
 #[derive(Clone)]
 pub struct VFSNode{
-    path: VFSPath,
+    path: Path,
     parent: Option<Rc<RefCell<VFSNode>>>,
     children: Vec<Rc<RefCell<VFSNode>>>,
-    mountpoint: Option<VFSPath>
+    pub mountpoint: Option<Rc<RefCell<dyn IFolder>>>
 }
 
 impl VFSNode{
     pub fn new_root() -> Self{
         Self{
-            path: VFSPath::root(),
+            path: Path::root(),
             parent: None,
             children: Vec::new(),
             mountpoint: None
         }
     }
 
-    pub fn new_folder(slf: Rc<RefCell<VFSNode>>, name: &str){
+    pub fn new_folder(slf: Rc<RefCell<VFSNode>>, name: &str) -> Rc<RefCell<VFSNode>>{
         let mut new_p = (*slf).borrow().path.clone();
         new_p.append(name);
-        (*slf).borrow_mut().children.push(Rc::new(RefCell::new(Self{
+        let new_f = Rc::new(RefCell::new(Self{
             path: new_p,
             parent: Some(slf.clone()),
             children: Vec::new(),
             mountpoint: None,
-        })));
+        }));
+        (*slf).borrow_mut().children.push(new_f.clone());
+        new_f
     }
 
     pub fn del_folder(slf: Rc<RefCell<VFSNode>>, name: &str) -> bool{
@@ -149,55 +167,36 @@ impl VFSNode{
         None
     }
 
-    pub fn get_children(&self) -> &Vec<Rc<RefCell<VFSNode>>>{
-        &self.children
-    }
-
     pub fn get_parent(&self) -> Option<&RefCell<VFSNode>>{
         self.parent.as_deref()
     }
 
-    pub fn get_path(&self) -> &VFSPath{
+    pub fn get_path(&self) -> &Path{
         &self.path
     }
 }
-impl<'a> INode for VFSNode{
-    type ElementType = VFSNode;
-    fn write(&mut self, element: VFSNode, offset: usize) -> Option<()> {
-        if let Some(e) = self.children.get_mut(offset){
-            *e = Rc::new(RefCell::new(element));
-            Some(())
-        }else{
-            None
+
+impl INode for VFSNode{
+    fn get_name(&self) -> String {
+        self.path.last().to_owned()
+    }
+}
+
+impl IFolder for VFSNode{
+    fn get_children(&self) -> Vec<Node>{
+        let mut v = Vec::<Node>::new();
+        if let Some(mnt) = &self.mountpoint{
+            for c in (*mnt).borrow().get_children(){
+                v.push(c.clone());
+            }
         }
-    }
-
-    fn read(&self, offset: usize) -> Option<VFSNode> {
-        self.children.get(offset).map(|val|(**val).borrow().clone())
-    }
-
-    fn read_all(&self) -> Option<Vec<VFSNode>>{
-        Some(self.children.iter().map(|c|(**c).borrow().clone()).collect())
-    }
-
-    fn is_readable(&self) -> bool {
-        true
-    }
-
-    fn is_writeable(&self) -> bool {
-        true
-    }
-
-    fn is_interactable(&self) -> bool {
-        true
-    }
-
-    fn size(&self) -> usize {
-        self.children.len()
-    }
-
-    fn insert(&mut self, element: VFSNode, offset: usize) -> Option<()> {
-        self.children.insert(offset, Rc::new(RefCell::new(element)));
-        Some(())
+        for c in &self.children{
+            // Name resolution
+            if v.iter().any(|child| child.get_name() == (*c).borrow().get_name()){
+                continue;
+            }
+            v.push(Node::Folder(c.clone()));
+        }
+        v
     }
 }

@@ -10,13 +10,16 @@
 extern crate alloc;
 
 
+use core::borrow::Borrow;
 use core::cell::RefCell;
 use core::convert::{TryFrom, TryInto};
 use core::fmt::Write;
 
 use alloc::rc::Rc;
 use alloc::string::String;
-use filesystem::VFSNode;
+use ata::{ATADevice, ATABus};
+use devfs::ATADeviceFile;
+use vfs::{VFSNode, INode, IFolder};
 use primitives::{Mutex, LazyInitialised};
 use vga::{Color256, Unblanked};
 
@@ -68,7 +71,8 @@ mod hio;
 mod ata;
 mod efi;
 mod framebuffer;
-mod filesystem;
+mod vfs;
+mod devfs;
 mod char_device;
 mod allocator;
 mod primitives;
@@ -362,9 +366,10 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         i += len as usize;
     }
     allocator::ALLOCATOR.lock().init((1*1024*1024) as *mut u8, 100*1024);
-    filesystem::VFS_ROOT.lock().set(Rc::new(RefCell::new(VFSNode::new_root())));
-    filesystem::VFSNode::new_folder(filesystem::VFS_ROOT.lock().clone(), "dev");
-    filesystem::VFSNode::new_folder(filesystem::VFS_ROOT.lock().clone(), "run");
+    vfs::VFS_ROOT.lock().set(Rc::new(RefCell::new(VFSNode::new_root())));
+    let dev_folder = vfs::VFSNode::new_folder(vfs::VFS_ROOT.lock().clone(), "dev");
+    let dfs = Rc::new(RefCell::new(devfs::DevFS::new()));
+    (*dev_folder).borrow_mut().mountpoint = Some(dfs.clone());
 
     let vga;
     let mut fb: Option<&mut dyn framebuffer::FrameBuffer>;
@@ -387,10 +392,15 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     kprintln("If you see this then that means the framebuffer subsystem didn't instantly crash the kernel :)", &mut UART.lock());
     writeln!(TERMINAL.lock(), "Hello, world!").unwrap();
 
-    /*   
+       
     // Temporary ATA code to test ata driver
     // NOTE: master device is not necessarilly the device from which the os was booted
-    let mut ata_bus = unsafe{ ata::ATABus::x86_default() };
+    let ata_bus = unsafe{ ata::ATABus::x86_default() };
+    let ata_ref = Rc::new(RefCell::new(ata_bus));
+    (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(ATADeviceFile{bus: ata_ref.clone(), bus_device: ATADevice::MASTER})));
+    (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(ATADeviceFile{bus: ata_ref.clone(), bus_device: ATADevice::SLAVE})));
+
+    /*
     let master_r = unsafe{ ata_bus.identify(ata::ATADevice::MASTER) };
     if let Some(id_data) = master_r {
         kprint_u16(id_data[0], &mut UART.lock());
@@ -426,7 +436,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     */
     let mut ps2 = unsafe { ps2_8042::PS2Device::x86_default() };
 
-    let mut cur_dir = filesystem::VFSPath::try_from("/").unwrap();
+    let mut cur_dir = vfs::Path::try_from("/").unwrap();
     write!(TERMINAL.lock(), "{} # ", cur_dir).unwrap();
 
     let mut ignore_inc_x: bool; 
@@ -479,7 +489,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                     TERMINAL.lock().clear();
                 }else if cmnd.contains("ls"){
                     for subnode in (*cur_dir.get_node().expect("Shell path should be valid at all times!")).borrow().get_children(){
-                        write!(TERMINAL.lock(), "{} ", (**subnode).borrow().get_path().last()).unwrap();
+                        write!(TERMINAL.lock(), "{} ", subnode.get_name()).unwrap();
                     }
                     writeln!(TERMINAL.lock()).unwrap();                
                 }else if cmnd.contains("cd"){

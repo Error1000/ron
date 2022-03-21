@@ -68,13 +68,18 @@ impl ControlRegistersLBA28 {
         self.drive_addr.read()
     }
 }
-type Sector = [u16; 256];
 
+pub const SECTOR_SIZE_IN_BYTES: usize = 256*core::mem::size_of::<u16>();
+type Sector = [u16; SECTOR_SIZE_IN_BYTES/core::mem::size_of::<u16>()];
+
+#[derive(Clone, Copy)]
 pub enum ATADevice {MASTER, SLAVE}
 pub struct ATABus{
     io: IORegistersLBA28,
     control: ControlRegistersLBA28
 }
+
+#[derive(Clone, Copy)]
 
 pub struct LBA28{
     pub low: u8,
@@ -146,7 +151,7 @@ impl ATABus{
         Some(a)
     }
 
-    pub unsafe fn write_sector(&mut self, device: ATADevice, sector_lba: LBA28, data: Sector) {
+    pub unsafe fn write_sector(&mut self, device: ATADevice, sector_lba: LBA28, data: &Sector) {
         self.io.drive_sel.write(match device{
             ATADevice::MASTER => 0xE0,
             ATADevice::SLAVE => 0xF0
