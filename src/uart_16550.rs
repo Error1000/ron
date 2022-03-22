@@ -1,3 +1,5 @@
+use core::fmt::Write;
+
 use crate::{virtmem::KernPointer, X86Default};
 use packed_struct::prelude::*;
 
@@ -187,6 +189,18 @@ impl UARTDevice {
             wait_for!(self.line_sts().input_full);
             self.data.read()
         }
+    }
+}
+
+impl Write for UARTDevice{
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        s.chars().for_each(|c|{
+            self.send(c as u8);
+            if c == '\n' {
+                self.send(b'\r')
+            }
+        });
+        Ok(())
     }
 }
 

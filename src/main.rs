@@ -10,16 +10,15 @@
 extern crate alloc;
 
 
-use core::borrow::Borrow;
 use core::cell::RefCell;
 use core::convert::{TryFrom, TryInto};
 use core::fmt::Write;
 
 use alloc::rc::Rc;
 use alloc::string::String;
-use ata::{ATADevice, ATABus};
+use ata::ATADevice;
 use devfs::ATADeviceFile;
-use vfs::{VFSNode, INode, IFolder};
+use vfs::{VFSNode, INode, IFolder, Node};
 use primitives::{Mutex, LazyInitialised};
 use vga::{Color256, Unblanked};
 
@@ -44,11 +43,11 @@ trait X86Default { unsafe fn x86_default() -> Self; }
 fn panic(p: &::core::panic::PanicInfo) -> ! { 
     let mut s = String::new();
     let written = write!(s, "Ron {}", p).is_ok(); // FIXME: Crashes on virtualbox and real hardware but not on qemu?
-    kprintln("", &mut UART.lock());
+    writeln!(&mut UART.lock()).unwrap();
     if !written{
-        kprintln("Bad panic, panic info cannot be formatted correctly, maybe OOM?", &mut UART.lock());
+        writeln!(&mut UART.lock(), "Bad panic, panic info cannot be formatted correctly, maybe OOM?").unwrap();
     }else{
-        kprintln(&s, &mut UART.lock());
+        writeln!(&mut UART.lock(), "{}", &s).unwrap();
     }
     let mut lock = TERMINAL.lock();
     lock.write_char('\n');
@@ -156,78 +155,10 @@ pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mu
 
 pub static UART: Mutex<LazyInitialised<UARTDevice>> = Mutex::from(LazyInitialised::uninit());
 
-fn kprint(s: &str, uart: &mut UARTDevice) {
-    s.chars().for_each(|c| {
-        uart.send(c as u8);
-        if c == '\n' {
-            uart.send(b'\r')
-        }
-    });
-}
-
-fn kprintln(s: &str, uart: &mut UARTDevice) {
-    kprint(s, uart);
-    kprint("\n", uart);
-}
-
-fn kprint_u8(data: u8, uart: &mut UARTDevice) {
-    let buf = u8_to_str_hex(data);
-    kprint("0x", uart);
-    kprint(unsafe { from_utf8_unchecked(&buf) }, uart);
-    kprint(" ", uart);
-}
-
-fn kprint_u16(data: u16, uart: &mut UARTDevice){
-    let buf = u16_to_str_hex(data);
-    kprint("0x", uart);
-    kprint(unsafe{ from_utf8_unchecked(&buf)}, uart);
-    kprint(" ", uart);
-}
-
-fn kprint_u32(data: u32, uart: &mut UARTDevice){
-    kprint("0x", uart);
-    kprint(unsafe{ from_utf8_unchecked(&u16_to_str_hex(((data >> 16) & 0xffff) as u16))}, uart);
-    kprint(unsafe{ from_utf8_unchecked(&u16_to_str_hex((data & 0xffff) as u16))}, uart);
-    kprint(" ", uart);
-}
-
-fn kprint_u64(data: u64, uart: &mut UARTDevice){
-    kprint("0x", uart);
-    kprint(unsafe{ from_utf8_unchecked(&u16_to_str_hex(((data >> 48) & 0xffff) as u16))}, uart);
-    kprint(unsafe{ from_utf8_unchecked(&u16_to_str_hex(((data >> 32) & 0xffff) as u16))}, uart);
-    kprint(unsafe{ from_utf8_unchecked(&u16_to_str_hex(((data >> 16) & 0xffff) as u16))}, uart);
-    kprint(unsafe{ from_utf8_unchecked(&u16_to_str_hex((data & 0xffff) as u16))}, uart);
-    kprint(" ", uart);
-}
 
 fn kprint_dump<T>(ptr: *const T, bytes: usize, uart: &mut UARTDevice){
     let arr = unsafe{core::slice::from_raw_parts(core::mem::transmute::<_, *mut u32>(ptr), bytes/core::mem::size_of::<u32>())};
-    for e in arr{ kprint_u32(*e, uart); }  
-}
-
-fn u8_to_str_decimal(val: u8) -> [u8; 3] {
-    let mut s: [u8; 3] = [0; 3];
-    // N.B.: Be careful about direction, you might get mirrored numbers otherwise and not realise and spend several hours debugging why your driver doesn't work because it doesn't read the right value even though it does it's just the debugging function that's broken >:(
-    s[0] = (val / 100) + b'0';
-    s[1] = (val / 10) % 10 + b'0';
-    s[2] = (val) % 10 + b'0';
-    return s;
-}
-
-fn u8_to_str_hex(val: u8) -> [u8; 2] {
-    let mut s: [u8; 2] = [0; 2];
-    s[0] = val / 16 + if val / 16 >= 10 { b'A' - 10 } else { b'0' };
-    s[1] = val % 16 + if val % 16 >= 10 { b'A' - 10 } else { b'0' };
-    s
-}
-
-fn u16_to_str_hex(val: u16) -> [u8; 4] {
-    let mut s: [u8; 4] = [0; 4];
-    for i in 0..=3u16 {
-        let digit = ((val / 16u16.pow(i.into())) % 16) as u8;
-        s[3-i as usize] = digit + if digit >= 10 { b'A' - 10 } else { b'0' };
-    }
-    s
+    for e in arr{ write!(uart, "{}",  *e).unwrap(); }  
 }
 
 pub const unsafe fn from_utf8_unchecked(v: &[u8]) -> &str {
@@ -346,7 +277,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     let multiboot_data= multiboot::init(r1 as usize, r2 as usize);
     unsafe{ UART.lock().set(UARTDevice::x86_default()); }
     UART.lock().init();
-    kprintln("Hello, world!", &mut UART.lock());
+    writeln!(&mut UART.lock(), "Hello, world!").unwrap();
 
     
     let mut efi_system_table_ptr = 0usize;
@@ -389,7 +320,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     fb.fill(0, 0, fb.get_width(), fb.get_height(), Pixel{r: 0, g: 0, b: 0});    
     TERMINAL.lock().set(Terminal::new(fb, Pixel{r: 0x0, g: 0xa8, b: 0x54 }));
     
-    kprintln("If you see this then that means the framebuffer subsystem didn't instantly crash the kernel :)", &mut UART.lock());
+    writeln!(&mut UART.lock(), "If you see this then that means the framebuffer subsystem didn't instantly crash the kernel :)").unwrap();
     writeln!(TERMINAL.lock(), "Hello, world!").unwrap();
 
        
@@ -484,7 +415,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                 }else if cmnd.contains("whoareyou"){
                     writeln!(TERMINAL.lock(), "Ron").unwrap();
                 }else if cmnd.contains("help"){
-                    writeln!(TERMINAL.lock(), "puts whoareyou rmdir mkdir ls cd clear exit help").unwrap();
+                    writeln!(TERMINAL.lock(), "puts whoareyou rmdir mkdir hexdump ls cd clear exit help").unwrap();
                 }else if cmnd.contains("clear"){
                     TERMINAL.lock().clear();
                 }else if cmnd.contains("ls"){
@@ -492,6 +423,25 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         write!(TERMINAL.lock(), "{} ", subnode.get_name()).unwrap();
                     }
                     writeln!(TERMINAL.lock()).unwrap();                
+                }else if cmnd.contains("hexdump"){
+                    if let Some(arg) = splat.next(){
+                        let mut found = None;
+                        for subnode in (*cur_dir.get_node().expect("Shell path should be valid at all times!")).borrow().get_children(){
+                            if subnode.get_name() == arg{
+                                found = Some(subnode);
+                                break;
+                            }
+                        }   
+                        if let Some(Node::File(file)) = found{
+                            if let Some(data) = (*file).borrow().read(0, 10){
+                                for e in data{
+                                    write!(TERMINAL.lock(), "{:x} ", e).unwrap();
+                                }
+                            }
+                        }
+                        writeln!(TERMINAL.lock()).unwrap();                
+                    }
+                
                 }else if cmnd.contains("cd"){
                     if let Some(name) = splat.next(){
                         let name = name.trim();
@@ -552,10 +502,9 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
 
     }
 
-    kprint("Heap usage: ", &mut UART.lock());
-    kprint_u32(allocator::ALLOCATOR.lock().get_heap_size() as u32, &mut UART.lock());
+    writeln!(&mut UART.lock(), "Heap usage: {}", allocator::ALLOCATOR.lock().get_heap_size()).unwrap();
     // Shutdown
-    kprintln("\nIt's now safe to turn off your computer!", &mut UART.lock());
+    writeln!(&mut UART.lock(), "\nIt's now safe to turn off your computer!").unwrap();
 
     let width = TERMINAL.lock().fb.get_width();
     let height = TERMINAL.lock().fb.get_height();
