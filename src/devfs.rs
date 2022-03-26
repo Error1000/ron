@@ -29,7 +29,7 @@ impl IFile for ATADeviceFile{
       unsafe{ self.bus.borrow_mut().read_sector(self.bus_device, lba) }
       .map(|val|{
         let mut v = Vec::with_capacity(len);
-        for e in &val[offset_in_sector/2..offset_in_sector/2+len/2]{
+        for e in &val[offset_in_sector/core::mem::size_of::<u16>()..(offset_in_sector+len)/core::mem::size_of::<u16>()]{
             v.push(((e>>8)&0xFF) as u8);
             v.push((e&0xFF) as u8);
         }

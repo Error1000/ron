@@ -43,11 +43,11 @@ trait X86Default { unsafe fn x86_default() -> Self; }
 fn panic(p: &::core::panic::PanicInfo) -> ! { 
     let mut s = String::new();
     let written = write!(s, "Ron {}", p).is_ok(); // FIXME: Crashes on virtualbox and real hardware but not on qemu?
-    writeln!(&mut UART.lock()).unwrap();
+    writeln!(UART.lock()).unwrap();
     if !written{
-        writeln!(&mut UART.lock(), "Bad panic, panic info cannot be formatted correctly, maybe OOM?").unwrap();
+        writeln!(UART.lock(), "Bad panic, panic info cannot be formatted correctly, maybe OOM?").unwrap();
     }else{
-        writeln!(&mut UART.lock(), "{}", &s).unwrap();
+        writeln!(UART.lock(), "{}", &s).unwrap();
     }
     let mut lock = TERMINAL.lock();
     lock.write_char('\n');
@@ -158,7 +158,7 @@ pub static UART: Mutex<LazyInitialised<UARTDevice>> = Mutex::from(LazyInitialise
 
 fn kprint_dump<T>(ptr: *const T, bytes: usize, uart: &mut UARTDevice){
     let arr = unsafe{core::slice::from_raw_parts(core::mem::transmute::<_, *mut u32>(ptr), bytes/core::mem::size_of::<u32>())};
-    for e in arr{ write!(uart, "{}",  *e).unwrap(); }  
+    for e in arr{ write!(uart, "0x{:02X}",  *e).unwrap(); }  
 }
 
 pub const unsafe fn from_utf8_unchecked(v: &[u8]) -> &str {
@@ -277,7 +277,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     let multiboot_data= multiboot::init(r1 as usize, r2 as usize);
     unsafe{ UART.lock().set(UARTDevice::x86_default()); }
     UART.lock().init();
-    writeln!(&mut UART.lock(), "Hello, world!").unwrap();
+    writeln!(UART.lock(), "Hello, world!").unwrap();
 
     
     let mut efi_system_table_ptr = 0usize;
@@ -320,18 +320,24 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     fb.fill(0, 0, fb.get_width(), fb.get_height(), Pixel{r: 0, g: 0, b: 0});    
     TERMINAL.lock().set(Terminal::new(fb, Pixel{r: 0x0, g: 0xa8, b: 0x54 }));
     
-    writeln!(&mut UART.lock(), "If you see this then that means the framebuffer subsystem didn't instantly crash the kernel :)").unwrap();
+    writeln!(UART.lock(), "If you see this then that means the framebuffer subsystem didn't instantly crash the kernel :)").unwrap();
     writeln!(TERMINAL.lock(), "Hello, world!").unwrap();
 
        
-    // Temporary ATA code to test ata driver
-    // NOTE: master device is not necessarilly the device from which the os was booted
     let ata_bus = unsafe{ ata::ATABus::x86_default() };
     let ata_ref = Rc::new(RefCell::new(ata_bus));
-    (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(ATADeviceFile{bus: ata_ref.clone(), bus_device: ATADevice::MASTER})));
-    (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(ATADeviceFile{bus: ata_ref.clone(), bus_device: ATADevice::SLAVE})));
+    if unsafe{(*ata_ref).borrow_mut().identify(ATADevice::MASTER).is_some()}{
+        (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(ATADeviceFile{bus: ata_ref.clone(), bus_device: ATADevice::MASTER})));
+    }
 
+    if unsafe{(*ata_ref).borrow_mut().identify(ATADevice::SLAVE).is_some()}{
+        (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(ATADeviceFile{bus: ata_ref.clone(), bus_device: ATADevice::SLAVE})));
+    }
+    
     /*
+    // Temporary ATA code to test ata driver
+    // NOTE: master device is not necessarilly the device from which the os was booted
+
     let master_r = unsafe{ ata_bus.identify(ata::ATADevice::MASTER) };
     if let Some(id_data) = master_r {
         kprint_u16(id_data[0], &mut UART.lock());
@@ -365,6 +371,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     TERMINAL.lock().write_char('\n');
     //////////
     */
+
     let mut ps2 = unsafe { ps2_8042::PS2Device::x86_default() };
 
     let mut cur_dir = vfs::Path::try_from("/").unwrap();
@@ -377,7 +384,6 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     'big_loop: loop {
         ignore_inc_x = false;
         let b = unsafe { ps2.read_packet() };
-        // kprint_u8(b.scancode, &mut UART.lock());
 
         if b.typ == KeyboardPacketType::KEY_RELEASED && b.special_keys.ESC { break; }
         if b.typ == KeyboardPacketType::KEY_RELEASED { continue; }
@@ -432,12 +438,17 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                                 break;
                             }
                         }   
+                        
                         if let Some(Node::File(file)) = found{
                             if let Some(data) = (*file).borrow().read(0, 10){
                                 for e in data{
-                                    write!(TERMINAL.lock(), "{:x} ", e).unwrap();
+                                    write!(TERMINAL.lock(), "0x{:02X} ", e).unwrap();
                                 }
+                            }else{
+                                write!(TERMINAL.lock(), "Couldn't read file!").unwrap();
                             }
+                        }else{
+                            write!(TERMINAL.lock(), "File not found!").unwrap();
                         }
                         writeln!(TERMINAL.lock()).unwrap();                
                     }
@@ -479,7 +490,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             writeln!(TERMINAL.lock(), "Folder: \"{}\", does not exist!", name).unwrap();
                             continue;
                         }
-                        // //
+                        ////
           
                         if !VFSNode::del_folder(cur_node, name){ writeln!(TERMINAL.lock(), "Couldn't delete folder: \"{}\"!", name).unwrap(); }
                     }
@@ -502,9 +513,9 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
 
     }
 
-    writeln!(&mut UART.lock(), "Heap usage: {}", allocator::ALLOCATOR.lock().get_heap_size()).unwrap();
+    writeln!(UART.lock(), "Heap usage: {} bytes", allocator::ALLOCATOR.lock().get_heap_size()).unwrap();
     // Shutdown
-    writeln!(&mut UART.lock(), "\nIt's now safe to turn off your computer!").unwrap();
+    writeln!(UART.lock(), "\nIt's now safe to turn off your computer!").unwrap();
 
     let width = TERMINAL.lock().fb.get_width();
     let height = TERMINAL.lock().fb.get_height();

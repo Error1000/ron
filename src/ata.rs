@@ -165,7 +165,7 @@ impl ATABus{
 
         wait_for!(self.io.read_status() & (1 << 7) == 0); // BSY clears
         wait_for!(self.io.read_status() & (1 << 3) != 0 || self.io.read_status() & (1 << 0) != 0); // DRQ or ERR sets
-        // if self.io.read_status() & (1 << 0) == 1 { return None; } // ERR
+        if self.io.read_status() & (1 << 0) == 1 { return; } // ERR
 
         data.iter().for_each(|e| self.io.data.write(*e));
 
