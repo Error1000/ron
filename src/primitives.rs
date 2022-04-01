@@ -1,5 +1,6 @@
 use core::{sync::atomic::AtomicBool, cell::UnsafeCell};
 use core::ops::{Deref, DerefMut};
+use core::fmt::{Debug, Formatter, Error};
 
 pub struct LazyInitialised<T>{
     inner: Option<T>
@@ -18,6 +19,15 @@ impl<T> LazyInitialised<T>{
     }
 
     pub fn is_initialised(&self) -> bool { self.inner.is_some() }
+}
+
+impl<T> Debug for LazyInitialised<T>
+where T: Debug {
+     
+fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> { 
+    self.inner.fmt(f)
+ }
+
 }
 impl<T> Deref for LazyInitialised<T>{
     type Target = T;
@@ -46,7 +56,17 @@ pub struct Mutex<T> {
 unsafe impl<T> Sync for Mutex<T>{ }
 unsafe impl<T> Send for Mutex<T>{ }
 
-impl<T> Mutex<T> {
+
+impl<T> Debug for Mutex<T>
+where T: Debug{
+
+fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> { 
+   f.debug_struct("Mutex").field("lock", &self.lock).field("inner", unsafe{&*self.inner.get()}).finish()
+}
+
+}
+impl<T> Mutex<T> 
+where T: Debug{
     pub fn is_locked(&self) -> bool{
         self.lock.load(core::sync::atomic::Ordering::Relaxed)
     }
@@ -63,10 +83,15 @@ impl<T> Mutex<T> {
     }
 
     pub fn lock(&self) -> MutexGuard<T>{
+        let mut deadlock_warning_iter_count = 1_000_000; // FIXME: Arbitrary number
         while self.lock.compare_exchange_weak(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed).is_err() {
-            while self.is_locked(){ core::hint::spin_loop(); }
+            while self.is_locked(){ 
+                core::hint::spin_loop(); 
+                deadlock_warning_iter_count -= 1; 
+                if deadlock_warning_iter_count == 0{ panic!("Tried one million (1,000,000) times but couldn't lock mutex: {:?} :(, is your system too fast, or too slow?!", self); }
+            }
         }
-        
+
        MutexGuard{
         lock_ref: &self.lock,
         inner_ref: unsafe{&mut *self.inner.get()},

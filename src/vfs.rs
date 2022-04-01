@@ -1,4 +1,4 @@
-use core::{convert::TryFrom, ops::Deref, cell::RefCell, fmt::Display};
+use core::{convert::TryFrom, ops::Deref, cell::RefCell, fmt::{Display, Debug}, borrow::Borrow};
 
 use alloc::{string::String, vec::Vec, rc::Rc, borrow::ToOwned};
 
@@ -19,6 +19,7 @@ pub trait IFolder: INode{
 pub trait IFile: INode{
     fn read(&self, offset: usize, len: usize) -> Option<Vec<u8>>;
     fn write(&mut self, offset: usize, data: &[u8]);
+    fn get_size(&self) -> usize;
 }
 
 #[derive(Clone)]
@@ -29,8 +30,8 @@ pub enum Node{
 impl INode for Node{
     fn get_name(&self) -> String {
         match self{
-            Node::File(f) => (*f).borrow().get_name(),
-            Node::Folder(f) => (*f).borrow().get_name()
+            Node::File(f) => (**f).borrow().get_name(),
+            Node::Folder(f) => (**f).borrow().get_name()
         }
     }
 }
@@ -118,6 +119,12 @@ pub struct VFSNode{
     pub mountpoint: Option<Rc<RefCell<dyn IFolder>>>
 }
 
+impl Debug for VFSNode{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let fmted = self.path.fmt(f);
+        f.debug_struct("VFSNode").field("path", &fmted).field("parent", &self.parent).field("children", &self.children).field("mountpoint", &self.mountpoint.as_ref().map(|inner|(**inner).borrow().get_name())).finish()
+    }
+}
 impl VFSNode{
     pub fn new_root() -> Self{
         Self{
@@ -186,13 +193,13 @@ impl IFolder for VFSNode{
     fn get_children(&self) -> Vec<Node>{
         let mut v = Vec::<Node>::new();
         if let Some(mnt) = &self.mountpoint{
-            for c in (*mnt).borrow().get_children(){
+            for c in (**mnt).borrow().get_children(){
                 v.push(c.clone());
             }
         }
         for c in &self.children{
             // Name resolution
-            if v.iter().any(|child| child.get_name() == (*c).borrow().get_name()){
+            if v.iter().any(|child| child.get_name() == (**c).borrow().get_name()){
                 continue;
             }
             v.push(Node::Folder(c.clone()));

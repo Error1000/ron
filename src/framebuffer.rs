@@ -1,5 +1,5 @@
 use core::{ptr, ffi, slice};
-
+use core::fmt::Debug;
 use crate::{efi::{EfiGopMode, self}, vga::{Vga, MixedRegisterState, Color256, self, VgaMode, Unblanked}};
 
 #[derive(Clone, Copy)]
@@ -16,6 +16,12 @@ impl Pixel{
 
     pub fn from_u32_bgr(val: u32) -> Pixel{
         Pixel{r: ((val&0xFF) >> 0) as u8, g: ((val&0xFF00) >> 8) as u8, b: ((val&0xFF0000) >> 16) as u8 }
+    }
+}
+
+impl Debug for Pixel{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Pixel").field("r", &self.r).field("g", &self.g).field("b", &self.b).finish()
     }
 }
 

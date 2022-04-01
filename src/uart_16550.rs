@@ -1,4 +1,5 @@
 use core::fmt::Write;
+use core::fmt::Debug;
 
 use crate::{virtmem::KernPointer, X86Default};
 use packed_struct::prelude::*;
@@ -189,6 +190,12 @@ impl UARTDevice {
             wait_for!(self.line_sts().input_full);
             self.data.read()
         }
+    }
+}
+
+impl Debug for UARTDevice{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("UARTDevice").field("data", &self.data).field("int_en", &self.int_en).field("fifo_ctrl", &self.fifo_ctrl).field("line_ctrl", &self.line_ctrl).field("modem_ctrl", &self.modem_ctrl).field("line_status", &self.line_status).finish()
     }
 }
 

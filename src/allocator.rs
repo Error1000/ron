@@ -1,6 +1,6 @@
-use core::{alloc::GlobalAlloc, ptr::{self, null_mut, null}};
+use core::{alloc::GlobalAlloc, ptr::{self, null_mut}};
 use crate::primitives::Mutex;
-
+use core::fmt::Debug;
 
 
 
@@ -15,7 +15,11 @@ pub struct BasicAlloc{
     stashed_deallocations: [(*mut u8, core::alloc::Layout); 1024]
 }
 
-
+impl Debug for BasicAlloc{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BasicAlloc").field("base", &self.base).field("len", &self.len).field("alloc_count", &self.alloc_count).field("next", &self.next).field("stashed_deallocations", &self.stashed_deallocations).finish()
+    }
+}
 impl BasicAlloc{
     const fn new() -> Self{
         Self{

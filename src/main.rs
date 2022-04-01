@@ -9,15 +9,14 @@
 
 extern crate alloc;
 
-
+use core::fmt::Debug;
 use core::cell::RefCell;
 use core::convert::{TryFrom, TryInto};
 use core::fmt::Write;
 
 use alloc::rc::Rc;
 use alloc::string::String;
-use ata::ATADevice;
-use devfs::ATADeviceFile;
+use ata::{ATADevice, ATADeviceFile, ATABus};
 use vfs::{VFSNode, INode, IFolder, Node};
 use primitives::{Mutex, LazyInitialised};
 use vga::{Color256, Unblanked};
@@ -43,20 +42,24 @@ trait X86Default { unsafe fn x86_default() -> Self; }
 fn panic(p: &::core::panic::PanicInfo) -> ! { 
     let mut s = String::new();
     let written = write!(s, "Ron {}", p).is_ok(); // FIXME: Crashes on virtualbox and real hardware but not on qemu?
-    writeln!(UART.lock()).unwrap();
-    if !written{
-        writeln!(UART.lock(), "Bad panic, panic info cannot be formatted correctly, maybe OOM?").unwrap();
-    }else{
-        writeln!(UART.lock(), "{}", &s).unwrap();
+    if !UART.is_locked(){
+        writeln!(UART.lock()).unwrap();
+        if !written{
+            writeln!(UART.lock(), "Bad panic, panic info cannot be formatted correctly, maybe OOM?").unwrap();
+        }else{
+            writeln!(UART.lock(), "{}", &s).unwrap();
+        }
     }
-    let mut lock = TERMINAL.lock();
-    lock.write_char('\n');
-    if !written{
-        "Bad panic, panic info cannot be formatted correctly, maybe OOM?\n".chars().for_each(|c|lock.write_char(c));
-    }else{
-        s.chars().for_each(|c|lock.write_char(c));
+    if !TERMINAL.is_locked(){
+        let mut lock = TERMINAL.lock();
         lock.write_char('\n');
-    }
+        if !written{
+         "Bad panic, panic info cannot be formatted correctly, maybe OOM?\n".chars().for_each(|c|lock.write_char(c));
+     }else{
+            s.chars().for_each(|c|lock.write_char(c));
+           lock.write_char('\n');
+     }
+    }    
     loop{}
 }
 
@@ -72,6 +75,7 @@ mod efi;
 mod framebuffer;
 mod vfs;
 mod devfs;
+mod partitions;
 mod char_device;
 mod allocator;
 mod primitives;
@@ -152,10 +156,9 @@ pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mu
     dest
 }
 
-
 pub static UART: Mutex<LazyInitialised<UARTDevice>> = Mutex::from(LazyInitialised::uninit());
 
-
+#[allow(unused)]
 fn kprint_dump<T>(ptr: *const T, bytes: usize, uart: &mut UARTDevice){
     let arr = unsafe{core::slice::from_raw_parts(core::mem::transmute::<_, *mut u32>(ptr), bytes/core::mem::size_of::<u32>())};
     for e in arr{ write!(uart, "0x{:02X}",  *e).unwrap(); }  
@@ -173,6 +176,11 @@ struct Terminal<'a>{
     cursor_pos: (usize, usize),
     cursor_char: char,
     color: Pixel
+}
+impl Debug for Terminal<'_>{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Terminal").field("cursor_pos", &self.cursor_pos).field("cursor_char", &self.cursor_char).field("color", &self.color).finish()
+    }
 }
 
 impl<'a> Write for Terminal<'a>{
@@ -324,54 +332,57 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     writeln!(TERMINAL.lock(), "Hello, world!").unwrap();
 
        
-    let ata_bus = unsafe{ ata::ATABus::x86_default() };
-    let ata_ref = Rc::new(RefCell::new(ata_bus));
-    if unsafe{(*ata_ref).borrow_mut().identify(ATADevice::MASTER).is_some()}{
-        (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(ATADeviceFile{bus: ata_ref.clone(), bus_device: ATADevice::MASTER})));
-    }
-
-    if unsafe{(*ata_ref).borrow_mut().identify(ATADevice::SLAVE).is_some()}{
-        (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(ATADeviceFile{bus: ata_ref.clone(), bus_device: ATADevice::SLAVE})));
-    }
+    if let Some(primary_ata_bus) = unsafe{ ATABus::primary_x86() }{
+        let ata_ref = Rc::new(RefCell::new(primary_ata_bus));
+        // NOTE: master device is not necessarilly the device from which the os was booted
     
-    /*
-    // Temporary ATA code to test ata driver
-    // NOTE: master device is not necessarilly the device from which the os was booted
+        if unsafe{(*ata_ref).borrow_mut().identify(ATADevice::MASTER).is_some()}{
+            let master_dev = Rc::new(RefCell::new(ATADeviceFile{bus: ata_ref.clone(), bus_device: ATADevice::MASTER}));
+            (*dfs).borrow_mut().add_device_file(master_dev.clone());
+            for part_number in 0..4{
+                if let Some(part_dev) = partitions::MBRPartitionFile::from(master_dev.clone(), part_number.try_into().unwrap()){
+                    (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(part_dev)));
+                }
+            }
+        }
 
-    let master_r = unsafe{ ata_bus.identify(ata::ATADevice::MASTER) };
-    if let Some(id_data) = master_r {
-        kprint_u16(id_data[0], &mut UART.lock());
-        kprint_u16(id_data[83], &mut UART.lock());
-        kprint_u16(id_data[88], &mut UART.lock());
-        kprint_u16(id_data[93], &mut UART.lock());
-
-        kprint_u16(id_data[61], &mut UART.lock());
-        kprint_u16(id_data[60], &mut UART.lock());
-        "Sector count of master device: 0x".chars().for_each(|c|TERMINAL.lock().write_char(c));
-        u16_to_str_hex(id_data[60]).iter().for_each(|c| TERMINAL.lock().write_char(*c as char));
-        
-        kprint_u16(id_data[103], &mut UART.lock());
-        kprint_u16(id_data[102], &mut UART.lock());
-        kprint_u16(id_data[101], &mut UART.lock());
-        kprint_u16(id_data[100], &mut UART.lock());
-        
-        kprintln("Found master device on primary ata bus!", &mut UART.lock())
-    }else{
-        "No master device on primary ata bus!\n".chars().for_each(|c|TERMINAL.lock().write_char(c));
-        panic!();
+        if unsafe{(*ata_ref).borrow_mut().identify(ATADevice::SLAVE).is_some()}{
+            let slave_dev = Rc::new(RefCell::new(ATADeviceFile{bus: ata_ref.clone(), bus_device: ATADevice::SLAVE}));
+            (*dfs).borrow_mut().add_device_file(slave_dev.clone());
+            for part_number in 0..4{
+                if let Some(part_dev) = partitions::MBRPartitionFile::from(slave_dev.clone(), part_number.try_into().unwrap()){
+                    (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(part_dev)));
+                }
+            }
+        }
     }
 
-    "\nFirst sector on master device on primary ata bus: \n".chars().for_each(|c|TERMINAL.lock().write_char(c));
-    // Read first sector
-    let sdata = unsafe{ata_bus.read_sector(ata::ATADevice::MASTER, ata::LBA28{low: 0, mid: 0, hi: 0})}.unwrap();
-    for e in sdata{
-        u16_to_str_hex(e).iter().for_each(|c|TERMINAL.lock().write_char(*c as char));
-        TERMINAL.lock().write_char(' ');
-    }
-    TERMINAL.lock().write_char('\n');
-    //////////
-    */
+    if let Some(secondary_ata_bus) = unsafe{ ATABus::secondary_x86() }{
+        let ata_ref = Rc::new(RefCell::new(secondary_ata_bus));
+        // NOTE: master device is not necessarilly the device from which the os was booted
+    
+        if unsafe{(*ata_ref).borrow_mut().identify(ATADevice::MASTER).is_some()}{
+            let master_dev = Rc::new(RefCell::new(ATADeviceFile{bus: ata_ref.clone(), bus_device: ATADevice::MASTER}));
+            (*dfs).borrow_mut().add_device_file(master_dev.clone());
+            for part_number in 0..4{
+                if let Some(part_dev) = partitions::MBRPartitionFile::from(master_dev.clone(), part_number.try_into().unwrap()){
+                    (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(part_dev)));
+                }
+            }
+        }
 
+        if unsafe{(*ata_ref).borrow_mut().identify(ATADevice::SLAVE).is_some()}{
+            let slave_dev = Rc::new(RefCell::new(ATADeviceFile{bus: ata_ref.clone(), bus_device: ATADevice::SLAVE}));
+            (*dfs).borrow_mut().add_device_file(slave_dev.clone());
+            for part_number in 0..4{
+                if let Some(part_dev) = partitions::MBRPartitionFile::from(slave_dev.clone(), part_number.try_into().unwrap()){
+                    (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(part_dev)));
+                }
+            }
+        }
+    }
+
+    
     let mut ps2 = unsafe { ps2_8042::PS2Device::x86_default() };
 
     let mut cur_dir = vfs::Path::try_from("/").unwrap();
@@ -427,32 +438,38 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                 }else if cmnd.contains("ls"){
                     for subnode in (*cur_dir.get_node().expect("Shell path should be valid at all times!")).borrow().get_children(){
                         write!(TERMINAL.lock(), "{} ", subnode.get_name()).unwrap();
+                        if let Node::File(f) = subnode{
+                            write!(TERMINAL.lock(), "(size: {} kb) ", (*f).borrow().get_size() as f32 / 1024.0).unwrap();
+                        }
                     }
                     writeln!(TERMINAL.lock()).unwrap();                
                 }else if cmnd.contains("hexdump"){
-                    if let Some(arg) = splat.next(){
-                        let mut found = None;
-                        for subnode in (*cur_dir.get_node().expect("Shell path should be valid at all times!")).borrow().get_children(){
-                            if subnode.get_name() == arg{
-                                found = Some(subnode);
-                                break;
-                            }
-                        }   
+                    if let (Some(offset_str), Some(arg)) = (splat.next(), splat.next()){
+                        if let Ok(offset) = offset_str.trim().parse::<usize>(){
+                            let mut found = None;
+                            for subnode in (*cur_dir.get_node().expect("Shell path should be valid at all times!")).borrow().get_children(){
+                               if subnode.get_name() == arg{
+                                   found = Some(subnode);
+                                   break;
+                               }
+                            }   
                         
-                        if let Some(Node::File(file)) = found{
-                            if let Some(data) = (*file).borrow().read(0, 10){
-                                for e in data{
-                                    write!(TERMINAL.lock(), "0x{:02X} ", e).unwrap();
+                            if let Some(Node::File(file)) = found{
+                                if let Some(data) = (*file).borrow().read(offset, 16){
+                                    for e in data{
+                                        write!(TERMINAL.lock(), "0x{:02X} ", e).unwrap();
+                                    }
+                                }else{
+                                    write!(TERMINAL.lock(), "Couldn't read file!").unwrap();
                                 }
                             }else{
-                                write!(TERMINAL.lock(), "Couldn't read file!").unwrap();
+                                write!(TERMINAL.lock(), "File not found!").unwrap();
                             }
                         }else{
-                            write!(TERMINAL.lock(), "File not found!").unwrap();
+                            write!(TERMINAL.lock(), "Bad offset!").unwrap();
                         }
                         writeln!(TERMINAL.lock()).unwrap();                
                     }
-                
                 }else if cmnd.contains("cd"){
                     if let Some(name) = splat.next(){
                         let name = name.trim();
