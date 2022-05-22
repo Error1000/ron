@@ -2,21 +2,16 @@ use core::{convert::TryFrom, ops::Deref, cell::RefCell, fmt::{Display, Debug}, b
 
 use alloc::{string::String, vec::Vec, rc::Rc, borrow::ToOwned};
 
-use crate::{primitives::{Mutex, LazyInitialised}};
+use crate::primitives::{Mutex, LazyInitialised};
 
 pub static VFS_ROOT: Mutex<LazyInitialised<Rc<RefCell<VFSNode>>>> = Mutex::from(LazyInitialised::uninit());
 
 
-
-pub trait INode{
-    fn get_name(&self) -> String;
+pub trait IFolder {
+    fn get_children(&self) -> Vec<(String, Node)>;
 }
 
-pub trait IFolder: INode{
-    fn get_children(&self) -> Vec<Node>;
-}
-
-pub trait IFile: INode{
+pub trait IFile {
     fn read(&self, offset: usize, len: usize) -> Option<Vec<u8>>;
     fn write(&mut self, offset: usize, data: &[u8]);
     fn get_size(&self) -> usize;
@@ -27,14 +22,23 @@ pub enum Node{
     File(Rc<RefCell<dyn IFile>>),
     Folder(Rc<RefCell<dyn IFolder>>)
 }
-impl INode for Node{
-    fn get_name(&self) -> String {
+
+impl Node{
+    pub fn expect_folder(self) -> Rc<RefCell<dyn IFolder>>{
         match self{
-            Node::File(f) => (**f).borrow().get_name(),
-            Node::Folder(f) => (**f).borrow().get_name()
+            Node::Folder(f) => f,
+            Node::File(_) => panic!("Expected folder, got file!")
+        }
+    }
+
+    pub fn expect_file(self) -> Rc<RefCell<dyn IFile>>{
+        match self{
+            Node::Folder(_) => panic!("Expected file, got folder!"),
+            Node::File(f) => f 
         }
     }
 }
+
 
 #[derive(Clone)]
 pub struct Path{
@@ -58,22 +62,55 @@ impl Path{
         }
     }
 
+    pub fn add_last(&mut self, node: &str){
+        if !self.inner.ends_with("/"){
+            self.inner.push('/');
+        }
+        self.inner.push_str(node);
+    }
+
     pub fn append(&mut self, subnode: &str){
         if !self.inner.ends_with("/"){ self.inner.push('/'); }
         self.inner.push_str(subnode);
     }
 
-    pub fn get_node(&self) -> Option<Rc<RefCell<VFSNode>>>{
+    pub fn get_node(&self) -> Option<Node> {
+       let mut cur_node: Node = Node::Folder((**VFS_ROOT.lock()).clone() as Rc<RefCell<dyn IFolder>>);
+       let mut cur_path: Path = Path::root();
+       let mut nodes = self.inner.split('/');
+       'tree_traversal_loop: while cur_path != *self {
+            let to_find = nodes.next();
+            if to_find == Some("") { continue; }
+            let to_find = if let Some(val) = to_find { val } else { break; }.trim();
+
+            let children = (*cur_node.clone().expect_folder()).borrow().get_children();
+            for (name, node) in children{
+                if name == to_find {
+                    cur_node = node;
+                    cur_path.append(to_find);
+                    continue 'tree_traversal_loop;
+                }
+            }
+            return None;
+       }
+       
+       Some(cur_node)
+    }
+
+    pub fn get_vfs_node(&self) -> Option<Rc<RefCell<VFSNode>>>{
         let mut to_search: Vec<Rc<RefCell<VFSNode>>> = Vec::new();
         to_search.push(VFS_ROOT.lock().clone());
+        let mut cur_path = Path::root();
         while to_search.len() != 0 {
             if let Some(cur) = to_search.pop(){
-                if (*cur).borrow().path == *self{
+                cur_path.add_last(&(*cur).borrow().path.last());
+                if cur_path == *self{
                     return Some(cur);
                 }else{
-                    for child in &(*cur).borrow().children{
-                        to_search.push(child.clone());
+                    for c in &(*cur).borrow().children{
+                        to_search.push(c.clone());
                     }
+                    cur_path.del_last();
                 }
             }
         }
@@ -122,7 +159,7 @@ pub struct VFSNode{
 impl Debug for VFSNode{
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let fmted = self.path.fmt(f);
-        f.debug_struct("VFSNode").field("path", &fmted).field("parent", &self.parent).field("children", &self.children).field("mountpoint", &self.mountpoint.as_ref().map(|inner|(**inner).borrow().get_name())).finish()
+        f.debug_struct("VFSNode").field("path", &fmted).field("parent", &self.parent).field("children", &self.children).finish()
     }
 }
 impl VFSNode{
@@ -183,26 +220,21 @@ impl VFSNode{
     }
 }
 
-impl INode for VFSNode{
-    fn get_name(&self) -> String {
-        self.path.last().to_owned()
-    }
-}
-
 impl IFolder for VFSNode{
-    fn get_children(&self) -> Vec<Node>{
-        let mut v = Vec::<Node>::new();
+    fn get_children(&self) -> Vec<(String, Node)>{
+        let mut v = Vec::<(String, Node)>::new();
         if let Some(mnt) = &self.mountpoint{
             for c in (**mnt).borrow().get_children(){
-                v.push(c.clone());
+                v.push((c.0, c.1.clone()));
             }
         }
-        for c in &self.children{
+
+        for c in &self.children {
             // Name resolution
-            if v.iter().any(|child| child.get_name() == (**c).borrow().get_name()){
+            if v.iter().any(|(child_name, _)| *child_name == (**c).borrow().path.last()) {
                 continue;
             }
-            v.push(Node::Folder(c.clone()));
+            v.push(( c.as_ref().borrow().path.last().to_owned(), Node::Folder(c.clone() as Rc<RefCell<dyn IFolder>>)));
         }
         v
     }

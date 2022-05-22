@@ -1,7 +1,7 @@
 use core::{mem, cell::RefCell};
-use alloc::{rc::Rc, string::String, vec::Vec};
+use alloc::{rc::Rc, vec::Vec};
 
-use crate::{virtmem::KernPointer, vfs::{INode, IFile}};
+use crate::{virtmem::KernPointer, vfs::IFile};
 
 struct IORegistersLBA28 {
     pub data: KernPointer<u16>,
@@ -268,46 +268,68 @@ pub struct ATADeviceFile{
 }
 
 
-impl INode for ATADeviceFile{
-    fn get_name(&self) -> String {
-      let mut s = String::new();
-      use core::fmt::Write;
-      write!(s, "h{}{}",
-       match self.bus.borrow().bus_type{ BUSType::Primary => "d", BUSType::Secondary => "c"},
-       match self.bus_device{ ATADevice::MASTER => "a", ATADevice::SLAVE => "b"}
-    ).unwrap();
-      s
-    }
-}
-
 impl IFile for ATADeviceFile{
-    fn read(&self, mut offset: usize, len: usize) -> Option<Vec<u8>> {
-      let offset_in_sector = offset % SECTOR_SIZE_IN_BYTES;
-      offset /= SECTOR_SIZE_IN_BYTES;
-      let lba = LBA28{hi: ((offset>>16)&0xFF) as u8, mid: ((offset>>8)&0xFF) as u8, low: (offset&0xFF) as u8};
-      unsafe{ (*self.bus).borrow_mut().read_sector(self.bus_device, lba) }
-      .map(|val|{
-        let mut v = Vec::with_capacity(len);
-        for e in &val[offset_in_sector/core::mem::size_of::<u16>()..(offset_in_sector+len)/core::mem::size_of::<u16>()]{
-            v.push((e&0xFF) as u8);
-            v.push(((e >> 8)&0xFF) as u8);
-        }
-        v
-      })
+    fn read(&self, offset_in_bytes: usize, len: usize) -> Option<Vec<u8>> {
+      let offset_in_first_sector = offset_in_bytes % SECTOR_SIZE_IN_BYTES;
+      let offset_of_first_sector = offset_in_bytes / SECTOR_SIZE_IN_BYTES;
+      let mut res: Vec<u8> = Vec::with_capacity(len);
+
+      // Deal with first block
+      let first_block_lba = LBA28{hi: ((offset_of_first_sector>>16)&0xFF) as u8, mid: ((offset_of_first_sector>>8)&0xFF) as u8, low: (offset_of_first_sector&0xFF) as u8};
+      let first_block = unsafe{ (*self.bus).borrow_mut().read_sector(self.bus_device, first_block_lba) }?;
+
+      let mut skip_first_byte = offset_in_first_sector%2 == 1;
+      for e in &first_block[offset_in_first_sector/2..] {                 
+          if skip_first_byte {
+            res.push(((e >> 8)&0xFF) as u8); 
+            skip_first_byte = false;
+            continue;
+          } 
+          res.push((e&0xFF) as u8);
+          res.push(((e >> 8)&0xFF) as u8); 
+      }
+
+      // Read continually, until the end is included in res, overreading if necessary
+      let extra_block = if len%SECTOR_SIZE_IN_BYTES != 0 { 1 } else { 0 };
+      for sector_indx in 1..((len/SECTOR_SIZE_IN_BYTES)+extra_block){
+        if res.len() >= len { break; }
+        let offset = offset_of_first_sector+sector_indx;
+        let lba = LBA28{hi: ((offset>>16)&0xFF) as u8, mid: ((offset>>8)&0xFF) as u8, low: (offset&0xFF) as u8};
+        res.append(
+        &mut unsafe{ (*self.bus).borrow_mut().read_sector(self.bus_device, lba) }
+        .map(|val|{
+            let mut v = Vec::with_capacity(SECTOR_SIZE_IN_BYTES);
+            for e in &val{
+                v.push((e&0xFF) as u8);
+                v.push(((e >> 8)&0xFF) as u8);
+            }
+            v
+        })?
+        );
+      }
+      // Get rid of overread bytes
+      while res.len() > len { res.pop(); }
+      assert!(res.len() == len);
+      Some(res)
     }
 
-    fn write(&mut self, mut offset: usize, data: &[u8]) {
-       let offset_in_sector = offset & SECTOR_SIZE_IN_BYTES;
-       offset /= SECTOR_SIZE_IN_BYTES;
-       let lba = LBA28{hi: ((offset>>16)&0xFF) as u8, mid: ((offset>>8)&0xFF) as u8, low: (offset&0xFF) as u8};
-       let mut v = unsafe{ (*self.bus).borrow_mut().read_sector(self.bus_device, lba) }.expect("Reading device should work!");
+    fn write(&mut self, offset_in_bytes: usize, data: &[u8]) {
+       let offset_in_first_sector = offset_in_bytes & SECTOR_SIZE_IN_BYTES;
+       let offset_of_first_sector = offset_in_bytes / SECTOR_SIZE_IN_BYTES;
        let mut i = data.iter();
-       let mut ind = 0;
-       while let (Some(a), Some(b)) = (i.next(), i.next()){
-          v[offset_in_sector+ind] = ((*a as u16) << 8) | (*b as u16);
-          ind += 1;
-       }
-       unsafe{ (*self.bus).borrow_mut().write_sector(self.bus_device, lba, &v) }
+       
+       for sector_indx in 0..(data.len()/SECTOR_SIZE_IN_BYTES+1){
+         let offset = offset_of_first_sector+sector_indx;
+         let lba = LBA28{hi: ((offset>>16)&0xFF) as u8, mid: ((offset>>8)&0xFF) as u8, low: (offset&0xFF) as u8};
+         let mut v = unsafe{ (*self.bus).borrow_mut().read_sector(self.bus_device, lba) }.expect("Reading device should work!");
+         let mut ind = 0;
+         if sector_indx == 0 { ind = offset_in_first_sector; }
+         while let (Some(a), Some(b)) = (i.next(), i.next()){
+           v[ind] = ((*a as u16) << 8) | (*b as u16);
+            ind += 1;
+         }
+         unsafe{ (*self.bus).borrow_mut().write_sector(self.bus_device, lba, &v) }
+        }
     }
 
     fn get_size(&self) -> usize{

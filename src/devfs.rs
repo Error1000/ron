@@ -1,11 +1,11 @@
 use core::cell::RefCell;
 
-use alloc::{vec::Vec, string::String, rc::Rc, borrow::ToOwned};
+use alloc::{vec::Vec, string::String, rc::Rc};
 
 use crate::vfs::{self, IFile, Node};
 
 pub struct DevFS{
-  disk_devices: Vec<Rc<RefCell<dyn IFile>>>
+  disk_devices: Vec<(String, Rc<RefCell<dyn IFile>>)>
 }
 
 impl DevFS{
@@ -15,22 +15,16 @@ impl DevFS{
     }
   }
 
-  pub fn add_device_file(&mut self, dev: Rc<RefCell<dyn IFile>>) {
-    self.disk_devices.push(dev)
+  pub fn add_device_file(&mut self, dev: Rc<RefCell<dyn IFile>>, name: String) {
+    self.disk_devices.push((name, dev))
   }
 }
 
-impl vfs::INode for DevFS{
-    fn get_name(&self) -> String {
-        "dev".to_owned()
-    }
-}
-
 impl vfs::IFolder for DevFS{
-    fn get_children(&self) -> Vec<Node> {
-       let mut v = Vec::<Node>::new();
+    fn get_children(&self) -> Vec<(String, Node)> {
+       let mut v = Vec::<(String, Node)>::new();
        for c in &self.disk_devices{
-         v.push(Node::File(c.clone()))
+         v.push((c.0.clone(), Node::File(c.1.clone())))
        }
        v
     }

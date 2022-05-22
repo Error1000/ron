@@ -1,5 +1,5 @@
 use core::{alloc::GlobalAlloc, ptr::{self, null_mut}};
-use crate::primitives::Mutex;
+use crate::{primitives::Mutex, UART};
 use core::fmt::Debug;
 
 
@@ -36,7 +36,8 @@ impl BasicAlloc{
         self.len = len;
     }
 
-    pub fn get_heap_size(&self) -> usize { self.next }
+    pub fn get_heap_used(&self) -> usize { self.next }
+    pub fn get_heap_max(&self) -> usize { self.len }
 
     pub fn find_free_ind(&self) -> Option<usize> {
         for (i, e) in self.stashed_deallocations.iter().enumerate(){
@@ -79,6 +80,8 @@ unsafe impl GlobalAlloc for Mutex<BasicAlloc>{
                 if let Some(ind) = s.find_free_ind(){
                     s.stashed_deallocations[ind] = (padding_ptr, padding);
                 }else{
+                    use core::fmt::Write;
+                    let _ = writeln!(UART.lock(), "Leaking memory :)");
                     // Just leak memory idk ¯\_(ツ)_/¯
                 }
             }else{
@@ -104,6 +107,8 @@ unsafe impl GlobalAlloc for Mutex<BasicAlloc>{
             if let Some(i) = s.find_free_ind(){
                 s.stashed_deallocations[i] = (ptr, layout);
             }else{
+                use core::fmt::Write;
+                let _ = writeln!(UART.lock(), "Leaking memory :)");
                 // Just leak memory idk ¯\_(ツ)_/¯
             }
         }else{ // Maybe the deallocation we just did allows us to deallocate even more

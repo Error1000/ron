@@ -3,24 +3,25 @@
 #![feature(bench_black_box)]
 #![feature(abi_efiapi)]
 #![feature(default_alloc_error_handler)]
-#![feature(const_fn_trait_bound)]
-#![feature(const_ptr_offset)]
 #![feature(lang_items)]
 
 extern crate alloc;
 
+use core::borrow::{Borrow, BorrowMut};
 use core::fmt::Debug;
-use core::cell::RefCell;
+use core::cell::{RefCell, Ref};
 use core::convert::{TryFrom, TryInto};
 use core::fmt::Write;
 
+use alloc::borrow::ToOwned;
 use alloc::rc::Rc;
 use alloc::string::String;
 use ata::{ATADevice, ATADeviceFile, ATABus};
-use vfs::{VFSNode, INode, IFolder, Node};
+use vfs::{VFSNode, IFolder, Node, IFile, VFS_ROOT};
 use primitives::{Mutex, LazyInitialised};
 use vga::{Color256, Unblanked};
 
+use crate::allocator::ALLOCATOR;
 use crate::char_device::CharDevice;
 use crate::framebuffer::{FrameBuffer, Pixel};
 use crate::hio::KeyboardPacketType;
@@ -75,6 +76,7 @@ mod efi;
 mod framebuffer;
 mod vfs;
 mod devfs;
+mod ext2;
 mod partitions;
 mod char_device;
 mod allocator;
@@ -279,6 +281,7 @@ impl<'a> Terminal<'a>{
         self.update_visual_cursor();
     }
 }
+
 // reg1 and reg2 are used for multiboot
 #[no_mangle]
 pub extern "C" fn main(r1: u32, r2: u32) -> ! {
@@ -304,11 +307,14 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         }
         i += len as usize;
     }
-    allocator::ALLOCATOR.lock().init((1*1024*1024) as *mut u8, 100*1024);
+    // FIXME: Don't hardcore the starting location of the heap
+    // Stack size: 1mb, executable size (as of 22 may 2022): ~4mb, so starting the heap at 8mb should be a safe bet.
+    allocator::ALLOCATOR.lock().init((8*1024*1024) as *mut u8, 1*1024*1024);
     vfs::VFS_ROOT.lock().set(Rc::new(RefCell::new(VFSNode::new_root())));
+
     let dev_folder = vfs::VFSNode::new_folder(vfs::VFS_ROOT.lock().clone(), "dev");
     let dfs = Rc::new(RefCell::new(devfs::DevFS::new()));
-    (*dev_folder).borrow_mut().mountpoint = Some(dfs.clone());
+    (*dev_folder).borrow_mut().mountpoint = Some(dfs.clone() as Rc<RefCell<dyn IFolder>>);
 
     let vga;
     let mut fb: Option<&mut dyn framebuffer::FrameBuffer>;
@@ -338,20 +344,26 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     
         if unsafe{(*ata_ref).borrow_mut().identify(ATADevice::MASTER).is_some()}{
             let master_dev = Rc::new(RefCell::new(ATADeviceFile{bus: ata_ref.clone(), bus_device: ATADevice::MASTER}));
-            (*dfs).borrow_mut().add_device_file(master_dev.clone());
+            (*dfs).borrow_mut().add_device_file(master_dev.clone() as Rc<RefCell<dyn IFile>>, "hda".to_owned());
             for part_number in 0..4{
-                if let Some(part_dev) = partitions::MBRPartitionFile::from(master_dev.clone(), part_number.try_into().unwrap()){
-                    (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(part_dev)));
+                if let Some(part_dev) = partitions::MBRPartitionFile::from(master_dev.clone() as Rc<RefCell<dyn IFile>>, part_number.try_into().unwrap()){
+                    let mut part_dev_name = String::new();
+                    write!(part_dev_name, "hdap{}", part_number+1).unwrap();
+                    writeln!(TERMINAL.lock(), "Found partition {}, with offset in bytes from begining of: {}", part_dev_name, part_dev.get_offset()).unwrap();
+                    (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(part_dev)) as Rc<RefCell<dyn IFile>>, part_dev_name);
                 }
             }
         }
 
         if unsafe{(*ata_ref).borrow_mut().identify(ATADevice::SLAVE).is_some()}{
             let slave_dev = Rc::new(RefCell::new(ATADeviceFile{bus: ata_ref.clone(), bus_device: ATADevice::SLAVE}));
-            (*dfs).borrow_mut().add_device_file(slave_dev.clone());
+            (*dfs).borrow_mut().add_device_file(slave_dev.clone() as Rc<RefCell<dyn IFile>>, "hdb".to_owned());
             for part_number in 0..4{
-                if let Some(part_dev) = partitions::MBRPartitionFile::from(slave_dev.clone(), part_number.try_into().unwrap()){
-                    (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(part_dev)));
+                if let Some(part_dev) = partitions::MBRPartitionFile::from(slave_dev.clone() as Rc<RefCell<dyn IFile>>, part_number.try_into().unwrap()){
+                    let mut part_dev_name = String::new();
+                    write!(part_dev_name, "hdbp{}", part_number+1).unwrap();
+                    writeln!(TERMINAL.lock(), "Found partition {}, with offset in bytes from begining of: {}", part_dev_name, part_dev.get_offset()).unwrap();
+                    (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(part_dev)) as Rc<RefCell<dyn IFile>>, part_dev_name);
                 }
             }
         }
@@ -363,26 +375,31 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     
         if unsafe{(*ata_ref).borrow_mut().identify(ATADevice::MASTER).is_some()}{
             let master_dev = Rc::new(RefCell::new(ATADeviceFile{bus: ata_ref.clone(), bus_device: ATADevice::MASTER}));
-            (*dfs).borrow_mut().add_device_file(master_dev.clone());
+            (*dfs).borrow_mut().add_device_file(master_dev.clone() as Rc<RefCell<dyn IFile>>, "hdc".to_owned());
             for part_number in 0..4{
-                if let Some(part_dev) = partitions::MBRPartitionFile::from(master_dev.clone(), part_number.try_into().unwrap()){
-                    (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(part_dev)));
+                if let Some(part_dev) = partitions::MBRPartitionFile::from(master_dev.clone() as Rc<RefCell<dyn IFile>>, part_number.try_into().unwrap()){
+                    let mut part_dev_name = String::new();
+                    write!(part_dev_name, "hdcp{}", part_number+1).unwrap();
+                    writeln!(TERMINAL.lock(), "Found partition {}, with offset in bytes from begining of: {}", part_dev_name, part_dev.get_offset()).unwrap();
+                    (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(part_dev)) as Rc<RefCell<dyn IFile>>, part_dev_name);
                 }
             }
         }
 
         if unsafe{(*ata_ref).borrow_mut().identify(ATADevice::SLAVE).is_some()}{
             let slave_dev = Rc::new(RefCell::new(ATADeviceFile{bus: ata_ref.clone(), bus_device: ATADevice::SLAVE}));
-            (*dfs).borrow_mut().add_device_file(slave_dev.clone());
+            (*dfs).borrow_mut().add_device_file(slave_dev.clone() as Rc<RefCell<dyn IFile>>, "hdd".to_owned());
             for part_number in 0..4{
-                if let Some(part_dev) = partitions::MBRPartitionFile::from(slave_dev.clone(), part_number.try_into().unwrap()){
-                    (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(part_dev)));
+                if let Some(part_dev) = partitions::MBRPartitionFile::from(slave_dev.clone() as Rc<RefCell<dyn IFile>>, part_number.try_into().unwrap()){
+                    let mut part_dev_name = String::new();
+                    write!(part_dev_name, "hddp{}", part_number+1).unwrap();
+                    writeln!(TERMINAL.lock(), "Found partition {}, with offset in bytes from begining of: {}", part_dev_name, part_dev.get_offset()).unwrap();
+                    (*dfs).borrow_mut().add_device_file(Rc::new(RefCell::new(part_dev)) as Rc<RefCell<dyn IFile>>, part_dev_name);
                 }
             }
         }
     }
 
-    
     let mut ps2 = unsafe { ps2_8042::PS2Device::x86_default() };
 
     let mut cur_dir = vfs::Path::try_from("/").unwrap();
@@ -432,13 +449,58 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                 }else if cmnd.contains("whoareyou"){
                     writeln!(TERMINAL.lock(), "Ron").unwrap();
                 }else if cmnd.contains("help"){
-                    writeln!(TERMINAL.lock(), "puts whoareyou rmdir mkdir hexdump ls cd clear exit help").unwrap();
+                    writeln!(TERMINAL.lock(), "puts whoareyou rmvfsdir mkvfsdir mount.ext2 umount free hexdump ls cd clear exit help").unwrap();
                 }else if cmnd.contains("clear"){
                     TERMINAL.lock().clear();
+                }else if cmnd.contains("free"){
+                    let heap_used = ALLOCATOR.lock().get_heap_used();
+                    let heap_max = ALLOCATOR.lock().get_heap_max();
+                    writeln!(TERMINAL.lock(), "{} bytes of {} bytes used on heap, that's {}% !", heap_used, heap_max, heap_used as f32/heap_max as f32 * 100.0).unwrap();
+                }else if cmnd.contains("mount.ext2"){
+                    if let (Some(file), Some(mntpoint)) = (splat.next(), splat.next()){
+                        let mut file_node = vfs::Path::try_from(file.trim());
+                        if !file.starts_with("/"){
+                            let mut actual_node = cur_dir.clone();
+                            actual_node.append(file);
+                            file_node = Ok(actual_node);
+                        }
+                        let file_node = if let Ok(val) = file_node { val } else { writeln!(TERMINAL.lock(), "Malformed source path: \"{}\"!", file).unwrap(); continue; };
+                        let file_node = if let Some(val) = file_node.get_node() { val } else { writeln!(TERMINAL.lock(), "Source path: \"{}\" does not exist!", file).unwrap(); continue; };
+                        let file_node = if let vfs::Node::File(val) = file_node { val } else { writeln!(TERMINAL.lock(), "Source path: \"{}\" is not a file!", file).unwrap(); continue;};
+                        let e2fs = ext2::Ext2FS::new(file_node);
+                        let e2fs = if let Some(val) = e2fs { val } else { writeln!(TERMINAL.lock(), "Source file does not contain a valid ext2 fs!").unwrap(); continue; };
+                        let e2fs = Rc::new(RefCell::new(e2fs));
+                        let root_inode = (*e2fs).borrow_mut().get_inode(2).expect("Root inode should exist!").as_vfs_node(e2fs.clone()).expect("Root inode should be parsable in vfs!").expect_folder();
+                        let mut mntpoint_node = vfs::Path::try_from(mntpoint.trim());
+                        if !mntpoint.starts_with("/"){
+                            let mut actual_node = cur_dir.clone();
+                            actual_node.append(mntpoint);
+                            mntpoint_node = Ok(actual_node);
+                        }
+                        let mntpoint_node = if let Ok(val) = mntpoint_node { val } else { writeln!(TERMINAL.lock(), "Malformed mountpoint path!").unwrap(); continue;};
+                        let mntpoint_node = if let Some(val) = mntpoint_node.get_vfs_node() { val } else { writeln!(TERMINAL.lock(), "Mountpoint should exist in vfs!").unwrap(); continue; };
+                        (*mntpoint_node).borrow_mut().mountpoint = Some(root_inode);
+                    }else{
+                        writeln!(TERMINAL.lock(), "Not enough arguments!").unwrap();                
+                    }
+                }else if cmnd.contains("umount"){
+                    if let Some(mntpoint) = splat.next(){
+                        let mut mntpoint_node = vfs::Path::try_from(mntpoint.trim());
+                        if !mntpoint.starts_with("/"){
+                            let mut actual_node = cur_dir.clone();
+                            actual_node.append(mntpoint);
+                            mntpoint_node = Ok(actual_node);
+                        }
+                        let mntpoint_node = if let Ok(val) = mntpoint_node { val } else { writeln!(TERMINAL.lock(), "Malformed mountpoint path!").unwrap(); continue;};
+                        let mntpoint_node = if let Some(val) = mntpoint_node.get_vfs_node() { val } else { writeln!(TERMINAL.lock(), "Mountpoint should exist in vfs!").unwrap(); continue; };
+                        (*mntpoint_node).borrow_mut().mountpoint = None;
+                    }else{
+                        writeln!(TERMINAL.lock(), "Not enough arguments!").unwrap();                
+                    }
                 }else if cmnd.contains("ls"){
-                    for subnode in (*cur_dir.get_node().expect("Shell path should be valid at all times!")).borrow().get_children(){
-                        write!(TERMINAL.lock(), "{} ", subnode.get_name()).unwrap();
-                        if let Node::File(f) = subnode{
+                    for subnode in (*cur_dir.get_node().expect("Shell path should be valid at all times!").expect_folder()).borrow().get_children(){
+                        write!(TERMINAL.lock(), "{} ", subnode.0).unwrap();
+                        if let Node::File(f) = subnode.1{
                             write!(TERMINAL.lock(), "(size: {} kb) ", (*f).borrow().get_size() as f32 / 1024.0).unwrap();
                         }
                     }
@@ -447,14 +509,14 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                     if let (Some(offset_str), Some(arg)) = (splat.next(), splat.next()){
                         if let Ok(offset) = offset_str.trim().parse::<usize>(){
                             let mut found = None;
-                            for subnode in (*cur_dir.get_node().expect("Shell path should be valid at all times!")).borrow().get_children(){
-                               if subnode.get_name() == arg{
-                                   found = Some(subnode);
+                            for subnode in (*cur_dir.get_node().expect("Shell path should be valid at all times!").expect_folder()).borrow().get_children(){
+                               if subnode.0 == arg {
+                                   found = Some(subnode.1);
                                    break;
                                }
                             }   
                         
-                            if let Some(Node::File(file)) = found{
+                            if let Some(Node::File(file)) = found {
                                 if let Some(data) = (*file).borrow().read(offset, 16){
                                     for e in data{
                                         write!(TERMINAL.lock(), "0x{:02X} ", e).unwrap();
@@ -468,8 +530,10 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         }else{
                             write!(TERMINAL.lock(), "Bad offset!").unwrap();
                         }
-                        writeln!(TERMINAL.lock()).unwrap();                
+                    }else{
+                        write!(TERMINAL.lock(), "Not enough arguments!").unwrap();
                     }
+                    writeln!(TERMINAL.lock()).unwrap();
                 }else if cmnd.contains("cd"){
                     if let Some(name) = splat.next(){
                         let name = name.trim();
@@ -490,13 +554,13 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             cur_dir = old_dir;
                         }
                     }
-                }else if cmnd.contains("mkdir"){
+                }else if cmnd.contains("mkvfsdir"){
                     while let Some(name) = splat.next(){
-                       VFSNode::new_folder(cur_dir.get_node().expect("Shell path should be valid at all times!"), name);
+                       VFSNode::new_folder(cur_dir.get_vfs_node().expect("Shell path should be valid at all times!"), name);
                     }
-                }else if cmnd.contains("rmdir"){
+                }else if cmnd.contains("rmvfsdir"){
                     while let Some(name) = splat.next(){
-                        let cur_node = cur_dir.get_node().expect("Shell path should be valid at all times!");
+                        let cur_node = cur_dir.get_vfs_node().expect("Shell path should be valid at all times!");
                         // Empty folder check
                         if let Some(child_to_sacrifice) = VFSNode::find_folder(cur_node.clone(), name){
                             if (*child_to_sacrifice).borrow().get_children().len() != 0 {
@@ -530,7 +594,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
 
     }
 
-    writeln!(UART.lock(), "Heap usage: {} bytes", allocator::ALLOCATOR.lock().get_heap_size()).unwrap();
+    writeln!(UART.lock(), "Heap usage: {} bytes", allocator::ALLOCATOR.lock().get_heap_used()).unwrap();
     // Shutdown
     writeln!(UART.lock(), "\nIt's now safe to turn off your computer!").unwrap();
 

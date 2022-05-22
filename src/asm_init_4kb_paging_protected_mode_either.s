@@ -5,7 +5,7 @@
 .global _start
 .global end_init
 
-kernel_stack_size = 8*1024
+kernel_stack_size = 1024*1024
 .section .bss
 	# NOTE for future helpless programmers: this needs to be aligned so that movups and movaps
 	# don't general protection fault when used when the stack pointer is used

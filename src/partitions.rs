@@ -1,8 +1,8 @@
 use core::{convert::TryFrom, cell::RefCell};
 
-use alloc::{rc::Rc, vec::Vec, string::String};
+use alloc::{rc::Rc, vec::Vec};
 
-use crate::{vfs::{IFile, INode}, ata};
+use crate::{vfs::IFile, ata};
 
 #[repr(u8)]
 #[derive(Clone, Copy)]
@@ -32,17 +32,21 @@ pub struct MBRPartitionFile{
 
 impl MBRPartitionFile{
   pub fn from(device_file: Rc<RefCell<dyn IFile>>, partition_number: MBRPartitionNumber) -> Option<Self>{
-    let part_data_offset = (partition_number as usize)*16 + (0x1FF-64);
+    let part_data_offset = (partition_number as usize)*16 + (0x1fe-16*4);
     if let Some(part_data) = device_file.borrow().read(part_data_offset, 16){
-      // If SYSTEM_ID is 0 then the partition is unused
+      // If SYSTEM_ID/partition type is 0 then the partition is unused
       if part_data[4] == 0x0 { return None; } 
       Some(Self{
         device: device_file.clone(),
-        partition_offset: (part_data[8] as usize + ((part_data[9] as usize) << 8) + ((part_data[10] as usize) << 16) + ((part_data[11] as usize) << 24)) * ata::SECTOR_SIZE_IN_BYTES,
-        partition_size: (part_data[12] as usize + ((part_data[13] as usize) << 8) + ((part_data[14] as usize) << 16) + ((part_data[15] as usize) << 24)) * ata::SECTOR_SIZE_IN_BYTES,
+        partition_offset: ((part_data[8] as u32) << 0 | (part_data[9] as u32) << 8 | (part_data[10] as u32) << 16 | (part_data[11] as u32) << 24) as usize * ata::SECTOR_SIZE_IN_BYTES,
+        partition_size: ((part_data[12] as u32) << 0 | (part_data[13] as u32) << 8 | (part_data[14] as u32) << 16 | (part_data[15] as u32) << 24) as usize * ata::SECTOR_SIZE_IN_BYTES,
         partiton_number: partition_number,
       })
     }else { None }
+  }
+
+  pub fn get_offset(&self) -> usize{
+    self.partition_offset
   }
 }
 
@@ -60,13 +64,4 @@ impl IFile for MBRPartitionFile{
     fn get_size(&self) -> usize {
         self.partition_size
     }
-}
-
-impl INode for MBRPartitionFile{
-  fn get_name(&self) -> String{
-    let mut s = String::new();
-    use core::fmt::Write;
-    write!(s, "{}p{}", (*self.device).borrow().get_name(), self.partiton_number as u8 + 1).unwrap();
-    s
-  }
 }
