@@ -4,12 +4,13 @@
 #![feature(abi_efiapi)]
 #![feature(default_alloc_error_handler)]
 #![feature(lang_items)]
+#![allow(dead_code)]
 
 extern crate alloc;
 
-use core::borrow::{Borrow, BorrowMut};
+use core::cmp::min;
 use core::fmt::Debug;
-use core::cell::{RefCell, Ref};
+use core::cell::RefCell;
 use core::convert::{TryFrom, TryInto};
 use core::fmt::Write;
 
@@ -17,7 +18,7 @@ use alloc::borrow::ToOwned;
 use alloc::rc::Rc;
 use alloc::string::String;
 use ata::{ATADevice, ATADeviceFile, ATABus};
-use vfs::{VFSNode, IFolder, Node, IFile, VFS_ROOT};
+use vfs::{VFSNode, IFolder, Node, IFile};
 use primitives::{Mutex, LazyInitialised};
 use vga::{Color256, Unblanked};
 
@@ -413,16 +414,16 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         ignore_inc_x = false;
         let b = unsafe { ps2.read_packet() };
 
-        if b.typ == KeyboardPacketType::KEY_RELEASED && b.special_keys.ESC { break; }
-        if b.typ == KeyboardPacketType::KEY_RELEASED { continue; }
+        if b.typ == KeyboardPacketType::KeyReleased && b.special_keys.esc { break; }
+        if b.typ == KeyboardPacketType::KeyReleased { continue; }
 
-        if b.special_keys.UP_ARROW {
+        if b.special_keys.up_arrow {
             TERMINAL.lock().visual_cursor_up();
-        } else if b.special_keys.DOWN_ARROW{
+        } else if b.special_keys.down_arrow{
             TERMINAL.lock().visual_cursor_down();
-        } else if b.special_keys.RIGHT_ARROW {
+        } else if b.special_keys.right_arrow {
             TERMINAL.lock().visual_cursor_right();
-        }else if b.special_keys.LEFT_ARROW {
+        }else if b.special_keys.left_arrow {
             TERMINAL.lock().visual_cursor_left();
         }
 
@@ -466,7 +467,9 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         let node = path.map(|path| path.get_node().expect("Redirect path should exist!"));
                     
                         if let Some(Node::File(file)) = node {
-                            (*file).borrow_mut().write(0, puts_output.as_bytes());
+                            if (*file).borrow_mut().write(0, puts_output.as_bytes()).is_none() {
+                                writeln!(TERMINAL.lock(), "Couldn't write to file!").unwrap();
+                            }
                         }else{
                             writeln!(TERMINAL.lock(), "Redirect path should be valid!").unwrap();
                         }
@@ -502,7 +505,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         let e2fs = Rc::new(RefCell::new(e2fs));
                         let root_inode = (*e2fs).borrow_mut().get_inode(2).expect("Root inode should exist!").as_vfs_node(e2fs.clone()).expect("Root inode should be parsable in vfs!").expect_folder();
                         let mut mntpoint_node = vfs::Path::try_from(mntpoint.trim());
-                        if !mntpoint.starts_with("/"){
+                        if !mntpoint.starts_with("/") {
                             let mut actual_node = cur_dir.clone();
                             actual_node.push_str(mntpoint);
                             mntpoint_node = Ok(actual_node);
@@ -547,28 +550,52 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                                 Ok(actual_dir)
                             };
 
-                            let node = arg_path.map(|dir| dir.get_node().expect("Path should exist!"));
+                            let node = arg_path.map(|path|path.get_node());
+                            let node = if let Ok(val) = node { val } else { writeln!(TERMINAL.lock(), "Invalid path!").unwrap(); continue; };
+                            let node = if let Some(val) = node { val } else { writeln!(TERMINAL.lock(), "Path doesn't exist!").unwrap(); continue; };
 
-                            if let Ok(Node::File(file)) = node {
-                                if let Some(data) = (*file).borrow().read(offset, 32){
+                            if let Node::File(file) = node {
+                                if let Some(data) = (*file).borrow().read(offset, min(16, (*file).borrow().get_size())){
                                     for e in data.iter() {
                                         write!(TERMINAL.lock(), "0x{:02X} ", e).unwrap();
-                                    }
-                                    writeln!(TERMINAL.lock()).unwrap();
-                                    for e in data.iter() {
-                                        write!(TERMINAL.lock(), "{}", if e.is_ascii() && !e.is_ascii_control() {*e as char} else {' '} ).unwrap();
                                     }
                                 }else{
                                     write!(TERMINAL.lock(), "Couldn't read file!").unwrap();
                                 }
                             }else{
-                                write!(TERMINAL.lock(), "Path should be valid!").unwrap();
+                                write!(TERMINAL.lock(), "Path should be a file!").unwrap();
                             }
                         }else{
                             write!(TERMINAL.lock(), "Bad offset!").unwrap();
                         }
                     }else{
                         write!(TERMINAL.lock(), "Not enough arguments!").unwrap();
+                    }
+
+                    writeln!(TERMINAL.lock()).unwrap();
+                }else if cmnd.contains("cat"){
+                    if let Some(file_str) = splat.next(){
+                        let arg_path = if file_str.starts_with('/'){
+                            vfs::Path::try_from(file_str)
+                        }else{
+                            let mut actual_dir = cur_dir.clone();
+                            actual_dir.push_str(file_str);
+                            Ok(actual_dir)
+                        };
+                        let node = arg_path.map(|path|path.get_node());
+                        let node = if let Ok(val) = node { val } else { writeln!(TERMINAL.lock(), "Invalid path!").unwrap(); continue; };
+                        let node = if let Some(val) = node { val } else { writeln!(TERMINAL.lock(), "Path doesn't exist!").unwrap(); continue; };
+                        if let Node::File(file) = node {
+                            if let Some(data) = (*file).borrow().read(0, (*file).borrow().get_size()){
+                                for e in data.iter() {
+                                    write!(TERMINAL.lock(), "{}", if e.is_ascii() && !e.is_ascii_control() { *e as char} else { ' ' }).unwrap();
+                                }
+                            }else{
+                                write!(TERMINAL.lock(), "Couldn't read file!").unwrap();
+                            }
+                        }else{
+                            write!(TERMINAL.lock(), "Path should be a file!").unwrap();
+                        }
                     }
                     writeln!(TERMINAL.lock()).unwrap();
                 }else if cmnd.contains("cd"){

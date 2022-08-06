@@ -1,4 +1,4 @@
-use core::{convert::TryFrom, ops::Deref, cell::RefCell, fmt::{Display, Debug}, borrow::Borrow};
+use core::{convert::TryFrom, ops::Deref, cell::RefCell, fmt::{Display, Debug}};
 
 use alloc::{string::String, vec::Vec, rc::Rc, borrow::ToOwned};
 
@@ -10,10 +10,11 @@ pub static VFS_ROOT: Mutex<LazyInitialised<Rc<RefCell<VFSNode>>>> = Mutex::from(
 pub trait IFolder {
     fn get_children(&self) -> Vec<(String, Node)>;
 }
+type BytesWritten = Option<usize>;
 
 pub trait IFile {
     fn read(&self, offset: usize, len: usize) -> Option<Vec<u8>>;
-    fn write(&mut self, offset: usize, data: &[u8]);
+    fn write(&mut self, offset: usize, data: &[u8]) -> BytesWritten;
     fn get_size(&self) -> usize;
 }
 

@@ -2,7 +2,7 @@ use core::{cell::RefCell, str::from_utf8};
 
 use alloc::{rc::Rc, vec, vec::Vec, borrow::ToOwned};
 
-use crate::{vfs::{IFile, self, IFolder}, UART, TERMINAL};
+use crate::{vfs::{IFile, self, IFolder}};
 
 
 #[derive(Debug, Clone, Copy)]
@@ -156,6 +156,7 @@ impl Ext2RawInode{
     }
 
     pub fn read_bytes(&self, offset: usize, len: usize, e2fs: &Ext2FS) -> Option<Vec<u8>> {
+        if offset+len > self.get_size() { return None; }
         let starting_block_index = offset/(e2fs.get_block_size() as usize);
         let starting_block_offset = offset%(e2fs.get_block_size() as usize);
         let mut res: Vec<u8> = Vec::with_capacity(len);
@@ -174,7 +175,8 @@ impl Ext2RawInode{
         Some(res)
     }
 
-    pub fn write_bytes(&self, offset: usize, data: &[u8], e2fs: &mut Ext2FS) -> Option<()> {
+    pub fn write_bytes(&self, offset: usize, data: &[u8], e2fs: &mut Ext2FS) -> Option<usize> {
+        if offset+data.len() > self.get_size() { return None; }
         let starting_block_addr = offset/(e2fs.get_block_size() as usize);
         let offset_in_starting_block = offset%(e2fs.get_inode_size() as usize);
         let mut iter = data.iter();
@@ -198,7 +200,8 @@ impl Ext2RawInode{
 
             self.write_raw_data_block(starting_block_addr+block_ind, &v, e2fs);
         }
-        None
+
+        Some(data.len())
     }
     
     pub fn as_vfs_node(self, fs: Rc<RefCell<Ext2FS>>) -> Option<vfs::Node> {
@@ -209,6 +212,11 @@ impl Ext2RawInode{
             return Some(vfs::Node::File(Rc::new(RefCell::new(Ext2File{inode: self, fs})) as Rc<RefCell<dyn IFile>>));
         }
         None
+    }
+
+    pub fn get_size(&self) -> usize {
+        // FIXME: Handle larger files
+        self.low32_size as usize
     }
 }
 
@@ -222,12 +230,12 @@ impl vfs::IFile for Ext2File{
         self.inode.read_bytes(offset, len, &*self.fs.borrow())
     }
 
-    fn write(&mut self, offset: usize, data: &[u8]) {
-        self.inode.write_bytes(offset, data, &mut *self.fs.borrow_mut());
+    fn write(&mut self, offset: usize, data: &[u8]) -> Option<usize> {
+        self.inode.write_bytes(offset, data, &mut *self.fs.borrow_mut())
     }
 
     fn get_size(&self) -> usize {
-        self.inode.low32_size as usize
+        self.inode.get_size()
     }
 }
 

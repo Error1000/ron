@@ -1,4 +1,4 @@
-use core::{mem, cell::RefCell, f32::consts::E};
+use core::{mem, cell::RefCell};
 use alloc::{rc::Rc, vec::Vec};
 
 use crate::{virtmem::KernPointer, vfs::IFile};
@@ -314,7 +314,7 @@ impl IFile for ATADeviceFile{
       Some(res)
     }
 
-    fn write(&mut self, offset_in_bytes: usize, data: &[u8]) {
+    fn write(&mut self, offset_in_bytes: usize, data: &[u8]) -> Option<usize> {
        let offset_in_first_sector = offset_in_bytes % SECTOR_SIZE_IN_BYTES;
        let offset_of_first_sector = offset_in_bytes / SECTOR_SIZE_IN_BYTES;
        let mut iter = data.iter();
@@ -342,6 +342,7 @@ impl IFile for ATADeviceFile{
 
          unsafe{ (*self.bus).borrow_mut().write_sector(self.bus_device, lba, &v) }
         }
+        Some(data.len())
     }
 
     fn get_size(&self) -> usize{

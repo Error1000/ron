@@ -3,7 +3,7 @@ use crate::SpecialKeys;
 #[repr(u8)]
 #[derive(PartialEq)]
 pub enum KeyboardPacketType{
-    KEY_PRESSED, KEY_RELEASED
+    KeyPressed, KeyReleased
 }
 pub struct KeyboardPacket {
     pub scancode: u8,

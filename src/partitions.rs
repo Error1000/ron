@@ -4,10 +4,14 @@ use alloc::{rc::Rc, vec::Vec};
 
 use crate::{vfs::IFile, ata};
 
-#[repr(u8)]
-#[derive(Clone, Copy)]
-pub enum MBRPartitionNumber{
-  PART_0 = 0, PART_1 = 1, PART_2 = 2, PART_3 = 3
+pub struct MBRPartitionNumber(u8);
+pub mod mbr {
+  use super::MBRPartitionNumber;
+
+  pub const PART_0: MBRPartitionNumber = MBRPartitionNumber(0);
+  pub const PART_1: MBRPartitionNumber = MBRPartitionNumber(1); 
+  pub const PART_2: MBRPartitionNumber = MBRPartitionNumber(2);
+  pub const PART_3: MBRPartitionNumber = MBRPartitionNumber(3);
 }
 
 impl TryFrom<usize> for MBRPartitionNumber{
@@ -15,10 +19,10 @@ impl TryFrom<usize> for MBRPartitionNumber{
 
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         match value{
-          0 => Ok(MBRPartitionNumber::PART_0),
-          1 => Ok(MBRPartitionNumber::PART_1),
-          2 => Ok(MBRPartitionNumber::PART_2),
-          3 => Ok(MBRPartitionNumber::PART_3),
+          0 => Ok(mbr::PART_0),
+          1 => Ok(mbr::PART_1),
+          2 => Ok(mbr::PART_2),
+          3 => Ok(mbr::PART_3),
           _ => Err(())
         }
     }
@@ -32,7 +36,7 @@ pub struct MBRPartitionFile{
 
 impl MBRPartitionFile{
   pub fn from(device_file: Rc<RefCell<dyn IFile>>, partition_number: MBRPartitionNumber) -> Option<Self>{
-    let part_data_offset = (partition_number as usize)*16 + (0x1fe-16*4);
+    let part_data_offset = (partition_number.0 as usize)*16 + (0x1fe-16*4);
     if let Some(part_data) = device_file.borrow().read(part_data_offset, 16){
       // If SYSTEM_ID/partition type is 0 then the partition is unused
       if part_data[4] == 0x0 { return None; } 
@@ -56,9 +60,9 @@ impl IFile for MBRPartitionFile{
       (*self.device).borrow().read(offset+self.partition_offset, len)
     }
 
-    fn write(&mut self, offset: usize, data: &[u8]) {
-      if offset+data.len() >= self.partition_size{ return; }
-      (*self.device).borrow_mut().write(offset+self.partition_offset, data);
+    fn write(&mut self, offset: usize, data: &[u8]) -> Option<usize> {
+      if offset+data.len() >= self.partition_size { return None; }
+      (*self.device).borrow_mut().write(offset+self.partition_offset, data)
     }
 
     fn get_size(&self) -> usize {

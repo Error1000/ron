@@ -72,7 +72,7 @@ unsafe impl GlobalAlloc for Mutex<BasicAlloc>{
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
         let mut s = self.lock();
         if s.next % layout.align() != 0 { // If we are not aligned 
-            if let Ok(padding) = core::alloc::Layout::from_size_align(layout.align()-(s.next % layout.align()/* no div by 0 because align() can't return zero if the layour is constructed correctly */), 1){ 
+            if let Ok(padding) = core::alloc::Layout::from_size_align(layout.align()-(s.next % layout.align()/* no div by 0 because align() can't return zero if the layout is constructed correctly */), 1){ 
                 s.next += padding.size();
                 if s.next >= s.len { return null_mut(); } // OOM :^( 
                 // Note since we never call dealloc() on this padding allocation explicitely there is no need to inc alloc_count
@@ -111,7 +111,7 @@ unsafe impl GlobalAlloc for Mutex<BasicAlloc>{
             }
         }else{ // Maybe the deallocation we just did allows us to deallocate even more
             // NOTE: sort_by allocates, so don't use it
-            // Sort array by allocations that are closest to the top of the stack ( a.k.a descending order, highest addresses first )
+            // Sort array by allocations that are closest to the top of the stack ( a.k.a descending order, highest addresses first because we grow the allocator's stack by adding to the base address )
             s.stashed_deallocations.sort_unstable_by(|alloc1, alloc2|alloc2.0.cmp(&alloc1.0) );
             
             for i in 0..s.stashed_deallocations.len() {
@@ -124,6 +124,7 @@ unsafe impl GlobalAlloc for Mutex<BasicAlloc>{
                      break; 
                 }
             }
+
         }
     }
 }
