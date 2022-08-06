@@ -62,14 +62,7 @@ impl Path{
         }
     }
 
-    pub fn add_last(&mut self, node: &str){
-        if !self.inner.ends_with("/"){
-            self.inner.push('/');
-        }
-        self.inner.push_str(node);
-    }
-
-    pub fn append(&mut self, subnode: &str){
+    pub fn push_str(&mut self, subnode: &str){
         if !self.inner.ends_with("/"){ self.inner.push('/'); }
         self.inner.push_str(subnode);
     }
@@ -87,7 +80,7 @@ impl Path{
             for (name, node) in children{
                 if name == to_find {
                     cur_node = node;
-                    cur_path.append(to_find);
+                    cur_path.push_str(to_find);
                     continue 'tree_traversal_loop;
                 }
             }
@@ -103,7 +96,7 @@ impl Path{
         let mut cur_path = Path::root();
         while to_search.len() != 0 {
             if let Some(cur) = to_search.pop(){
-                cur_path.add_last(&(*cur).borrow().path.last());
+                cur_path.push_str(&(*cur).borrow().path.last());
                 if cur_path == *self{
                     return Some(cur);
                 }else{
@@ -148,6 +141,16 @@ impl TryFrom<&str> for Path{
     }
 }
 
+impl TryFrom<String> for Path{
+    type Error = ();
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if !value.starts_with("/") { return Err(());}
+        if !value.contains("/") { return Err(()); }
+        Ok(Path{inner: String::from(value)})
+    }
+}
+
 #[derive(Clone)]
 pub struct VFSNode{
     path: Path,
@@ -174,7 +177,7 @@ impl VFSNode{
 
     pub fn new_folder(slf: Rc<RefCell<VFSNode>>, name: &str) -> Rc<RefCell<VFSNode>>{
         let mut new_p = (*slf).borrow().path.clone();
-        new_p.append(name);
+        new_p.push_str(name);
         let new_f = Rc::new(RefCell::new(Self{
             path: new_p,
             parent: Some(slf.clone()),

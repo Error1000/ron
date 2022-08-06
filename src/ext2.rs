@@ -1,11 +1,11 @@
 use core::{cell::RefCell, str::from_utf8};
 
-use alloc::{rc::Rc, vec::Vec, borrow::ToOwned};
+use alloc::{rc::Rc, vec, vec::Vec, borrow::ToOwned};
 
-use crate::{vfs::{IFile, self, IFolder}, UART};
+use crate::{vfs::{IFile, self, IFolder}, UART, TERMINAL};
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 #[repr(packed)]
 pub struct Ext2SuperBlock{
     no_of_inodes: u32,
@@ -35,7 +35,7 @@ pub struct Ext2SuperBlock{
     gid_for_reserved_blocks: u16
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 #[repr(packed)]
 pub struct Ext2ExtendedSuperblock{
     first_non_reserved_inode_in_fs: u32,
@@ -58,19 +58,19 @@ pub struct Ext2ExtendedSuperblock{
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 #[repr(packed)]
 pub struct Ext2BlockGroupDescriptor{
     block_addr_for_block_usage_bitmap: u32,
     block_addr_for_inode_usage_bitmap: u32,
-    starting_block_addr_for_inode_table: u32,
+    block_addr_for_inode_table: u32,
     unallocated_blocks_in_group: u16,
     unallocated_inodes_in_group: u16,
     directories_in_group: u16,
     _unused: (u64, u32, u16) // 14 unused bytes
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 #[repr(packed)]
 pub struct Ext2RawInode{
     type_and_perm: u16,
@@ -96,7 +96,7 @@ pub struct Ext2RawInode{
     os_value_2: [u32; 3],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 #[repr(packed)]
 pub struct Ext2DirectoryEntry {
     inode_addr: u32,
@@ -106,11 +106,12 @@ pub struct Ext2DirectoryEntry {
 }
 
 impl Ext2RawInode{
-    pub fn read_raw_block(&self, mut block_number: usize, fs: &Ext2FS) -> Option<Vec<u8>> {
+
+    pub fn get_block_pointer(&self, mut block_number: usize, fs: &Ext2FS) -> Option<u32>{
         // TODO: Test all posibilites of this function!!!
         // Direct data
         if block_number <= 11 {
-            return fs.read_block(self.direct_block_pointers[block_number]);
+            return Some(self.direct_block_pointers[block_number]);
         }
 
         let pointers_per_block = fs.get_block_size() as usize/core::mem::size_of::<u32>();
@@ -119,7 +120,7 @@ impl Ext2RawInode{
         if block_number < pointers_per_block {
             // direct_pointer_block is a block of tightly packed block pointers
             let block_of_direct_pointers = fs.read_block(self.singly_indirect_block_pointer)?.as_ptr() as *const u32;
-            return fs.read_block(unsafe{*block_of_direct_pointers.add(block_number)});
+            return Some(unsafe{*block_of_direct_pointers.add(block_number)});
         }
 
         // Doubly indirect data
@@ -129,7 +130,7 @@ impl Ext2RawInode{
             let direct_block_index = block_number%pointers_per_block;
             let block_of_singly_indirect_pointers = fs.read_block(self.doubly_indirect_block_pointer)?.as_ptr() as *const u32;
             let block_of_direct_pointers = fs.read_block(unsafe{*block_of_singly_indirect_pointers.add(singly_indirect_block_index)})?.as_ptr() as *const u32;
-            return fs.read_block(unsafe{*block_of_direct_pointers.add(direct_block_index)});
+            return Some(unsafe{*block_of_direct_pointers.add(direct_block_index)});
         }
 
         // Triply indirect data
@@ -141,26 +142,63 @@ impl Ext2RawInode{
             let block_of_doubly_indirect_pointers = fs.read_block(self.triply_indirect_block_pointer)?.as_ptr() as *const u32;
             let block_of_singly_indirect_pointers = fs.read_block(unsafe{*block_of_doubly_indirect_pointers.add(doubly_indirect_block_index)})?.as_ptr() as *const u32;
             let block_of_direct_pointers = fs.read_block(unsafe{*block_of_singly_indirect_pointers.add(singly_indirect_block_index)})?.as_ptr() as *const u32;
-            return fs.read_block(unsafe{*block_of_direct_pointers.add(direct_block_index)});
+            return Some(unsafe{*block_of_direct_pointers.add(direct_block_index)});
         }
         None
+    }
+
+    pub fn read_raw_data_block(&self, block_number: usize, fs: &Ext2FS) -> Option<Vec<u8>> {
+        return fs.read_block(self.get_block_pointer(block_number, fs)?);
+    }
+
+    pub fn write_raw_data_block(&self, block_number: usize, data: &[u8], fs: &mut Ext2FS) -> Option<()> {
+        return fs.write_block(self.get_block_pointer(block_number, fs)?, data);
     }
 
     pub fn read_bytes(&self, offset: usize, len: usize, e2fs: &Ext2FS) -> Option<Vec<u8>> {
         let starting_block_index = offset/(e2fs.get_block_size() as usize);
         let starting_block_offset = offset%(e2fs.get_block_size() as usize);
         let mut res: Vec<u8> = Vec::with_capacity(len);
-        let first_block = self.read_raw_block(starting_block_index, e2fs)?;
+
+        let first_block = self.read_raw_data_block(starting_block_index, e2fs)?;
         for e in &first_block[starting_block_offset..] { res.push(*e); }
+
         let extra_block = if len%e2fs.get_block_size() as usize != 0 { 1 } else { 0 };
         for block_ind in 1..(len/e2fs.get_block_size() as usize+extra_block) {
             res.append(
-                &mut self.read_raw_block(starting_block_index+block_ind, e2fs)?
+                &mut self.read_raw_data_block(starting_block_index+block_ind, e2fs)?
             );
         }
 
         while res.len() > len { res.pop(); }
         Some(res)
+    }
+
+    pub fn write_bytes(&self, offset: usize, data: &[u8], e2fs: &mut Ext2FS) -> Option<()> {
+        let starting_block_addr = offset/(e2fs.get_block_size() as usize);
+        let offset_in_starting_block = offset%(e2fs.get_inode_size() as usize);
+        let mut iter = data.iter();
+
+        let extra_block = if data.len()%e2fs.get_block_size() as usize != 0 { 1 } else { 0 };
+        let mut ind = offset_in_starting_block;
+        for block_ind in 0..(data.len()/e2fs.get_block_size() as usize+extra_block) {
+            // No need to read sectors that we know will be completly overriden
+            let mut v = if block_ind == (data.len()/e2fs.get_block_size() as usize+extra_block-1) && extra_block == 1 {
+                self.read_raw_data_block(starting_block_addr+block_ind, e2fs)?
+            }else{
+                vec![0u8; e2fs.get_block_size() as usize]
+            };
+
+            while let Some(a) = iter.next() {
+                if ind >= v.len() { break; }
+                v[ind] = *a; 
+                ind += 1; 
+            }
+            ind = 0;
+
+            self.write_raw_data_block(starting_block_addr+block_ind, &v, e2fs);
+        }
+        None
     }
     
     pub fn as_vfs_node(self, fs: Rc<RefCell<Ext2FS>>) -> Option<vfs::Node> {
@@ -185,7 +223,7 @@ impl vfs::IFile for Ext2File{
     }
 
     fn write(&mut self, offset: usize, data: &[u8]) {
-        todo!()
+        self.inode.write_bytes(offset, data, &mut *self.fs.borrow_mut());
     }
 
     fn get_size(&self) -> usize {
@@ -225,16 +263,17 @@ pub struct Ext2FS{
 }
 
 
-// TODO: Proper deserialisation
-// TODO: Add support for writing
+// TODO: Deserialisation will not work on architectures where the integere are a different endiannes from ext2(which is little endian)
 
-impl Ext2FS{
+impl Ext2FS {
     pub fn new(backing_dev: Rc<RefCell<dyn IFile>>) -> Option<Ext2FS>{
         // The Superblock is always located at byte 1024 from the beginning of the volume and is exactly 1024 bytes in length.
         // Source: https://wiki.osdev.org/Ext2#Locating_the_Superblock
 
         let sb_data: Vec<u8> = backing_dev.borrow().read(1024, core::mem::size_of::<Ext2SuperBlock>())?;
         let sb = unsafe{ &*(sb_data.as_ptr() as *const Ext2SuperBlock)}.clone();
+
+        if sb.inodes_per_block_group < 1 { return None; }
 
         let mut extended_sb = None;
         if sb.major_version >= 1{
@@ -253,26 +292,39 @@ impl Ext2FS{
         (*self.backing_device).borrow().read(addr as usize, size)
     }
 
-    pub fn read_block(&self, number: u32) -> Option<Vec<u8>>{
+    fn write(&mut self, addr: u32, data: &[u8]) {
+        (*self.backing_device).borrow_mut().write(addr as usize, data);
+    }
+
+    pub fn read_block(&self, number: u32) -> Option<Vec<u8>> {
         // NOTE: There should be no reason to read the first block, because it either unused ( 1024-bytes before the superblock ), or it just contains the superblock, but other than that it's unused
         // Also 0 is used in block pointers in inodes to denote invalid/unused pointers to blocks
         if number == 0 { return None; }
         self.read(self.get_block_size()*number, self.get_block_size() as usize)  
     }
+
+    pub fn write_block(&mut self, number: u32, data: &[u8]) -> Option<()> {
+        assert!(data.len() == self.get_block_size() as usize, "The amount of data to write to a block must be the same as the size of the block!");
+        if number == 0 { return None; }
+        // FIXME: Write should return more about wheter it succeeds or not, right now we just assume it does.
+        self.write(self.get_block_size()*number, data);
+        Some(())
+    }  
     
 
     pub fn get_inode(&self, inode_addr: u32) -> Option<Ext2RawInode> {
+        // Inode indexing starts at 1
         let block_group_descriptor_index = (inode_addr-1)/self.sb.inodes_per_block_group;
         let block_group_descriptor = self.get_block_group_descriptor(block_group_descriptor_index)?;
-        let starting_inode_table_addr = block_group_descriptor.starting_block_addr_for_inode_table*self.get_block_size();
+        let inode_table_addr = block_group_descriptor.block_addr_for_inode_table*self.get_block_size();
         let inode_index_in_table = (inode_addr-1)%self.sb.inodes_per_block_group;
         // Inode size in list is self.get_inode_size() but only core::mem::size_of::<Ext2Inode>() bytes of the entire thing are useful for us
-        let raw_inode = self.read(starting_inode_table_addr+inode_index_in_table*self.get_inode_size() as u32, core::mem::size_of::<Ext2RawInode>())?;
+        let raw_inode = self.read(inode_table_addr+inode_index_in_table*self.get_inode_size() as u32, core::mem::size_of::<Ext2RawInode>())?;
         Some(unsafe{&*(raw_inode.as_ptr() as *const Ext2RawInode)}.clone())
     }
 
-    pub fn get_block_group_descriptor(&self, block_group_index: u32) -> Option<Ext2BlockGroupDescriptor> {
-        let block_group_table_offset = block_group_index * core::mem::size_of::<Ext2BlockGroupDescriptor>() as u32;
+    pub fn get_block_group_descriptor(&self, block_group_descriptor_index: u32) -> Option<Ext2BlockGroupDescriptor> {
+        let offset_of_descriptor_in_table = block_group_descriptor_index * core::mem::size_of::<Ext2BlockGroupDescriptor>() as u32;
 
         // The block group descriptor table is located in the block immediately following the Superblock.
         // Source: https://wiki.osdev.org/Ext2#Block_Group_Descriptor_Table
@@ -280,16 +332,16 @@ impl Ext2FS{
         // The Superblock is always located at byte 1024 from the beginning of the volume and is exactly 1024 bytes in length.
         // Source: https://wiki.osdev.org/Ext2#Locating_the_Superblock
 
-        let starting_block_group_table_addr = ((1024 + 1024)/self.get_block_size())*self.get_block_size();
-        let raw_descriptor: Vec<u8> = self.read(starting_block_group_table_addr+block_group_table_offset, core::mem::size_of::<Ext2BlockGroupDescriptor>())?;
+        let table_addr = ((1024 + 1024)/self.get_block_size())*self.get_block_size(); // Find the block that's at 2048 bytes ( a.k.a immediatly after the superblock which is 1024 bytes in length and located AT byte 1024, so the first byte of the superblock is byte number 1024 and the last is 2048 )
+        let raw_descriptor: Vec<u8> = self.read(table_addr+offset_of_descriptor_in_table, core::mem::size_of::<Ext2BlockGroupDescriptor>())?;
         Some(unsafe{ &*(raw_descriptor.as_ptr() as *const Ext2BlockGroupDescriptor)}.clone())
     }
 
-    pub fn get_block_size(&self) -> u32{
+    pub fn get_block_size(&self) -> u32 {
         2u32.pow(self.sb.block_size_log2_minus_10+10)
     }
 
-    pub fn get_inode_size(&self) -> usize{
+    pub fn get_inode_size(&self) -> usize {
         // Inodes have a fixed size of either 128 for major version 0 Ext2 file systems, or as dictated by the field in the Superblock for major version 1 file systems
         // Source: https://wiki.osdev.org/Ext2#Inodes
         if self.sb.major_version >= 1{

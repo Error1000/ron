@@ -1,4 +1,4 @@
-use core::{mem, cell::RefCell};
+use core::{mem, cell::RefCell, f32::consts::E};
 use alloc::{rc::Rc, vec::Vec};
 
 use crate::{virtmem::KernPointer, vfs::IFile};
@@ -300,6 +300,7 @@ impl IFile for ATADeviceFile{
         .map(|val|{
             let mut v = Vec::with_capacity(SECTOR_SIZE_IN_BYTES);
             for e in &val{
+                // FIXME: Little-endian only
                 v.push((e&0xFF) as u8);
                 v.push(((e >> 8)&0xFF) as u8);
             }
@@ -309,25 +310,36 @@ impl IFile for ATADeviceFile{
       }
       // Get rid of overread bytes
       while res.len() > len { res.pop(); }
-      assert!(res.len() == len);
+      assert!(res.len() == len, "The amount of bytes read from disk should be the same as the amount requested!"); 
       Some(res)
     }
 
     fn write(&mut self, offset_in_bytes: usize, data: &[u8]) {
-       let offset_in_first_sector = offset_in_bytes & SECTOR_SIZE_IN_BYTES;
+       let offset_in_first_sector = offset_in_bytes % SECTOR_SIZE_IN_BYTES;
        let offset_of_first_sector = offset_in_bytes / SECTOR_SIZE_IN_BYTES;
-       let mut i = data.iter();
+       let mut iter = data.iter();
        
-       for sector_indx in 0..(data.len()/SECTOR_SIZE_IN_BYTES+1){
+       let extra_block = if data.len()%SECTOR_SIZE_IN_BYTES != 0 { 1 } else { 0 };
+
+       let mut ind = offset_in_first_sector;
+       for sector_indx in 0..(data.len()/SECTOR_SIZE_IN_BYTES+extra_block){
          let offset = offset_of_first_sector+sector_indx;
          let lba = LBA28{hi: ((offset>>16)&0xFF) as u8, mid: ((offset>>8)&0xFF) as u8, low: (offset&0xFF) as u8};
-         let mut v = unsafe{ (*self.bus).borrow_mut().read_sector(self.bus_device, lba) }.expect("Reading device should work!");
-         let mut ind = 0;
-         if sector_indx == 0 { ind = offset_in_first_sector; }
-         while let (Some(a), Some(b)) = (i.next(), i.next()){
-           v[ind] = ((*a as u16) << 8) | (*b as u16);
+         
+         // No need to read sectors that we know will be completly overriden
+         let mut v = if sector_indx == (data.len()/SECTOR_SIZE_IN_BYTES+extra_block-1) && extra_block == 1 { 
+            unsafe{ (*self.bus).borrow_mut().read_sector(self.bus_device, lba) }.expect("Reading device should work!")
+         } else {
+            [0u16; SECTOR_SIZE_IN_BYTES/core::mem::size_of::<u16>()] 
+         };
+
+         while let (Some(a), Some(b)) = (iter.next(), iter.next()){
+            if ind >= v.len() { break; }
+            v[ind] = (*a as u16) | ((*b as u16) << 8); // FIXME: Little-endian only
             ind += 1;
          }
+         ind = 0;
+
          unsafe{ (*self.bus).borrow_mut().write_sector(self.bus_device, lba, &v) }
         }
     }

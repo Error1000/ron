@@ -307,7 +307,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         }
         i += len as usize;
     }
-    // FIXME: Don't hardcore the starting location of the heap
+    // FIXME: Don't hardcode the starting location of the heap
     // Stack size: 1mb, executable size (as of 22 may 2022): ~4mb, so starting the heap at 8mb should be a safe bet.
     allocator::ALLOCATOR.lock().init((8*1024*1024) as *mut u8, 1*1024*1024);
     vfs::VFS_ROOT.lock().set(Rc::new(RefCell::new(VFSNode::new_root())));
@@ -442,9 +442,39 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
             if let Some(cmnd) = splat.next(){
                 // Handle shell built ins
                 if cmnd.contains("puts"){
-                    while let Some(arg) = splat.next(){
-                        write!(TERMINAL.lock(), "{}", arg).unwrap();
+                    let mut puts_output: String = String::new();
+                    let mut redirect: Option<String> = None;
+                    while let Some(arg) = splat.next() {
+                        if arg.trim().starts_with('>'){ redirect = Some(arg.trim()[1..].to_owned()); continue; }
+                        
+                        if let Some(ref mut redir) = redirect{
+                            redir.push_str(arg);
+                        }else{
+                            puts_output.push_str(arg);
+                        }
                     }
+
+
+                    if let Some(redir_str) = redirect {
+                        let path = if redir_str.starts_with('/'){
+                            vfs::Path::try_from(redir_str).ok()
+                        }else{
+                            let mut actual_dir = cur_dir.clone();
+                            actual_dir.push_str(redir_str.as_str());
+                            Some(actual_dir)
+                        };
+                        let node = path.map(|path| path.get_node().expect("Redirect path should exist!"));
+                    
+                        if let Some(Node::File(file)) = node {
+                            (*file).borrow_mut().write(0, puts_output.as_bytes());
+                        }else{
+                            writeln!(TERMINAL.lock(), "Redirect path should be valid!").unwrap();
+                        }
+
+                    } else { write!(TERMINAL.lock(), "{}", puts_output).unwrap(); };
+
+
+
                     TERMINAL.lock().write_char('\n');
                 }else if cmnd.contains("whoareyou"){
                     writeln!(TERMINAL.lock(), "Ron").unwrap();
@@ -461,7 +491,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         let mut file_node = vfs::Path::try_from(file.trim());
                         if !file.starts_with("/"){
                             let mut actual_node = cur_dir.clone();
-                            actual_node.append(file);
+                            actual_node.push_str(file);
                             file_node = Ok(actual_node);
                         }
                         let file_node = if let Ok(val) = file_node { val } else { writeln!(TERMINAL.lock(), "Malformed source path: \"{}\"!", file).unwrap(); continue; };
@@ -474,7 +504,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         let mut mntpoint_node = vfs::Path::try_from(mntpoint.trim());
                         if !mntpoint.starts_with("/"){
                             let mut actual_node = cur_dir.clone();
-                            actual_node.append(mntpoint);
+                            actual_node.push_str(mntpoint);
                             mntpoint_node = Ok(actual_node);
                         }
                         let mntpoint_node = if let Ok(val) = mntpoint_node { val } else { writeln!(TERMINAL.lock(), "Malformed mountpoint path!").unwrap(); continue;};
@@ -488,7 +518,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         let mut mntpoint_node = vfs::Path::try_from(mntpoint.trim());
                         if !mntpoint.starts_with("/"){
                             let mut actual_node = cur_dir.clone();
-                            actual_node.append(mntpoint);
+                            actual_node.push_str(mntpoint);
                             mntpoint_node = Ok(actual_node);
                         }
                         let mntpoint_node = if let Ok(val) = mntpoint_node { val } else { writeln!(TERMINAL.lock(), "Malformed mountpoint path!").unwrap(); continue;};
@@ -506,26 +536,33 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                     }
                     writeln!(TERMINAL.lock()).unwrap();                
                 }else if cmnd.contains("hexdump"){
-                    if let (Some(offset_str), Some(arg)) = (splat.next(), splat.next()){
+                    if let (Some(offset_str), Some(file_str)) = (splat.next(), splat.next()){
                         if let Ok(offset) = offset_str.trim().parse::<usize>(){
-                            let mut found = None;
-                            for subnode in (*cur_dir.get_node().expect("Shell path should be valid at all times!").expect_folder()).borrow().get_children(){
-                               if subnode.0 == arg {
-                                   found = Some(subnode.1);
-                                   break;
-                               }
-                            }   
-                        
-                            if let Some(Node::File(file)) = found {
-                                if let Some(data) = (*file).borrow().read(offset, 16){
-                                    for e in data{
+
+                            let arg_path = if file_str.starts_with('/'){
+                                vfs::Path::try_from(file_str)
+                            }else{
+                                let mut actual_dir = cur_dir.clone();
+                                actual_dir.push_str(file_str);
+                                Ok(actual_dir)
+                            };
+
+                            let node = arg_path.map(|dir| dir.get_node().expect("Path should exist!"));
+
+                            if let Ok(Node::File(file)) = node {
+                                if let Some(data) = (*file).borrow().read(offset, 32){
+                                    for e in data.iter() {
                                         write!(TERMINAL.lock(), "0x{:02X} ", e).unwrap();
+                                    }
+                                    writeln!(TERMINAL.lock()).unwrap();
+                                    for e in data.iter() {
+                                        write!(TERMINAL.lock(), "{}", if e.is_ascii() && !e.is_ascii_control() {*e as char} else {' '} ).unwrap();
                                     }
                                 }else{
                                     write!(TERMINAL.lock(), "Couldn't read file!").unwrap();
                                 }
                             }else{
-                                write!(TERMINAL.lock(), "File not found!").unwrap();
+                                write!(TERMINAL.lock(), "Path should be valid!").unwrap();
                             }
                         }else{
                             write!(TERMINAL.lock(), "Bad offset!").unwrap();
@@ -547,7 +584,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                                 writeln!(TERMINAL.lock(), "Invalid cd path!").unwrap();
                             }
                         }else{
-                            cur_dir.append(name);
+                            cur_dir.push_str(name);
                         }
                         if cur_dir.get_node().is_none(){
                             writeln!(TERMINAL.lock(), "Invalid cd path: {}!", cur_dir).unwrap();

@@ -9,5 +9,6 @@ TODO list:
  - Char device ~ ( close enough, for now )
  - Memory allocator ~ ( simple design, but should work well enough )
  - Filesystem x (DOING) (N.B. Right now only supports ata, but i'm just going to ignore everything else and come back later to do usb/nvme when it actually becomes a problem tho, as right now i do have an ancient laptop on which the kernel can see the drives, so it would be possible to boot the kernel on that laptop )
- - Async/await "thread" managment x
- - Async emulator for running programs x
+ - Emulator for running programs x
+ - Async/await task managment x
+

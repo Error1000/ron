@@ -34,7 +34,7 @@ unsafe fn port_inb(addr: u16) -> u8 {
     return res;
 }
 
-
+// FIXME: Deal with little-endian vs big-endian
 #[inline(always)]
 unsafe fn port_outh(addr: u16, val: u16) {
     asm!("out dx, ax", in("ax") val, in("dx") addr, options(nostack, nomem));
