@@ -8,7 +8,7 @@ edition = "2018"
 cc = "*"
 
 [dependencies]
-packed_struct = {version = "0.10", default-features = false }
+packed_struct = {version = "0.10", default-features = false}
 
 [profile.dev]
 panic = "abort"

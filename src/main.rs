@@ -482,7 +482,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                 }else if cmnd.contains("whoareyou"){
                     writeln!(TERMINAL.lock(), "Ron").unwrap();
                 }else if cmnd.contains("help"){
-                    writeln!(TERMINAL.lock(), "puts whoareyou rmvfsdir mkvfsdir mount.ext2 umount free hexdump ls cd clear exit help").unwrap();
+                    writeln!(TERMINAL.lock(), "puts whoareyou rmvfsdir mkvfsdir mount.ext2 umount free hexdump cat ls cd clear exit help").unwrap();
                 }else if cmnd.contains("clear"){
                     TERMINAL.lock().clear();
                 }else if cmnd.contains("free"){

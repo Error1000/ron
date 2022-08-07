@@ -301,8 +301,8 @@ impl IFile for ATADeviceFile{
             let mut v = Vec::with_capacity(SECTOR_SIZE_IN_BYTES);
             for e in &val{
                 // FIXME: Little-endian only
-                v.push((e&0xFF) as u8);
-                v.push(((e >> 8)&0xFF) as u8);
+                v.push((e & 0xFF) as u8);
+                v.push(((e >> 8) & 0xFF) as u8);
             }
             v
         })?

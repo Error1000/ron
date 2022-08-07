@@ -4,7 +4,6 @@ use alloc::{rc::Rc, vec, vec::Vec, borrow::ToOwned};
 
 use crate::{vfs::{IFile, self, IFolder}};
 
-
 #[derive(Debug, Clone, Copy)]
 #[repr(packed)]
 pub struct Ext2SuperBlock{
@@ -107,7 +106,7 @@ pub struct Ext2DirectoryEntry {
 
 impl Ext2RawInode{
 
-    pub fn get_block_pointer(&self, mut block_number: usize, fs: &Ext2FS) -> Option<u32>{
+    pub fn get_data_block_pointer(&self, mut block_number: usize, fs: &Ext2FS) -> Option<u32>{
         // TODO: Test all posibilites of this function!!!
         // Direct data
         if block_number <= 11 {
@@ -148,11 +147,11 @@ impl Ext2RawInode{
     }
 
     pub fn read_raw_data_block(&self, block_number: usize, fs: &Ext2FS) -> Option<Vec<u8>> {
-        return fs.read_block(self.get_block_pointer(block_number, fs)?);
+        return fs.read_block(self.get_data_block_pointer(block_number, fs)?);
     }
 
     pub fn write_raw_data_block(&self, block_number: usize, data: &[u8], fs: &mut Ext2FS) -> Option<()> {
-        return fs.write_block(self.get_block_pointer(block_number, fs)?, data);
+        return fs.write_block(self.get_data_block_pointer(block_number, fs)?, data);
     }
 
     pub fn read_bytes(&self, offset: usize, len: usize, e2fs: &Ext2FS) -> Option<Vec<u8>> {
@@ -203,7 +202,7 @@ impl Ext2RawInode{
 
         Some(data.len())
     }
-    
+
     pub fn as_vfs_node(self, fs: Rc<RefCell<Ext2FS>>) -> Option<vfs::Node> {
         if self.type_and_perm & 0xF000 == 0x4000 { 
             return Some(vfs::Node::Folder(Rc::new(RefCell::new(Ext2Folder{inode: self, fs})) as Rc<RefCell<dyn IFolder>>));
