@@ -104,6 +104,7 @@ _start:
 	push ebx
 	push 0
 	push eax
+	push 0
 
     mov ecx, 0xC0000080          # Set the C-register to 0xC0000080, which is the EFER MSR.
     rdmsr                        # Read from the model-specific register.
@@ -119,7 +120,7 @@ setup_paging:
 	mov dword [l4_pt-4], eax
 
 
-	DEFAULT_L3_ENTRY = (1 << 0 | 1 << 1 | 1 << 2) # Present (bit 0), r/w(bit 1), user(bit 2), page size 1gb ( bit 7)
+	DEFAULT_L3_ENTRY = (1 << 0 | 1 << 1 | 1 << 2 ) # Present (bit 0), r/w(bit 1), user(bit 2), page size ( bit 7)
 
 	mov eax, OFFSET l2_pt_1
 	or ax, DEFAULT_L3_ENTRY
@@ -140,25 +141,25 @@ setup_paging:
 	DEFAULT_L2_ENTRY = (1 << 0 | 1 << 1 | 1 << 2 | 1 << 7)
 	mov ebx, 0
 	l2_loop:
-		shl ebx, 21
+		shl ebx, 21 # 2^21 bytes = 2 mb
 		mov eax, ebx
 		or ax, DEFAULT_L2_ENTRY
 		shr ebx, 21-3
 
 		mov dword [l2_pt_1+ebx-4], eax 
 
-		add eax, 0x40000000
+		add eax, 0x40000000 # 1 gb between l2 pages
 		mov dword [l2_pt_2+ebx-4], eax 
 
-		add eax, 0x40000000
+		add eax, 0x40000000 # 1 gb between l2 pages
 		mov dword [l2_pt_3+ebx-4], eax 
 
-		add eax, 0x40000000
+		add eax, 0x40000000 # 1 gb between l2 pages
 		mov dword [l2_pt_4+ebx-4], eax 
 
 		shr ebx, 3
 		inc ebx
-		cmp ebx, 4
+		cmp ebx, 512 # 512*2mb = 1024 mb = 1 gb
 	jl l2_loop
 
 

@@ -42,8 +42,8 @@ impl MBRPartitionFile{
       if part_data[4] == 0x0 { return None; } 
       Some(Self{
         device: device_file.clone(),
-        partition_offset: ((part_data[8] as u32) << 0 | (part_data[9] as u32) << 8 | (part_data[10] as u32) << 16 | (part_data[11] as u32) << 24) as usize * ata::SECTOR_SIZE_IN_BYTES,
-        partition_size: ((part_data[12] as u32) << 0 | (part_data[13] as u32) << 8 | (part_data[14] as u32) << 16 | (part_data[15] as u32) << 24) as usize * ata::SECTOR_SIZE_IN_BYTES,
+        partition_offset: u32::from_le_bytes([part_data[8], part_data[9], part_data[10], part_data[11]]) as usize * ata::SECTOR_SIZE_IN_BYTES,
+        partition_size: u32::from_le_bytes([part_data[12], part_data[13], part_data[14], part_data[15]]) as usize * ata::SECTOR_SIZE_IN_BYTES,
         partiton_number: partition_number,
       })
     }else { None }

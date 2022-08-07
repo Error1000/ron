@@ -1,12 +1,13 @@
-use core::{cell::RefCell, str::from_utf8};
+use core::{cell::RefCell, str::from_utf8, convert::TryInto, mem::size_of};
 
 use alloc::{rc::Rc, vec, vec::Vec, borrow::ToOwned};
+use packed_struct::prelude::PackedStruct;
 
 use crate::{vfs::{IFile, self, IFolder}};
 
-#[derive(Debug, Clone, Copy)]
-#[repr(packed)]
-pub struct Ext2SuperBlock{
+#[derive(PackedStruct)]
+#[packed_struct(endian = "lsb")] // ext2 is little endian (https://wiki.osdev.org/Ext2#Basic_Concepts)
+pub struct Ext2SuperBlock {
     no_of_inodes: u32,
     no_of_blocks: u32,
     superuser_reserved_blocks: u32,
@@ -34,8 +35,8 @@ pub struct Ext2SuperBlock{
     gid_for_reserved_blocks: u16
 }
 
-#[derive(Debug, Clone, Copy)]
-#[repr(packed)]
+#[derive(PackedStruct)]
+#[packed_struct(endian = "lsb")] // ext2 is little endian (https://wiki.osdev.org/Ext2#Basic_Concepts)
 pub struct Ext2ExtendedSuperblock{
     first_non_reserved_inode_in_fs: u32,
     inode_size: u16,
@@ -57,8 +58,8 @@ pub struct Ext2ExtendedSuperblock{
 }
 
 
-#[derive(Debug, Clone, Copy)]
-#[repr(packed)]
+#[derive(PackedStruct)]
+#[packed_struct(endian = "lsb")] // ext2 is little endian (https://wiki.osdev.org/Ext2#Basic_Concepts)
 pub struct Ext2BlockGroupDescriptor{
     block_addr_for_block_usage_bitmap: u32,
     block_addr_for_inode_usage_bitmap: u32,
@@ -66,11 +67,14 @@ pub struct Ext2BlockGroupDescriptor{
     unallocated_blocks_in_group: u16,
     unallocated_inodes_in_group: u16,
     directories_in_group: u16,
-    _unused: (u64, u32, u16) // 14 unused bytes
+    // 14 unused bytes
+    _unused1: u64,
+    _unused2: u32,
+    _unused3: u16, 
 }
 
-#[derive(Debug, Clone, Copy)]
-#[repr(packed)]
+#[derive(PackedStruct)]
+#[packed_struct(endian = "lsb")] // ext2 is little endian (https://wiki.osdev.org/Ext2#Basic_Concepts)
 pub struct Ext2RawInode{
     type_and_perm: u16,
     user_id: u16,
@@ -95,8 +99,8 @@ pub struct Ext2RawInode{
     os_value_2: [u32; 3],
 }
 
-#[derive(Debug, Clone, Copy)]
-#[repr(packed)]
+#[derive(PackedStruct)]
+#[packed_struct(endian = "lsb")] // ext2 is little endian (https://wiki.osdev.org/Ext2#Basic_Concepts)
 pub struct Ext2DirectoryEntry {
     inode_addr: u32,
     entry_size: u16,
@@ -104,7 +108,11 @@ pub struct Ext2DirectoryEntry {
     entry_type: u8
 }
 
-impl Ext2RawInode{
+impl Ext2RawInode {
+
+    fn get_value_from_u32_array_as_le_bytes(bytes: &[u8], index: usize) -> Option<u32> {
+        Some(u32::from_le_bytes(bytes[index*size_of::<u32>()..(index+1)*size_of::<u32>()].try_into().ok()?))
+    }
 
     pub fn get_data_block_pointer(&self, mut block_number: usize, fs: &Ext2FS) -> Option<u32>{
         // TODO: Test all posibilites of this function!!!
@@ -114,12 +122,14 @@ impl Ext2RawInode{
         }
 
         let pointers_per_block = fs.get_block_size() as usize/core::mem::size_of::<u32>();
+
+        let read_pointer_from_block = Self::get_value_from_u32_array_as_le_bytes;
         // Singly indirect data
         block_number -= 12;
         if block_number < pointers_per_block {
             // direct_pointer_block is a block of tightly packed block pointers
-            let block_of_direct_pointers = fs.read_block(self.singly_indirect_block_pointer)?.as_ptr() as *const u32;
-            return Some(unsafe{*block_of_direct_pointers.add(block_number)});
+            let block_of_direct_pointers = fs.read_block(self.singly_indirect_block_pointer)?;
+            return read_pointer_from_block(&block_of_direct_pointers, block_number);
         }
 
         // Doubly indirect data
@@ -127,9 +137,9 @@ impl Ext2RawInode{
         if block_number < pointers_per_block*pointers_per_block{
             let singly_indirect_block_index = block_number/pointers_per_block;
             let direct_block_index = block_number%pointers_per_block;
-            let block_of_singly_indirect_pointers = fs.read_block(self.doubly_indirect_block_pointer)?.as_ptr() as *const u32;
-            let block_of_direct_pointers = fs.read_block(unsafe{*block_of_singly_indirect_pointers.add(singly_indirect_block_index)})?.as_ptr() as *const u32;
-            return Some(unsafe{*block_of_direct_pointers.add(direct_block_index)});
+            let block_of_singly_indirect_pointers = fs.read_block(self.doubly_indirect_block_pointer)?;
+            let block_of_direct_pointers = fs.read_block(read_pointer_from_block(&block_of_singly_indirect_pointers, singly_indirect_block_index)?)?;
+            return read_pointer_from_block(&block_of_direct_pointers, direct_block_index);
         }
 
         // Triply indirect data
@@ -138,10 +148,10 @@ impl Ext2RawInode{
             let doubly_indirect_block_index = block_number/(pointers_per_block*pointers_per_block);
             let singly_indirect_block_index = (block_number%(pointers_per_block*pointers_per_block))/pointers_per_block;
             let direct_block_index = (block_number%(pointers_per_block*pointers_per_block))%pointers_per_block;
-            let block_of_doubly_indirect_pointers = fs.read_block(self.triply_indirect_block_pointer)?.as_ptr() as *const u32;
-            let block_of_singly_indirect_pointers = fs.read_block(unsafe{*block_of_doubly_indirect_pointers.add(doubly_indirect_block_index)})?.as_ptr() as *const u32;
-            let block_of_direct_pointers = fs.read_block(unsafe{*block_of_singly_indirect_pointers.add(singly_indirect_block_index)})?.as_ptr() as *const u32;
-            return Some(unsafe{*block_of_direct_pointers.add(direct_block_index)});
+            let block_of_doubly_indirect_pointers = fs.read_block(self.triply_indirect_block_pointer)?;
+            let block_of_singly_indirect_pointers = fs.read_block(read_pointer_from_block(&block_of_doubly_indirect_pointers, doubly_indirect_block_index)?)?;
+            let block_of_direct_pointers = fs.read_block(read_pointer_from_block(&block_of_singly_indirect_pointers, singly_indirect_block_index)?)?;
+            return read_pointer_from_block(&block_of_direct_pointers, direct_block_index);
         }
         None
     }
@@ -250,7 +260,7 @@ impl IFolder for Ext2Folder {
         if let Some(raw_data) = raw_data {
             let mut cur_ind = 0;
             while cur_ind < raw_data.len(){
-                let entry: &Ext2DirectoryEntry = unsafe{&*(raw_data.as_ptr().add(cur_ind) as *const Ext2DirectoryEntry)};
+                let entry = Ext2DirectoryEntry::unpack(raw_data[cur_ind..cur_ind+size_of::<Ext2DirectoryEntry>()].try_into().expect("Reading directory entry should always work!")).expect("Parsing directory entry should always work!");
                 cur_ind += core::mem::size_of::<Ext2DirectoryEntry>();
                 let name: &str = from_utf8(&raw_data[cur_ind..cur_ind+entry.name_length_low8 as usize]).expect("Ext2 inode name in directory entry should be valid utf-8!");
                 cur_ind += entry.entry_size as usize-core::mem::size_of::<Ext2DirectoryEntry>();
@@ -263,14 +273,12 @@ impl IFolder for Ext2Folder {
     }
 }
 
-pub struct Ext2FS{
+pub struct Ext2FS {
     backing_device: Rc<RefCell<dyn IFile>>,
     pub sb: Ext2SuperBlock,
     pub extended_sb: Option<Ext2ExtendedSuperblock>,
 }
 
-
-// TODO: Deserialisation will not work on architectures where the integere are a different endiannes from ext2(which is little endian)
 
 impl Ext2FS {
     pub fn new(backing_dev: Rc<RefCell<dyn IFile>>) -> Option<Ext2FS>{
@@ -278,15 +286,14 @@ impl Ext2FS {
         // Source: https://wiki.osdev.org/Ext2#Locating_the_Superblock
 
         let sb_data: Vec<u8> = backing_dev.borrow().read(1024, core::mem::size_of::<Ext2SuperBlock>())?;
-        let sb = unsafe{ &*(sb_data.as_ptr() as *const Ext2SuperBlock)}.clone();
+        let sb = Ext2SuperBlock::unpack(sb_data.as_slice().try_into().ok()?).ok()?;
 
         if sb.inodes_per_block_group < 1 { return None; }
 
         let mut extended_sb = None;
         if sb.major_version >= 1{
             let extended_sb_data: Vec<u8> = backing_dev.borrow().read(1024+core::mem::size_of::<Ext2SuperBlock>(), core::mem::size_of::<Ext2ExtendedSuperblock>())?;
-            let extended_sb_ptr = extended_sb_data.as_ptr() as *const Ext2ExtendedSuperblock;
-            extended_sb = Some(unsafe{&*extended_sb_ptr}.clone());
+            extended_sb = Some(Ext2ExtendedSuperblock::unpack(extended_sb_data.as_slice().try_into().ok()?).ok()?);
         }
         Some(Ext2FS{
             backing_device: backing_dev,
@@ -327,7 +334,7 @@ impl Ext2FS {
         let inode_index_in_table = (inode_addr-1)%self.sb.inodes_per_block_group;
         // Inode size in list is self.get_inode_size() but only core::mem::size_of::<Ext2Inode>() bytes of the entire thing are useful for us
         let raw_inode = self.read(inode_table_addr+inode_index_in_table*self.get_inode_size() as u32, core::mem::size_of::<Ext2RawInode>())?;
-        Some(unsafe{&*(raw_inode.as_ptr() as *const Ext2RawInode)}.clone())
+        Ext2RawInode::unpack(raw_inode.as_slice().try_into().ok()?).ok()
     }
 
     pub fn get_block_group_descriptor(&self, block_group_descriptor_index: u32) -> Option<Ext2BlockGroupDescriptor> {
@@ -341,7 +348,7 @@ impl Ext2FS {
 
         let table_addr = ((1024 + 1024)/self.get_block_size())*self.get_block_size(); // Find the block that's at 2048 bytes ( a.k.a immediatly after the superblock which is 1024 bytes in length and located AT byte 1024, so the first byte of the superblock is byte number 1024 and the last is 2048 )
         let raw_descriptor: Vec<u8> = self.read(table_addr+offset_of_descriptor_in_table, core::mem::size_of::<Ext2BlockGroupDescriptor>())?;
-        Some(unsafe{ &*(raw_descriptor.as_ptr() as *const Ext2BlockGroupDescriptor)}.clone())
+        Ext2BlockGroupDescriptor::unpack(raw_descriptor.as_slice().try_into().ok()?).ok()
     }
 
     pub fn get_block_size(&self) -> u32 {

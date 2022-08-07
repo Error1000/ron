@@ -1,7 +1,29 @@
 use core::{mem, cell::RefCell};
 use alloc::{rc::Rc, vec::Vec};
+use packed_struct::prelude::PackedStruct;
 
 use crate::{virtmem::KernPointer, vfs::IFile};
+
+#[derive(PackedStruct, PartialEq)]
+#[packed_struct(bit_numbering = "lsb0", size_bytes = "1")]
+struct ATAStatus{
+    #[packed_field(bits = "0")]
+    ata_err: bool,
+    #[packed_field(bits = "1")]
+    ata_idx: bool,
+    #[packed_field(bits = "2")]
+    ata_corrected: bool,
+    #[packed_field(bits = "3")]
+    ata_data_request: bool,
+    #[packed_field(bits = "4")]
+    ata_overlapped_mode_service_request: bool,
+    #[packed_field(bits = "5")]
+    ata_drive_fault_error: bool,
+    #[packed_field(bits = "6")]
+    ata_ready: bool,
+    #[packed_field(bits = "7")]
+    ata_busy: bool
+}
 
 struct IORegistersLBA28 {
     pub data: KernPointer<u16>,
@@ -15,7 +37,7 @@ struct IORegistersLBA28 {
 }
 
 impl IORegistersLBA28{
-    unsafe fn new(base: KernPointer<u8>) -> Self{
+    unsafe fn new(base: KernPointer<u8>) -> Self {
         IORegistersLBA28{
             data: mem::transmute::<KernPointer<u8>, _>(base),
             err_features: base.offset(1),
@@ -32,15 +54,15 @@ impl IORegistersLBA28{
         self.err_features.read()
     }
 
-    unsafe fn write_features(&mut self, d: u8){
+    unsafe fn write_features(&mut self, d: u8) {
         self.err_features.write(d)
     }
 
-    unsafe fn read_status(&self) -> u8{
-        self.stat_command.read()
+    unsafe fn read_status(&self) -> ATAStatus {
+        ATAStatus::unpack(&[self.stat_command.read()]).expect("Reading and parsing ata status register should always work")
     }
 
-    unsafe fn write_command(&mut self, d: u8){
+    unsafe fn write_command(&mut self, d: u8) {
         self.stat_command.write(d)
     }
 }
@@ -51,22 +73,22 @@ struct ControlRegistersLBA28 {
 }
 
 impl ControlRegistersLBA28 {
-    unsafe fn new(base: KernPointer<u8>) -> Self{
+    unsafe fn new(base: KernPointer<u8>) -> Self {
         ControlRegistersLBA28{
             alt_stat_device_ctrl: base,
             drive_addr: base.offset(1)
         }
     }
 
-    unsafe fn read_alt_stat(&self) -> u8{
+    unsafe fn read_alt_stat(&self) -> u8 {
         self.alt_stat_device_ctrl.read()
     }
 
-    unsafe fn write_device_ctrl(&mut self, d: u8){
+    unsafe fn write_device_ctrl(&mut self, d: u8) {
         self.alt_stat_device_ctrl.write(d)
     }
 
-    unsafe fn read_drive_addr(&self) -> u8{
+    unsafe fn read_drive_addr(&self) -> u8 {
         self.drive_addr.read()
     }
 }
@@ -80,7 +102,7 @@ pub enum ATADevice {MASTER, SLAVE}
 #[derive(Clone, Copy)]
 enum BUSType{Primary, Secondary}
 
-impl BUSType{
+impl BUSType {
     pub fn into_str(self) -> &'static str{
         match self{
             BUSType::Primary => "primary",
@@ -89,7 +111,7 @@ impl BUSType{
     }
 }
 
-pub struct ATABus{
+pub struct ATABus {
     io: IORegistersLBA28,
     control: ControlRegistersLBA28,
     master_sector_count: Option<u32>,
@@ -99,28 +121,29 @@ pub struct ATABus{
 
 #[derive(Clone, Copy)]
 
-pub struct LBA28{
+pub struct LBA28 {
     pub low: u8,
     pub mid: u8,
     pub hi: u8
 }
 
-impl From<u32> for LBA28{
+impl From<u32> for LBA28 {
     fn from(v: u32) -> Self {
+        let data = v.to_le_bytes();
         LBA28{
-            low: ((v >> 0) & 0xff) as u8,
-            mid: ((v >> 8) & 0xff) as u8,
-            hi: ((v >> 16) & 0xff) as u8
+            low: data[0],
+            mid: data[1],
+            hi: data[2]
         }
     }
 }
 
-impl Into<u32> for LBA28{
+impl Into<u32> for LBA28 {
     fn into(self) -> u32 {
-        ((self.low as u32) << 0) | ((self.mid as u32) << 8) | ((self.hi as u32) << 24)
+        u32::from_le_bytes([self.low, self.mid, self.hi, 0])
     }
 }
-impl ATADevice{
+impl ATADevice {
     pub fn into_str(self) -> &'static str{
         match self{
             ATADevice::MASTER => "master",
@@ -130,7 +153,7 @@ impl ATADevice{
 }
 
 #[allow(unused)]
-mod ata_command{
+mod ata_command {
     pub const NOP: u8 = 0x00;
     pub const READ_SECTORS: u8 = 0x20;
     pub const WRITE_SECTORS: u8 = 0x30;
@@ -166,7 +189,7 @@ impl ATABus{
             bus_type: typ
         };
         // IO bus has pull-up resitors so 0xFF, which is normally an invalid value anyway, probs indicates no drives on the bus
-        if bus.io.read_status() == 0xFF {
+        if bus.io.read_status() == ATAStatus::unpack(&[0xFF]).ok()? {
             None
         }else{
             Some(bus)
@@ -180,7 +203,7 @@ impl ATABus{
                     return Some(sector_count);
                 }else if let Some(id) = self.identify(device){
                     self.master_sector_count = Some(
-                        ((id[61] as u32) << 16) | (id[60] as u32)
+                        u32::from_le_bytes([id[60].to_le_bytes()[0], id[60].to_le_bytes()[1], id[61].to_le_bytes()[0], id[61].to_le_bytes()[1] ])
                     );
                     return self.master_sector_count;
                 }
@@ -190,7 +213,7 @@ impl ATABus{
                     return Some(sector_count);
                 }else if let Some(id) = self.identify(device){
                     self.slave_sector_count = Some(
-                        ((id[61] as u32) << 16) | (id[60] as u32)
+                        u32::from_le_bytes([id[60].to_le_bytes()[0], id[60].to_le_bytes()[1], id[61].to_le_bytes()[0], id[61].to_le_bytes()[1] ])
                     );
                     return self.slave_sector_count;
                 }
@@ -208,12 +231,13 @@ impl ATABus{
         self.io.address_mid.write(0);
         self.io.address_low.write(0);
         self.io.write_command(ata_command::IDENTIYFY_DEVICE); // IDENTIFY
-        if self.io.read_status() == 0x0 { return None; }
-        let status = self.io.read_status();
-        if status == 0{ return None; } // Drive does not exist
-        wait_for!(self.io.read_status() & (1 << 7) == 0); // BSY clears
-        wait_for!(self.io.read_status() & (1 << 3) != 0 || self.io.read_status() & (1 << 0) != 0); // DRQ or ERR sets
-        if self.io.read_status() & (1 << 0) != 0 { return None; } // ERR
+        if self.io.read_status() == ATAStatus::unpack(&[0x0]).ok()? { return None; }
+        wait_for!(self.io.read_status().ata_busy == false); // BSY clears
+        wait_for!({
+            let status = self.io.read_status();
+            status.ata_data_request || status.ata_err
+        }); // DRQ or ERR sets
+        if self.io.read_status().ata_err { return None; } // ERR
         let mut a = [0u16; 256];
         a.iter_mut().for_each(|e| *e = self.io.data.read());
         Some(a)
@@ -231,9 +255,12 @@ impl ATABus{
         self.io.address_hi.write(sector_lba.hi);
         self.io.write_command(ata_command::READ_SECTORS); // Read sectors command
         
-        wait_for!(self.io.read_status() & (1 << 7) == 0); // BSY clears
-        wait_for!(self.io.read_status() & (1 << 3) != 0 || self.io.read_status() & (1 << 0) != 0); // DRQ or ERR sets
-        if self.io.read_status() & (1 << 0) == 1 { return None; } // ERR
+        wait_for!(self.io.read_status().ata_busy == false); // BSY clears
+        wait_for!({
+            let status = self.io.read_status();
+            status.ata_data_request || status.ata_err
+        }); // DRQ or ERR sets
+        if self.io.read_status().ata_err { return None; } // ERR
 
         let mut a = [0u16; 256];
         a.iter_mut().for_each(|e| *e = self.io.data.read());
@@ -252,9 +279,12 @@ impl ATABus{
         self.io.address_hi.write(sector_lba.hi);
         self.io.write_command(ata_command::WRITE_SECTORS); // Write sectors command
 
-        wait_for!(self.io.read_status() & (1 << 7) == 0); // BSY clears
-        wait_for!(self.io.read_status() & (1 << 3) != 0 || self.io.read_status() & (1 << 0) != 0); // DRQ or ERR sets
-        if self.io.read_status() & (1 << 0) == 1 { return; } // ERR
+        wait_for!(self.io.read_status().ata_busy == false); // BSY clears
+        wait_for!({
+            let status = self.io.read_status();
+            status.ata_data_request || status.ata_err
+        }); // DRQ or ERR sets
+        if self.io.read_status().ata_err { return; } // ERR
 
         data.iter().for_each(|e| self.io.data.write(*e));
 
@@ -299,10 +329,8 @@ impl IFile for ATADeviceFile{
         &mut unsafe{ (*self.bus).borrow_mut().read_sector(self.bus_device, lba) }
         .map(|val|{
             let mut v = Vec::with_capacity(SECTOR_SIZE_IN_BYTES);
-            for e in &val{
-                // FIXME: Little-endian only
-                v.push((e & 0xFF) as u8);
-                v.push(((e >> 8) & 0xFF) as u8);
+            for e in &val {
+                v.extend(e.to_le_bytes());
             }
             v
         })?
@@ -333,9 +361,9 @@ impl IFile for ATADeviceFile{
             [0u16; SECTOR_SIZE_IN_BYTES/core::mem::size_of::<u16>()] 
          };
 
-         while let (Some(a), Some(b)) = (iter.next(), iter.next()){
+         while let (Some(a), Some(b)) = (iter.next(), iter.next()) {
             if ind >= v.len() { break; }
-            v[ind] = (*a as u16) | ((*b as u16) << 8); // FIXME: Little-endian only
+            v[ind] = u16::from_le_bytes([*a, *b]);
             ind += 1;
          }
          ind = 0;

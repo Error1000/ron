@@ -682,7 +682,7 @@ impl<STATE: MixedRegisterState> Vga<Text80x25, STATE>{
             // We could just do 2 writes but then we would have to know the endianess that the vga card expects, which is undefined as far as i'm aware, so by reinterpreting the pointer to point to 2 bytes at atime, we can use the default endianess of the system which might be better, oh and also we have 1 write instead of 2, which again is probably better
             // hey, it works on my machine (literally) ¯\_(ツ)_/¯
             let vram: KernPointer::<u16> = core::mem::transmute(self.video_ram);
-            vram.offset((y*80+x) as isize).write(c as u16 | ( (color&0b1111) as u16|(color&0b11110000) as u16) << 8);
+            vram.offset((y*80+x) as isize).write(u16::from_le_bytes([c, color]));
     }
 
     pub unsafe fn set_cursor_position(&mut self, x: usize, y: usize){

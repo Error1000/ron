@@ -75,7 +75,7 @@ setup_paging:
 	or ax, DEFAULT_L4_ENTRY
 	mov dword [l4_pt-4], rax
 
-	DEFAULT_L3_ENTRY = (1 << 0 | 1 << 1 | 1 << 2) # Present (bit 0), r/w(bit 1), user(bit 2), page size 1gb ( bit 7)
+	DEFAULT_L3_ENTRY = (1 << 0 | 1 << 1 | 1 << 2) # Present (bit 0), r/w(bit 1), user(bit 2), page size ( bit 7)
 	mov rax, OFFSET l2_pt_1
 	or ax, DEFAULT_L3_ENTRY
 	mov dword [l3_pt_1-4+8*0], rax
@@ -102,18 +102,18 @@ setup_paging:
 
 		mov dword [l2_pt_1+rbx-4], rax 
         
-		add rax, 0x40000000
+		add rax, 0x40000000 # 1 gb between l2 pages
 		mov dword [l2_pt_2+rbx-4], rax 
 
-		add rax, 0x40000000
+		add rax, 0x40000000 # 1 gb between l2 pages
 		mov dword [l2_pt_3+rbx-4], rax 
 
-		add rax, 0x40000000
+		add rax, 0x40000000 # 1 gb between l2 pages
 		mov dword [l2_pt_4+rbx-4], rax 
 
 		shr rbx, 3
 		inc rbx
-		cmp rbx, 512
+		cmp rbx, 512 # 512*2mb = 1024 mb = 1 gb
 	jl l2_loop
 
 enable_paging:	

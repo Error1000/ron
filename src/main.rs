@@ -128,10 +128,11 @@ pub unsafe extern "C" fn memset(dest: *mut u8, c: isize, n: usize) -> *mut u8 {
     }
     let dest_size = dest as *mut usize;
     let n_size = n/core::mem::size_of::<usize>();
-    let mut c_size = 0usize;
+    // NOTE: Don't use from_ne_bytes as it causes a call to memset (don't know if directly or indirectly), causing recursion, leading to a stack overflow
     // Endianness dosen't matter
-    for i in 0..core::mem::size_of::<usize>()/core::mem::size_of::<u8>(){
-        c_size |= (c as usize) << (i*core::mem::size_of::<u8>());
+    let mut c_size = 0usize;
+    for i in 0..core::mem::size_of::<usize>()/core::mem::size_of::<u8>() {
+        c_size |= (c as usize) << i;
     }
     for i in 0..n_size {*(dest_size.offset(i as isize)) = c_size; }
     for i in n_size*core::mem::size_of::<usize>()..n { *(dest.offset(i as isize)) = c; }
@@ -286,9 +287,10 @@ impl<'a> Terminal<'a>{
 // reg1 and reg2 are used for multiboot
 #[no_mangle]
 pub extern "C" fn main(r1: u32, r2: u32) -> ! {
-    let multiboot_data= multiboot::init(r1 as usize, r2 as usize);
     unsafe{ UART.lock().set(UARTDevice::x86_default()); }
     UART.lock().init();
+
+    let multiboot_data = multiboot::init(r1 as usize, r2 as usize);
     writeln!(UART.lock(), "Hello, world!").unwrap();
 
     
@@ -303,7 +305,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
 
         if id == 0xB || id == 0xC {
             for j in i+2..i+2+(core::mem::size_of::<usize>()/core::mem::size_of::<u32>()){
-                efi_system_table_ptr |= (multiboot_data[j] as usize) << ((j-i-2)*32); // assumes little endian
+                efi_system_table_ptr |= (multiboot_data[j] as usize) << ((j-i-2)*32); // FIXME: assumes little endian
             }
         }
         i += len as usize;
