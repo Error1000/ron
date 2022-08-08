@@ -2,6 +2,7 @@ use core::{sync::atomic::AtomicBool, cell::UnsafeCell};
 use core::ops::{Deref, DerefMut};
 use core::fmt::{Debug, Formatter, Error};
 
+
 pub struct LazyInitialised<T>{
     inner: Option<T>
 }

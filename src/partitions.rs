@@ -65,6 +65,10 @@ impl IFile for MBRPartitionFile{
       (*self.device).borrow_mut().write(offset+self.partition_offset, data)
     }
 
+    fn resize(&mut self, _new_size: usize) -> Option<()> {
+        None
+    }
+    
     fn get_size(&self) -> usize {
         self.partition_size
     }

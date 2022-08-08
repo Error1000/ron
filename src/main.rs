@@ -466,14 +466,19 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             actual_dir.push_str(redir_str.as_str());
                             Some(actual_dir)
                         };
-                        let node = path.map(|path| path.get_node().expect("Redirect path should exist!"));
+                        if let Some(node) = path.map(|path| path.get_node()) {
                     
-                        if let Some(Node::File(file)) = node {
-                            if (*file).borrow_mut().write(0, puts_output.as_bytes()).is_none() {
-                                writeln!(TERMINAL.lock(), "Couldn't write to file!").unwrap();
+                            if let Some(Node::File(file)) = node {
+                                if (*file).borrow_mut().resize(puts_output.len()).is_some(){
+                                    if (*file).borrow_mut().write(0, puts_output.as_bytes()).is_none() {
+                                        writeln!(TERMINAL.lock(), "Couldn't write to file!").unwrap();
+                                    }
+                                }else{
+                                    writeln!(TERMINAL.lock(), "Couldn't resize file!").unwrap();
+                                }
+                            }else{
+                                writeln!(TERMINAL.lock(), "Redirect path should be valid!").unwrap();
                             }
-                        }else{
-                            writeln!(TERMINAL.lock(), "Redirect path should be valid!").unwrap();
                         }
 
                     } else { write!(TERMINAL.lock(), "{}", puts_output).unwrap(); };
@@ -505,7 +510,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         let e2fs = ext2::Ext2FS::new(file_node);
                         let e2fs = if let Some(val) = e2fs { val } else { writeln!(TERMINAL.lock(), "Source file does not contain a valid ext2 fs!").unwrap(); continue; };
                         let e2fs = Rc::new(RefCell::new(e2fs));
-                        let root_inode = (*e2fs).borrow_mut().get_inode(2).expect("Root inode should exist!").as_vfs_node(e2fs.clone()).expect("Root inode should be parsable in vfs!").expect_folder();
+                        let root_inode = (*e2fs).borrow_mut().get_inode(2).expect("Root inode should exist!").as_vfs_node(e2fs.clone(), 2).expect("Root inode should be parsable in vfs!").expect_folder();
                         let mut mntpoint_node = vfs::Path::try_from(mntpoint.trim());
                         if !mntpoint.starts_with("/") {
                             let mut actual_node = cur_dir.clone();

@@ -16,6 +16,7 @@ pub trait IFile {
     fn read(&self, offset: usize, len: usize) -> Option<Vec<u8>>;
     fn write(&mut self, offset: usize, data: &[u8]) -> BytesWritten;
     fn get_size(&self) -> usize;
+    fn resize(&mut self, new_size: usize) -> Option<()>;
 }
 
 #[derive(Clone)]

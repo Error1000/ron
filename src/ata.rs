@@ -373,6 +373,10 @@ impl IFile for ATADeviceFile{
         Some(data.len())
     }
 
+    fn resize(&mut self, _new_size: usize) -> Option<()> {
+        None
+    }
+
     fn get_size(&self) -> usize{
       let mut ata_bus = (*self.bus).borrow_mut();
       let sector_count = unsafe{ ata_bus.get_sector_count(self.bus_device) }.expect("Rading device should work!");
