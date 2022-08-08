@@ -125,7 +125,9 @@ impl Ext2RawInode {
         Some(())
     }
 
-    pub fn get_data_block_pointer(&self, mut block_number: usize, fs: &Ext2FS) -> Option<u32> {
+
+
+    pub fn read_data_block_pointer(&self, mut block_number: usize, fs: &Ext2FS) -> Option<u32> {
         // TODO: Test all posibilites of this function!!!
         // Direct data
         if block_number <= 11 {
@@ -171,11 +173,11 @@ impl Ext2RawInode {
         None
     }
 
-    pub fn set_data_block_pointer(&mut self, mut block_number: usize, pointer: u32, fs: &mut Ext2FS) -> Option<()> {
+    pub fn dealloc_data_block_pointer(&mut self, mut block_number: usize, fs: &mut Ext2FS) -> Option<()> {
         // TODO: Test all posibilites of this function!!!
         // Direct data
         if block_number <= 11 {
-            self.direct_block_pointers[block_number] = pointer;
+            self.direct_block_pointers[block_number] = 0;
             return Some(());
         }
 
@@ -190,7 +192,10 @@ impl Ext2RawInode {
             let singly_indirect_block_index = block_number; // Index of pointer to data block
             let mut singly_indirect_block = fs.read_block(self.singly_indirect_block_pointer)?;
 
-            write_pointer_to_block(&mut singly_indirect_block, singly_indirect_block_index, pointer)?;
+            // Deallocate data block
+            fs.dealloc_block(read_pointer_from_block(&mut singly_indirect_block, singly_indirect_block_index)?)?;
+            // Override with null data block
+            write_pointer_to_block(&mut singly_indirect_block, singly_indirect_block_index, 0)?;
             fs.write_block(self.singly_indirect_block_pointer, &singly_indirect_block)?;
             return Some(());
         }
@@ -203,7 +208,10 @@ impl Ext2RawInode {
 
             let doubly_indirect_block = fs.read_block(self.doubly_indirect_block_pointer)?;
             let mut singly_indirect_block = fs.read_block(read_pointer_from_block(&doubly_indirect_block, doubly_indirect_block_index)?)?;
-            write_pointer_to_block(&mut singly_indirect_block, singly_indirect_block_index, pointer);
+            // Deallocate data block
+            fs.dealloc_block(read_pointer_from_block(&singly_indirect_block, singly_indirect_block_index)?)?;
+            // Override with null data block
+            write_pointer_to_block(&mut singly_indirect_block, singly_indirect_block_index, 0)?;
             fs.write_block(read_pointer_from_block(&doubly_indirect_block, doubly_indirect_block_index)?, &singly_indirect_block)?;
             return Some(());
         }
@@ -218,7 +226,9 @@ impl Ext2RawInode {
             let triply_indirect_block = fs.read_block(self.triply_indirect_block_pointer)?;
             let doubly_indirect_block = fs.read_block(read_pointer_from_block(&triply_indirect_block, triply_indirect_block_index)?)?;
             let mut singly_indirect_block = fs.read_block(read_pointer_from_block(&doubly_indirect_block, doubly_indirect_block_index)?)?;
-            write_pointer_to_block(&mut singly_indirect_block, singly_indirect_block_index, pointer)?;
+            // Deallocate data block
+            fs.dealloc_block(read_pointer_from_block(&singly_indirect_block, singly_indirect_block_index)?)?;
+            write_pointer_to_block(&mut singly_indirect_block, singly_indirect_block_index, 0)?;
             fs.write_block(read_pointer_from_block(&doubly_indirect_block, doubly_indirect_block_index)?, &singly_indirect_block)?;
             return Some(());
         }
@@ -294,13 +304,17 @@ impl Ext2RawInode {
         }
     }
 
+
+
     pub fn read_raw_data_block(&self, block_number: usize, fs: &Ext2FS) -> Option<Vec<u8>> {
-        return fs.read_block(self.get_data_block_pointer(block_number, fs)?);
+        return fs.read_block(self.read_data_block_pointer(block_number, fs)?);
     }
 
     pub fn write_raw_data_block(&self, block_number: usize, data: &[u8], fs: &mut Ext2FS) -> Option<()> {
-        return fs.write_block(self.get_data_block_pointer(block_number, fs)?, data);
+        return fs.write_block(self.read_data_block_pointer(block_number, fs)?, data);
     }
+
+
 
     pub fn read_bytes(&self, offset: usize, len: usize, e2fs: &Ext2FS) -> Option<Vec<u8>> {
         if offset+len > self.get_size() { return None; }
@@ -351,20 +365,23 @@ impl Ext2RawInode {
         Some(data.len())
     }
 
+
+
     pub fn shrink_by(&mut self, nbytes: usize, e2fs: &mut Ext2FS) -> Option<()> {
         let mut blocks_to_remove = nbytes/e2fs.get_block_size() as usize;
         {
         let bytes_to_remove_from_last_block = nbytes%e2fs.get_block_size() as usize;
         let bytes_used_in_last_block = self.get_size()%e2fs.get_block_size() as usize;
-        if bytes_used_in_last_block < bytes_to_remove_from_last_block {
+        if bytes_used_in_last_block <= bytes_to_remove_from_last_block {
             blocks_to_remove += 1;
         }
         }
+
         let last_data_block_index = self.get_size()/e2fs.get_block_size() as usize;
         use core::fmt::Write;
         writeln!(UART.lock(), "Removing block pointers!").unwrap();
         for i in 0..blocks_to_remove {
-            self.set_data_block_pointer(last_data_block_index-i, 0, e2fs)?;
+            self.dealloc_data_block_pointer(last_data_block_index-i, e2fs)?;
         }
         writeln!(UART.lock(), "Shrinking inode!").unwrap();
         self.shrink_data_structure_to_fit(e2fs);
@@ -423,7 +440,7 @@ impl vfs::IFile for Ext2File{
 
     fn resize(&mut self, new_size: usize) -> Option<()>{
         self.inode.resize(new_size, &mut *self.fs.borrow_mut())?;
-        self.fs.borrow_mut().set_inode(self.inode_addr, &self.inode)?;
+        self.fs.borrow_mut().write_inode(self.inode_addr, &self.inode)?;
         Some(())
     }
 }
@@ -446,7 +463,7 @@ impl IFolder for Ext2Folder {
                 let name: &str = from_utf8(&raw_data[cur_ind..cur_ind+entry.name_length_low8 as usize]).expect("Ext2 inode name in directory entry should be valid utf-8!");
                 cur_ind += entry.entry_size as usize-Ext2FS::get_directory_entry_header_size();
 
-                let inode = self.fs.borrow().get_inode(entry.inode_addr).expect("Inode in directory entry should be valid!");
+                let inode = self.fs.borrow().read_inode(entry.inode_addr).expect("Inode in directory entry should be valid!");
                 res.push((name.to_owned(), inode.as_vfs_node(self.fs.clone(), entry.inode_addr).expect("Inodes should be parsable as vfs nodes!")))
             }
         }
@@ -507,25 +524,52 @@ impl Ext2FS {
     }  
     
     pub fn dealloc_block(&mut self, number: u32) -> Option<()> {
+        // TODO: Test to make sure we don't leak blocks
         let block_group_descriptor_index = number/self.sb.blocks_per_block_group;
         let offset_in_block_group = number%self.sb.blocks_per_block_group;
-        let mut descriptor = self.get_block_group_descriptor(block_group_descriptor_index)?;
+        
+        let mut descriptor = self.read_block_group_descriptor(block_group_descriptor_index)?;
+        if u32::from(descriptor.unallocated_blocks_in_group) == self.sb.blocks_per_block_group {
+            // All blocks in the descriptor are already unallocated
+            panic!("Block: {} should exist in block group no. {} in the block group descriptor table, however that descriptor reported no allocated blocks!", number, block_group_descriptor_index);
+        }
         let mut bitmap = self.read_block(descriptor.block_addr_for_block_usage_bitmap)?;
         let mut val_to_edit = bitmap[(offset_in_block_group/8) as usize];
-        val_to_edit &= !(1<<(offset_in_block_group%8));
+        // create a mask of all ones except a zero at the location of the block to deallocate, by anding this mask with the current value we mark the block as deallocated while leaving other blocks in the same state
+        val_to_edit &= !(1u8<<(offset_in_block_group%8)); 
         bitmap[(offset_in_block_group/8) as usize] = val_to_edit;
         // Write modified bitmap
         self.write_block(descriptor.block_addr_for_block_usage_bitmap,&bitmap);
         descriptor.unallocated_blocks_in_group += 1;
         // Write modified descriptor
-        self.set_block_group_descriptor(block_group_descriptor_index, &mut descriptor)?;
+        self.write_block_group_descriptor(block_group_descriptor_index, &mut descriptor)?;
         Some(())
     }
 
-    pub fn get_inode(&self, inode_addr: u32) -> Option<Ext2RawInode> {
+    pub fn alloc_block(&mut self, block_group_descriptor_index: u32) -> Option<u32> {
+        let mut descriptor =  self.read_block_group_descriptor(block_group_descriptor_index)?;
+        if descriptor.unallocated_blocks_in_group == 0 { return None; }
+
+        let mut bitmap = self.read_block(descriptor.block_addr_for_block_usage_bitmap)?;
+        let found = bitmap.iter().cloned().enumerate().find(|(_, val)| *val != 0xff)?;
+        let mut found_bit = 0;
+        while (found.1 >> found_bit) & 1 != 0 {found_bit += 1;}
+        let free_block_in_blockgroup =   found.0*8+found_bit;
+
+        let block_index_to_allocate = free_block_in_blockgroup as u32 + block_group_descriptor_index*self.sb.blocks_per_block_group;
+        self.write_block(block_index_to_allocate as u32, &vec![0; self.get_block_size() as usize])?;
+        bitmap[found.0] |= 1 << found_bit; // Mark as allocated
+        self.write_block(descriptor.block_addr_for_block_usage_bitmap, &bitmap)?; // Update bitmap
+        descriptor.unallocated_blocks_in_group -= 1;
+        self.write_block_group_descriptor(block_group_descriptor_index, &mut descriptor)?; // Update descriptor
+
+        return Some(block_index_to_allocate);
+    }
+
+    pub fn read_inode(&self, inode_addr: u32) -> Option<Ext2RawInode> {
         // Inode indexing starts at 1
         let block_group_descriptor_index = (inode_addr-1)/self.sb.inodes_per_block_group;
-        let block_group_descriptor = self.get_block_group_descriptor(block_group_descriptor_index)?;
+        let block_group_descriptor = self.read_block_group_descriptor(block_group_descriptor_index)?;
         let inode_table_addr = block_group_descriptor.block_addr_for_inode_table*self.get_block_size();
         let inode_index_in_table = (inode_addr-1)%self.sb.inodes_per_block_group;
         // Inode size in list is self.get_inode_size() but only core::mem::size_of::<Ext2Inode>() bytes of the entire thing are useful for us
@@ -533,10 +577,10 @@ impl Ext2FS {
         Ext2RawInode::unpack(raw_inode.as_slice().try_into().ok()?).ok()
     }
 
-    pub fn set_inode(&mut self, inode_addr: u32, raw_inode: &Ext2RawInode) -> Option<()> {
+    pub fn write_inode(&mut self, inode_addr: u32, raw_inode: &Ext2RawInode) -> Option<()> {
         // Inode indexing starts at 1
         let block_group_descriptor_index = (inode_addr-1)/self.sb.inodes_per_block_group;
-        let block_group_descriptor = self.get_block_group_descriptor(block_group_descriptor_index)?;
+        let block_group_descriptor = self.read_block_group_descriptor(block_group_descriptor_index)?;
         let inode_table_addr = block_group_descriptor.block_addr_for_inode_table*self.get_block_size();
         let inode_index_in_table = (inode_addr-1)%self.sb.inodes_per_block_group;
         // Inode size in list is self.get_inode_size() but only core::mem::size_of::<Ext2Inode>() bytes of the entire thing are useful for us
@@ -544,7 +588,7 @@ impl Ext2FS {
         Some(())        
     }
 
-    pub fn get_block_group_descriptor(&self, block_group_descriptor_index: u32) -> Option<Ext2BlockGroupDescriptor> {
+    pub fn read_block_group_descriptor(&self, block_group_descriptor_index: u32) -> Option<Ext2BlockGroupDescriptor> {
         let offset_of_descriptor_in_table = block_group_descriptor_index * Self::get_block_group_descriptor_size() as u32;
 
         // The block group descriptor table is located in the block immediately following the Superblock.
@@ -558,7 +602,7 @@ impl Ext2FS {
         Ext2BlockGroupDescriptor::unpack(raw_descriptor.as_slice().try_into().ok()?).ok()
     }
 
-    pub fn set_block_group_descriptor(&mut self, block_group_descriptor_index: u32, descriptor: &mut Ext2BlockGroupDescriptor) -> Option<()> {
+    pub fn write_block_group_descriptor(&mut self, block_group_descriptor_index: u32, descriptor: &mut Ext2BlockGroupDescriptor) -> Option<()> {
         let offset_of_descriptor_in_table = block_group_descriptor_index * Self::get_block_group_descriptor_size() as u32;
 
         // The block group descriptor table is located in the block immediately following the Superblock.

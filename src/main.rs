@@ -510,7 +510,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         let e2fs = ext2::Ext2FS::new(file_node);
                         let e2fs = if let Some(val) = e2fs { val } else { writeln!(TERMINAL.lock(), "Source file does not contain a valid ext2 fs!").unwrap(); continue; };
                         let e2fs = Rc::new(RefCell::new(e2fs));
-                        let root_inode = (*e2fs).borrow_mut().get_inode(2).expect("Root inode should exist!").as_vfs_node(e2fs.clone(), 2).expect("Root inode should be parsable in vfs!").expect_folder();
+                        let root_inode = (*e2fs).borrow_mut().read_inode(2).expect("Root inode should exist!").as_vfs_node(e2fs.clone(), 2).expect("Root inode should be parsable in vfs!").expect_folder();
                         let mut mntpoint_node = vfs::Path::try_from(mntpoint.trim());
                         if !mntpoint.starts_with("/") {
                             let mut actual_node = cur_dir.clone();
