@@ -43,7 +43,7 @@ trait X86Default { unsafe fn x86_default() -> Self; }
 #[panic_handler]
 fn panic(p: &::core::panic::PanicInfo) -> ! { 
     let mut s = String::new();
-    let written = write!(s, "Ron {}", p).is_ok(); // FIXME: Crashes on virtualbox and real hardware but not on qemu?
+    let written = write!(s, "Ron: {}", p).is_ok(); // FIXME: Crashes on virtualbox and real hardware but not on qemu?
     if !UART.is_locked(){
         writeln!(UART.lock()).unwrap();
         if !written{
@@ -340,11 +340,10 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     writeln!(UART.lock(), "If you see this then that means the framebuffer subsystem didn't instantly crash the kernel :)").unwrap();
     writeln!(TERMINAL.lock(), "Hello, world!").unwrap();
 
-       
     if let Some(primary_ata_bus) = unsafe{ ATABus::primary_x86() }{
         let ata_ref = Rc::new(RefCell::new(primary_ata_bus));
         // NOTE: master device is not necessarilly the device from which the os was booted
-    
+
         if unsafe{(*ata_ref).borrow_mut().identify(ATADevice::MASTER).is_some()}{
             let master_dev = Rc::new(RefCell::new(ATADeviceFile{bus: ata_ref.clone(), bus_device: ATADevice::MASTER}));
             (*dfs).borrow_mut().add_device_file(master_dev.clone() as Rc<RefCell<dyn IFile>>, "hda".to_owned());
@@ -485,7 +484,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
 
 
 
-                    TERMINAL.lock().write_char('\n');
+                    writeln!(TERMINAL.lock()).unwrap();
                 }else if cmnd.contains("whoareyou"){
                     writeln!(TERMINAL.lock(), "Ron").unwrap();
                 }else if cmnd.contains("help"){

@@ -56,12 +56,12 @@ impl MBRPartitionFile{
 
 impl IFile for MBRPartitionFile{
     fn read(&self, offset: usize, len: usize) -> Option<Vec<u8>> {
-      if offset+len >= self.partition_size{ return None; }
+      if offset+len > self.partition_size { return None; }
       (*self.device).borrow().read(offset+self.partition_offset, len)
     }
 
     fn write(&mut self, offset: usize, data: &[u8]) -> Option<usize> {
-      if offset+data.len() >= self.partition_size { return None; }
+      if offset+data.len() > self.partition_size { return None; }
       (*self.device).borrow_mut().write(offset+self.partition_offset, data)
     }
 

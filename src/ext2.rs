@@ -228,6 +228,7 @@ impl Ext2RawInode {
             let mut singly_indirect_block = fs.read_block(read_pointer_from_block(&doubly_indirect_block, doubly_indirect_block_index)?)?;
             // Deallocate data block
             fs.dealloc_block(read_pointer_from_block(&singly_indirect_block, singly_indirect_block_index)?)?;
+            // Override with null data block
             write_pointer_to_block(&mut singly_indirect_block, singly_indirect_block_index, 0)?;
             fs.write_block(read_pointer_from_block(&doubly_indirect_block, doubly_indirect_block_index)?, &singly_indirect_block)?;
             return Some(());
@@ -346,7 +347,7 @@ impl Ext2RawInode {
         let mut ind = offset_in_starting_block;
         for block_ind in 0..(data.len()/e2fs.get_block_size() as usize+extra_block) {
             // No need to read sectors that we know will be completly overriden
-            let mut v = if block_ind == (data.len()/e2fs.get_block_size() as usize+extra_block-1) && extra_block == 1 {
+            let mut v = if (block_ind == (data.len()/e2fs.get_block_size() as usize+extra_block-1) && extra_block == 1) || (block_ind == 0 && offset_in_starting_block != 0) {
                 self.read_raw_data_block(starting_block_addr+block_ind, e2fs)?
             }else{
                 vec![0u8; e2fs.get_block_size() as usize]
@@ -391,6 +392,7 @@ impl Ext2RawInode {
     }
 
     pub fn resize(&mut self, new_size: usize, e2fs: &mut Ext2FS) -> Option<()> {
+        if new_size == self.get_size() { return Some(()); }
         if new_size < self.get_size() {
             self.shrink_by(self.get_size()-new_size, e2fs)
         }else{
@@ -505,7 +507,24 @@ impl Ext2FS {
     }
 
     fn write(&mut self, addr: u32, data: &[u8]) -> Option<usize> {
-        (*self.backing_device).borrow_mut().write(addr as usize, data)
+        use core::fmt::Write;
+        let res = (*self.backing_device).borrow_mut().write(addr as usize, data);
+
+        let written_data = self.read(addr, data.len())?;
+        let mut is_sane = true;
+        let mut bad_offset = 0;
+        for i in 0..data.len(){
+            if *written_data.get(i)? != data[i] {
+                is_sane = false;
+                break;
+            }
+            bad_offset += 1;
+        }
+        
+        if !is_sane {
+            writeln!(UART.lock(), "Sanity check in write failed, written data was not read back, addr: {}, offset in data: {}!", addr, bad_offset).unwrap();
+        }
+        res
     }
 
     pub fn read_block(&self, number: u32) -> Option<Vec<u8>> {
@@ -585,7 +604,7 @@ impl Ext2FS {
         let inode_index_in_table = (inode_addr-1)%self.sb.inodes_per_block_group;
         // Inode size in list is self.get_inode_size() but only core::mem::size_of::<Ext2Inode>() bytes of the entire thing are useful for us
         self.write(inode_table_addr+inode_index_in_table*self.get_inode_size() as u32, &raw_inode.pack().ok()?)?;
-        Some(())        
+        Some(())
     }
 
     pub fn read_block_group_descriptor(&self, block_group_descriptor_index: u32) -> Option<Ext2BlockGroupDescriptor> {

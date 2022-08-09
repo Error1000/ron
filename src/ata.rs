@@ -244,6 +244,9 @@ impl ATABus{
     }
 
     pub unsafe fn read_sector(&mut self, device: ATADevice, sector_lba: LBA28) -> Option<Sector> {
+        // FIXME: This shouldn't be needed in theory
+        wait_for!(self.io.read_status().ata_busy == false); // BSY clears
+
         self.io.drive_sel.write(match device{
             ATADevice::MASTER => 0xE0,
             ATADevice::SLAVE => 0xF0
@@ -267,13 +270,16 @@ impl ATABus{
         Some(a)
     }
 
-    pub unsafe fn write_sector(&mut self, device: ATADevice, sector_lba: LBA28, data: &Sector) {
+    pub unsafe fn write_sector(&mut self, device: ATADevice, sector_lba: LBA28, data: &Sector) -> Option<()> {
+        // FIXME: This shouldn't be needed in theory
+        wait_for!(self.io.read_status().ata_busy == false); // BSY clears
+
         self.io.drive_sel.write(match device{
             ATADevice::MASTER => 0xE0,
             ATADevice::SLAVE => 0xF0
         } | (sector_lba.hi >> 4) );
         self.io.write_features(0); // No features
-        self.io.sector_count.write(1); // Read one sector
+        self.io.sector_count.write(1); // Write one sector
         self.io.address_low.write(sector_lba.low);
         self.io.address_mid.write(sector_lba.mid);
         self.io.address_hi.write(sector_lba.hi);
@@ -284,10 +290,10 @@ impl ATABus{
             let status = self.io.read_status();
             status.ata_data_request || status.ata_err
         }); // DRQ or ERR sets
-        if self.io.read_status().ata_err { return; } // ERR
+        if self.io.read_status().ata_err { return None; } // ERR
 
         data.iter().for_each(|e| self.io.data.write(*e));
-
+        Some(())
     }
 }
 
@@ -301,11 +307,11 @@ pub struct ATADeviceFile{
 impl IFile for ATADeviceFile{
     fn read(&self, offset_in_bytes: usize, len: usize) -> Option<Vec<u8>> {
       let offset_in_first_sector = offset_in_bytes % SECTOR_SIZE_IN_BYTES;
-      let offset_of_first_sector = offset_in_bytes / SECTOR_SIZE_IN_BYTES;
+      let first_sector = offset_in_bytes / SECTOR_SIZE_IN_BYTES;
       let mut res: Vec<u8> = Vec::with_capacity(len);
 
       // Deal with first block
-      let first_block_lba = LBA28{hi: ((offset_of_first_sector>>16)&0xFF) as u8, mid: ((offset_of_first_sector>>8)&0xFF) as u8, low: (offset_of_first_sector&0xFF) as u8};
+      let first_block_lba = LBA28{hi: ((first_sector>>16)&0xFF) as u8, mid: ((first_sector>>8)&0xFF) as u8, low: (first_sector&0xFF) as u8};
       let first_block = unsafe{ (*self.bus).borrow_mut().read_sector(self.bus_device, first_block_lba) }?;
 
       let mut skip_first_byte = offset_in_first_sector%2 == 1;
@@ -323,14 +329,14 @@ impl IFile for ATADeviceFile{
       let extra_block = if len%SECTOR_SIZE_IN_BYTES != 0 { 1 } else { 0 };
       for sector_indx in 1..((len/SECTOR_SIZE_IN_BYTES)+extra_block){
         if res.len() >= len { break; }
-        let offset = offset_of_first_sector+sector_indx;
+        let offset = first_sector+sector_indx;
         let lba = LBA28{hi: ((offset>>16)&0xFF) as u8, mid: ((offset>>8)&0xFF) as u8, low: (offset&0xFF) as u8};
         res.append(
         &mut unsafe{ (*self.bus).borrow_mut().read_sector(self.bus_device, lba) }
         .map(|val|{
             let mut v = Vec::with_capacity(SECTOR_SIZE_IN_BYTES);
             for e in &val {
-                v.extend(e.to_le_bytes());
+                v.extend(e.to_ne_bytes());
             }
             v
         })?
@@ -343,32 +349,45 @@ impl IFile for ATADeviceFile{
     }
 
     fn write(&mut self, offset_in_bytes: usize, data: &[u8]) -> Option<usize> {
-       let offset_in_first_sector = offset_in_bytes % SECTOR_SIZE_IN_BYTES;
-       let offset_of_first_sector = offset_in_bytes / SECTOR_SIZE_IN_BYTES;
+       let offset_in_first_sector_in_bytes = offset_in_bytes % SECTOR_SIZE_IN_BYTES;
+       let first_sector = offset_in_bytes / SECTOR_SIZE_IN_BYTES;
        let mut iter = data.iter();
        
        let extra_block = if data.len()%SECTOR_SIZE_IN_BYTES != 0 { 1 } else { 0 };
 
-       let mut ind = offset_in_first_sector;
+       let mut ind = offset_in_first_sector_in_bytes/2;
+       let mut skip_first_byte = offset_in_first_sector_in_bytes % 2 == 1;
+
        for sector_indx in 0..(data.len()/SECTOR_SIZE_IN_BYTES+extra_block){
-         let offset = offset_of_first_sector+sector_indx;
+         let offset = first_sector+sector_indx;
          let lba = LBA28{hi: ((offset>>16)&0xFF) as u8, mid: ((offset>>8)&0xFF) as u8, low: (offset&0xFF) as u8};
          
          // No need to read sectors that we know will be completly overriden
-         let mut v = if sector_indx == (data.len()/SECTOR_SIZE_IN_BYTES+extra_block-1) && extra_block == 1 { 
+         let mut v = if (sector_indx == (data.len()/SECTOR_SIZE_IN_BYTES+extra_block-1) && extra_block == 1) || (sector_indx == 0 && offset_in_first_sector_in_bytes != 0) { 
             unsafe{ (*self.bus).borrow_mut().read_sector(self.bus_device, lba) }.expect("Reading device should work!")
          } else {
             [0u16; SECTOR_SIZE_IN_BYTES/core::mem::size_of::<u16>()] 
          };
 
-         while let (Some(a), Some(b)) = (iter.next(), iter.next()) {
+         loop {
+            if iter.clone().next().is_none() { break; }
             if ind >= v.len() { break; }
-            v[ind] = u16::from_le_bytes([*a, *b]);
+            let mut old_vals = v[ind].to_ne_bytes();
+
+            // TODO: Test this if
+            if !skip_first_byte {
+                if let Some(val) = iter.next(){ old_vals[0] = *val; }
+            } else {
+                skip_first_byte = false;
+            }
+            if let Some(val) = iter.next(){ old_vals[1] = *val; }
+
+            v[ind] = u16::from_ne_bytes(old_vals);
             ind += 1;
          }
          ind = 0;
 
-         unsafe{ (*self.bus).borrow_mut().write_sector(self.bus_device, lba, &v) }
+         unsafe{ (*self.bus).borrow_mut().write_sector(self.bus_device, lba, &v) }?;
         }
         Some(data.len())
     }
