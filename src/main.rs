@@ -592,6 +592,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         let node = if let Ok(val) = node { val } else { writeln!(TERMINAL.lock(), "Invalid path!").unwrap(); continue; };
                         let node = if let Some(val) = node { val } else { writeln!(TERMINAL.lock(), "Path doesn't exist!").unwrap(); continue; };
                         if let Node::File(file) = node {
+                            writeln!(TERMINAL.lock(), "File size: {} bytes!", (*file).borrow().get_size()).unwrap();
                             if let Some(data) = (*file).borrow().read(0, (*file).borrow().get_size()){
                                 for e in data.iter() {
                                     write!(TERMINAL.lock(), "{}", if e.is_ascii() && !e.is_ascii_control() { *e as char} else { ' ' }).unwrap();

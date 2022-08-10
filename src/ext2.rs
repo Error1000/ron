@@ -3,7 +3,7 @@ use core::{cell::RefCell, str::from_utf8, convert::TryInto};
 use alloc::{rc::Rc, vec, vec::Vec, borrow::ToOwned};
 use packed_struct::prelude::PackedStruct;
 
-use crate::{vfs::{IFile, self, IFolder}, UART};
+use crate::{vfs::{IFile, self, IFolder}};
 
 #[derive(PackedStruct)]
 #[packed_struct(endian = "lsb")] // ext2 is little endian (https://wiki.osdev.org/Ext2#Basic_Concepts)
@@ -110,12 +110,12 @@ pub struct Ext2DirectoryEntryHeader {
 
 impl Ext2RawInode {
 
-    fn get_value_from_u32_array_as_le_bytes(bytes: &[u8], index: usize) -> Option<u32> {
+    fn read_value_from_u32_array_as_le_bytes(bytes: &[u8], index: usize) -> Option<u32> {
         use core::mem::size_of;
         Some(u32::from_le_bytes(bytes[index*size_of::<u32>()..(index+1)*size_of::<u32>()].try_into().ok()?))
     }
 
-    fn set_value_to_u32_array_as_le_bytes(bytes: &mut [u8], index: usize, val: u32) -> Option<()>{
+    fn write_value_to_u32_array_as_le_bytes(bytes: &mut [u8], index: usize, val: u32) -> Option<()>{
         use core::mem::size_of;
         let bytes_to_write = u32::to_le_bytes(val);
         let mut iter = bytes_to_write.iter();
@@ -127,31 +127,33 @@ impl Ext2RawInode {
 
 
 
-    pub fn read_data_block_pointer(&self, mut block_number: usize, fs: &Ext2FS) -> Option<u32> {
+    // Resturns pointer to data block #block_number
+    // This allows treating the hierarchical underlying structure as a flat structure
+    fn read_data_block_pointer(&self, mut data_block_number: usize, fs: &Ext2FS) -> Option<u32> {
         // TODO: Test all posibilites of this function!!!
         // Direct data
-        if block_number <= 11 {
-            return Some(self.direct_block_pointers[block_number]);
+        if data_block_number <= 11 {
+            return Some(self.direct_block_pointers[data_block_number]);
         }
 
         let pointers_per_block = fs.get_block_size() as usize/core::mem::size_of::<u32>();
 
-        let read_pointer_from_block = Self::get_value_from_u32_array_as_le_bytes;
+        let read_pointer_from_block = Self::read_value_from_u32_array_as_le_bytes;
 
         // Singly indirect data
-        block_number -= 12;
-        if block_number < pointers_per_block {
-            let singly_indirect_block_index = block_number; // Index of pointer to data block
+        data_block_number -= 12;
+        if data_block_number < pointers_per_block {
+            let singly_indirect_block_index = data_block_number; // Index of pointer to data block
             let mut singly_indirect_block = fs.read_block(self.singly_indirect_block_pointer)?;
 
             return read_pointer_from_block(&mut singly_indirect_block, singly_indirect_block_index);
         }
 
         // Doubly indirect data
-        block_number -= pointers_per_block;
-        if block_number < pointers_per_block*pointers_per_block{
-            let doubly_indirect_block_index = block_number/pointers_per_block; // Index of pointer to singly indirect block
-            let singly_indirect_block_index = block_number%pointers_per_block; // Index of pointer to data block
+        data_block_number -= pointers_per_block;
+        if data_block_number < pointers_per_block*pointers_per_block{
+            let doubly_indirect_block_index = data_block_number/pointers_per_block; // Index of pointer to singly indirect block
+            let singly_indirect_block_index = data_block_number%pointers_per_block; // Index of pointer to data block
 
             let doubly_indirect_block = fs.read_block(self.doubly_indirect_block_pointer)?;
             let mut singly_indirect_block = fs.read_block(read_pointer_from_block(&doubly_indirect_block, doubly_indirect_block_index)?)?;
@@ -159,11 +161,11 @@ impl Ext2RawInode {
         }
 
         // Triply indirect data
-        block_number -= pointers_per_block*pointers_per_block;
-        if block_number < pointers_per_block*pointers_per_block*pointers_per_block{
-            let triply_indirect_block_index = block_number/(pointers_per_block*pointers_per_block); // Index of pointer to doubly indirect block
-            let doubly_indirect_block_index = (block_number%(pointers_per_block*pointers_per_block))/pointers_per_block; // Index of pointer to singly indirect data block
-            let singly_indirect_block_index = (block_number%(pointers_per_block*pointers_per_block))%pointers_per_block; // Index of pointer to data block
+        data_block_number -= pointers_per_block*pointers_per_block;
+        if data_block_number < pointers_per_block*pointers_per_block*pointers_per_block{
+            let triply_indirect_block_index = data_block_number/(pointers_per_block*pointers_per_block); // Index of pointer to doubly indirect block
+            let doubly_indirect_block_index = (data_block_number%(pointers_per_block*pointers_per_block))/pointers_per_block; // Index of pointer to singly indirect data block
+            let singly_indirect_block_index = (data_block_number%(pointers_per_block*pointers_per_block))%pointers_per_block; // Index of pointer to data block
 
             let triply_indirect_block = fs.read_block(self.triply_indirect_block_pointer)?;
             let doubly_indirect_block = fs.read_block(read_pointer_from_block(&triply_indirect_block, triply_indirect_block_index)?)?;
@@ -173,55 +175,60 @@ impl Ext2RawInode {
         None
     }
 
-    pub fn dealloc_data_block_pointer(&mut self, mut block_number: usize, fs: &mut Ext2FS) -> Option<()> {
+
+    // Writes pointer over the pointer pointing to block_number in the hierarchichal data structure
+    // NOTE: Will deallocate block to avoid data leaks
+    fn write_data_block_pointer(&mut self, mut data_block_number: usize, pointer: u32, fs: &mut Ext2FS) -> Option<()> {
         // TODO: Test all posibilites of this function!!!
         // Direct data
-        if block_number <= 11 {
-            self.direct_block_pointers[block_number] = 0;
+        if data_block_number <= 11 {
+            // Deallocate data block
+            fs.dealloc_block(data_block_number as u32)?;
+            self.direct_block_pointers[data_block_number] = pointer;
             return Some(());
         }
 
         let pointers_per_block = fs.get_block_size() as usize/core::mem::size_of::<u32>();
 
-        let read_pointer_from_block = Self::get_value_from_u32_array_as_le_bytes;
-        let write_pointer_to_block = Self::set_value_to_u32_array_as_le_bytes;
+        let read_pointer_from_block = Self::read_value_from_u32_array_as_le_bytes;
+        let write_pointer_to_block = Self::write_value_to_u32_array_as_le_bytes;
 
         // Singly indirect data
-        block_number -= 12;
-        if block_number < pointers_per_block {
-            let singly_indirect_block_index = block_number; // Index of pointer to data block
+        data_block_number -= 12;
+        if data_block_number < pointers_per_block {
+            let singly_indirect_block_index = data_block_number; // Index of pointer to data block
             let mut singly_indirect_block = fs.read_block(self.singly_indirect_block_pointer)?;
 
             // Deallocate data block
             fs.dealloc_block(read_pointer_from_block(&mut singly_indirect_block, singly_indirect_block_index)?)?;
             // Override with null data block
-            write_pointer_to_block(&mut singly_indirect_block, singly_indirect_block_index, 0)?;
+            write_pointer_to_block(&mut singly_indirect_block, singly_indirect_block_index, pointer)?;
             fs.write_block(self.singly_indirect_block_pointer, &singly_indirect_block)?;
             return Some(());
         }
 
         // Doubly indirect data
-        block_number -= pointers_per_block;
-        if block_number < pointers_per_block*pointers_per_block{
-            let doubly_indirect_block_index = block_number/pointers_per_block; // Index of pointer to singly indirect block
-            let singly_indirect_block_index = block_number%pointers_per_block; // Index of pointer to data block
+        data_block_number -= pointers_per_block;
+        if data_block_number < pointers_per_block*pointers_per_block{
+            let doubly_indirect_block_index = data_block_number/pointers_per_block; // Index of pointer to singly indirect block
+            let singly_indirect_block_index = data_block_number%pointers_per_block; // Index of pointer to data block
 
             let doubly_indirect_block = fs.read_block(self.doubly_indirect_block_pointer)?;
             let mut singly_indirect_block = fs.read_block(read_pointer_from_block(&doubly_indirect_block, doubly_indirect_block_index)?)?;
             // Deallocate data block
             fs.dealloc_block(read_pointer_from_block(&singly_indirect_block, singly_indirect_block_index)?)?;
             // Override with null data block
-            write_pointer_to_block(&mut singly_indirect_block, singly_indirect_block_index, 0)?;
+            write_pointer_to_block(&mut singly_indirect_block, singly_indirect_block_index, pointer)?;
             fs.write_block(read_pointer_from_block(&doubly_indirect_block, doubly_indirect_block_index)?, &singly_indirect_block)?;
             return Some(());
         }
 
         // Triply indirect data
-        block_number -= pointers_per_block*pointers_per_block;
-        if block_number < pointers_per_block*pointers_per_block*pointers_per_block{
-            let triply_indirect_block_index = block_number/(pointers_per_block*pointers_per_block); // Index of pointer to doubly indirect block
-            let doubly_indirect_block_index = (block_number%(pointers_per_block*pointers_per_block))/pointers_per_block; // Index of pointer to singly indirect data block
-            let singly_indirect_block_index = (block_number%(pointers_per_block*pointers_per_block))%pointers_per_block; // Index of pointer to data block
+        data_block_number -= pointers_per_block*pointers_per_block;
+        if data_block_number < pointers_per_block*pointers_per_block*pointers_per_block{
+            let triply_indirect_block_index = data_block_number/(pointers_per_block*pointers_per_block); // Index of pointer to doubly indirect block
+            let doubly_indirect_block_index = (data_block_number%(pointers_per_block*pointers_per_block))/pointers_per_block; // Index of pointer to singly indirect data block
+            let singly_indirect_block_index = (data_block_number%(pointers_per_block*pointers_per_block))%pointers_per_block; // Index of pointer to data block
 
             let triply_indirect_block = fs.read_block(self.triply_indirect_block_pointer)?;
             let doubly_indirect_block = fs.read_block(read_pointer_from_block(&triply_indirect_block, triply_indirect_block_index)?)?;
@@ -229,16 +236,51 @@ impl Ext2RawInode {
             // Deallocate data block
             fs.dealloc_block(read_pointer_from_block(&singly_indirect_block, singly_indirect_block_index)?)?;
             // Override with null data block
-            write_pointer_to_block(&mut singly_indirect_block, singly_indirect_block_index, 0)?;
+            write_pointer_to_block(&mut singly_indirect_block, singly_indirect_block_index, pointer)?;
             fs.write_block(read_pointer_from_block(&doubly_indirect_block, doubly_indirect_block_index)?, &singly_indirect_block)?;
             return Some(());
         }
         None
     }
 
+
+
+    pub fn read_data_block(&self, data_block_number: usize, fs: &Ext2FS) -> Option<Vec<u8>> {
+        return fs.read_block(self.read_data_block_pointer(data_block_number, fs)?);
+    }
+
+    pub fn write_data_block(&self, data_block_number: usize, data: &[u8], fs: &mut Ext2FS) -> Option<()> {
+        return fs.write_block(self.read_data_block_pointer(data_block_number, fs)?, data);
+    }
+
+    pub fn dealloc_data_block(&mut self, data_block_number: usize, fs: &mut Ext2FS) -> Option<()> {
+        // NOTE: Write will deallocate on it's own
+        self.write_data_block_pointer(data_block_number, 0, fs)
+    }
+
+    // NOTE: Will deallocate block if allocated and allocate a new one
+    pub fn alloc_data_block(&mut self, data_block_number: usize, fs: &mut Ext2FS) -> Option<u32> {
+        // TODO: Untested yet
+        // Get descriptor of last block in file and try to put new block there, if that fails, try descriptors next to it, until one succeds or all fails
+        let last_data_block_number = self.get_size() / fs.get_block_size() as usize + if self.get_size() % fs.get_block_size() as usize != 0 { 1 } else {0};
+        let mut descriptor_index = self.read_data_block_pointer(last_data_block_number, fs)? / fs.sb.blocks_per_block_group;
+        let mut new_block_pointer = 0;
+        loop {
+            if let Some(ptr) = fs.alloc_block(descriptor_index) {
+                new_block_pointer = ptr;
+                break; 
+            }
+            descriptor_index += 1;
+        }
+        self.write_data_block_pointer(data_block_number, new_block_pointer, fs)?;
+        None
+    }
+
+
+
     pub fn shrink_data_structure_to_fit(&mut self, fs: &mut Ext2FS) {
-        let read_pointer_from_block = Self::get_value_from_u32_array_as_le_bytes;
-        let write_pointer_to_block = Self::set_value_to_u32_array_as_le_bytes;
+        let read_pointer_from_block = Self::read_value_from_u32_array_as_le_bytes;
+        let write_pointer_to_block = Self::write_value_to_u32_array_as_le_bytes;
 
         if let Some(singly_indirect_block) = fs.read_block(self.singly_indirect_block_pointer){
             if singly_indirect_block.into_iter().all(|v| v == 0) { // Empty block
@@ -305,15 +347,17 @@ impl Ext2RawInode {
         }
     }
 
+    pub fn grow_data_structure_by(&mut self, nblocks: usize, fs: &mut Ext2FS) -> Option<()> {
+        let read_pointer_from_block = Self::read_value_from_u32_array_as_le_bytes;
+        let write_pointer_to_block = Self::write_value_to_u32_array_as_le_bytes;
+       
+        todo!();
+        
 
 
-    pub fn read_raw_data_block(&self, block_number: usize, fs: &Ext2FS) -> Option<Vec<u8>> {
-        return fs.read_block(self.read_data_block_pointer(block_number, fs)?);
+        Some(())
     }
 
-    pub fn write_raw_data_block(&self, block_number: usize, data: &[u8], fs: &mut Ext2FS) -> Option<()> {
-        return fs.write_block(self.read_data_block_pointer(block_number, fs)?, data);
-    }
 
 
 
@@ -323,13 +367,13 @@ impl Ext2RawInode {
         let starting_block_offset = offset%(e2fs.get_block_size() as usize);
         let mut res: Vec<u8> = Vec::with_capacity(len);
 
-        let first_block = self.read_raw_data_block(starting_block_index, e2fs)?;
+        let first_block = self.read_data_block(starting_block_index, e2fs)?;
         for e in &first_block[starting_block_offset..] { res.push(*e); }
 
         let extra_block = if len%e2fs.get_block_size() as usize != 0 { 1 } else { 0 };
         for block_ind in 1..(len/e2fs.get_block_size() as usize+extra_block) {
             res.append(
-                &mut self.read_raw_data_block(starting_block_index+block_ind, e2fs)?
+                &mut self.read_data_block(starting_block_index+block_ind, e2fs)?
             );
         }
 
@@ -348,7 +392,7 @@ impl Ext2RawInode {
         for block_ind in 0..(data.len()/e2fs.get_block_size() as usize+extra_block) {
             // No need to read sectors that we know will be completly overriden
             let mut v = if (block_ind == (data.len()/e2fs.get_block_size() as usize+extra_block-1) && extra_block == 1) || (block_ind == 0 && offset_in_starting_block != 0) {
-                self.read_raw_data_block(starting_block_addr+block_ind, e2fs)?
+                self.read_data_block(starting_block_addr+block_ind, e2fs)?
             }else{
                 vec![0u8; e2fs.get_block_size() as usize]
             };
@@ -360,7 +404,7 @@ impl Ext2RawInode {
             }
             ind = 0;
 
-            self.write_raw_data_block(starting_block_addr+block_ind, &v, e2fs);
+            self.write_data_block(starting_block_addr+block_ind, &v, e2fs);
         }
 
         Some(data.len())
@@ -369,24 +413,28 @@ impl Ext2RawInode {
 
 
     pub fn shrink_by(&mut self, nbytes: usize, e2fs: &mut Ext2FS) -> Option<()> {
-        let mut blocks_to_remove = nbytes/e2fs.get_block_size() as usize;
+        let mut blocks_to_remove = 0;
+        // Calculate blocks to remove
         {
-        let bytes_to_remove_from_last_block = nbytes%e2fs.get_block_size() as usize;
-        let bytes_used_in_last_block = self.get_size()%e2fs.get_block_size() as usize;
-        if bytes_used_in_last_block <= bytes_to_remove_from_last_block {
-            blocks_to_remove += 1;
-        }
+            let mut bytes_to_remove = nbytes;
+            let bytes_used_in_last_block = if self.get_size()%e2fs.get_block_size() as usize == 0 { e2fs.get_block_size() as usize } else { self.get_size()%e2fs.get_block_size() as usize };
+        
+            if nbytes >= bytes_used_in_last_block {
+                blocks_to_remove += 1;
+                bytes_to_remove -= bytes_used_in_last_block;
+            }
+            blocks_to_remove += bytes_to_remove/e2fs.get_block_size() as usize;
+            // bytes_to_remove%e2fs.get_block_size() is the number of bytes
+            // that we would need to remove from the first block, but that first block will also contain 
+            // data that we don't want to remove, so we just don't remvoe that block, and instead 
+            // simply set the size so as to ignroe those bytes in that block
         }
 
         let last_data_block_index = self.get_size()/e2fs.get_block_size() as usize;
-        use core::fmt::Write;
-        writeln!(UART.lock(), "Removing block pointers!").unwrap();
         for i in 0..blocks_to_remove {
-            self.dealloc_data_block_pointer(last_data_block_index-i, e2fs)?;
+            self.dealloc_data_block(last_data_block_index-i, e2fs)?;
         }
-        writeln!(UART.lock(), "Shrinking inode!").unwrap();
         self.shrink_data_structure_to_fit(e2fs);
-        writeln!(UART.lock(), "Done!").unwrap();
         self.set_size(self.get_size()-nbytes);
         Some(())
     }
@@ -508,19 +556,20 @@ impl Ext2FS {
 
     fn write(&mut self, addr: u32, data: &[u8]) -> Option<usize> {
         use core::fmt::Write;
+        use crate::UART;
         let res = (*self.backing_device).borrow_mut().write(addr as usize, data);
 
         let written_data = self.read(addr, data.len())?;
         let mut is_sane = true;
         let mut bad_offset = 0;
-        for i in 0..data.len(){
+        for i in 0..data.len() {
             if *written_data.get(i)? != data[i] {
                 is_sane = false;
                 break;
             }
             bad_offset += 1;
         }
-        
+
         if !is_sane {
             writeln!(UART.lock(), "Sanity check in write failed, written data was not read back, addr: {}, offset in data: {}!", addr, bad_offset).unwrap();
         }
@@ -554,8 +603,11 @@ impl Ext2FS {
         }
         let mut bitmap = self.read_block(descriptor.block_addr_for_block_usage_bitmap)?;
         let mut val_to_edit = bitmap[(offset_in_block_group/8) as usize];
+        // Test if block is already deallocated
+        if val_to_edit & (1 << (offset_in_block_group%8)) == 0 { return None; }
+
         // create a mask of all ones except a zero at the location of the block to deallocate, by anding this mask with the current value we mark the block as deallocated while leaving other blocks in the same state
-        val_to_edit &= !(1u8<<(offset_in_block_group%8)); 
+        val_to_edit &= !(1 << (offset_in_block_group%8)); 
         bitmap[(offset_in_block_group/8) as usize] = val_to_edit;
         // Write modified bitmap
         self.write_block(descriptor.block_addr_for_block_usage_bitmap,&bitmap);
@@ -570,17 +622,20 @@ impl Ext2FS {
         if descriptor.unallocated_blocks_in_group == 0 { return None; }
 
         let mut bitmap = self.read_block(descriptor.block_addr_for_block_usage_bitmap)?;
-        let found = bitmap.iter().cloned().enumerate().find(|(_, val)| *val != 0xff)?;
+        let found_loc_and_byte = bitmap.iter().cloned().enumerate().find(|(_, val)| *val != 0xff)?;
         let mut found_bit = 0;
-        while (found.1 >> found_bit) & 1 != 0 {found_bit += 1;}
-        let free_block_in_blockgroup =   found.0*8+found_bit;
+        while (found_loc_and_byte.1 >> found_bit) & 1 != 0 {found_bit += 1;}
+        let free_block_in_blockgroup =   found_loc_and_byte.0*8+found_bit;
 
         let block_index_to_allocate = free_block_in_blockgroup as u32 + block_group_descriptor_index*self.sb.blocks_per_block_group;
+        bitmap[found_loc_and_byte.0] |= 1 << found_bit; // Mark as allocated
+
+        // zero out new block
         self.write_block(block_index_to_allocate as u32, &vec![0; self.get_block_size() as usize])?;
-        bitmap[found.0] |= 1 << found_bit; // Mark as allocated
+
         self.write_block(descriptor.block_addr_for_block_usage_bitmap, &bitmap)?; // Update bitmap
         descriptor.unallocated_blocks_in_group -= 1;
-        self.write_block_group_descriptor(block_group_descriptor_index, &mut descriptor)?; // Update descriptor
+        self.write_block_group_descriptor(block_group_descriptor_index, &descriptor)?; // Update descriptor
 
         return Some(block_index_to_allocate);
     }
@@ -621,7 +676,7 @@ impl Ext2FS {
         Ext2BlockGroupDescriptor::unpack(raw_descriptor.as_slice().try_into().ok()?).ok()
     }
 
-    pub fn write_block_group_descriptor(&mut self, block_group_descriptor_index: u32, descriptor: &mut Ext2BlockGroupDescriptor) -> Option<()> {
+    pub fn write_block_group_descriptor(&mut self, block_group_descriptor_index: u32, descriptor: &Ext2BlockGroupDescriptor) -> Option<()> {
         let offset_of_descriptor_in_table = block_group_descriptor_index * Self::get_block_group_descriptor_size() as u32;
 
         // The block group descriptor table is located in the block immediately following the Superblock.
