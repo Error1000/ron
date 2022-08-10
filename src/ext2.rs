@@ -125,6 +125,9 @@ impl Ext2RawInode {
         Some(())
     }
 
+    fn get_last_data_block_number(&self, fs: &Ext2FS) -> usize {
+        self.get_size() / fs.get_block_size() as usize + if self.get_size() % fs.get_block_size() as usize != 0 { 1 } else { 0 }
+    }
 
 
     // Resturns pointer to data block #block_number
@@ -262,7 +265,7 @@ impl Ext2RawInode {
     pub fn alloc_data_block(&mut self, data_block_number: usize, fs: &mut Ext2FS) -> Option<u32> {
         // TODO: Untested yet
         // Get descriptor of last block in file and try to put new block there, if that fails, try descriptors next to it, until one succeds or all fails
-        let last_data_block_number = self.get_size() / fs.get_block_size() as usize + if self.get_size() % fs.get_block_size() as usize != 0 { 1 } else {0};
+        let last_data_block_number = self.get_last_data_block_number(fs);
         let mut descriptor_index = self.read_data_block_pointer(last_data_block_number, fs)? / fs.sb.blocks_per_block_group;
         let mut new_block_pointer = 0;
         loop {
@@ -275,7 +278,6 @@ impl Ext2RawInode {
         self.write_data_block_pointer(data_block_number, new_block_pointer, fs)?;
         None
     }
-
 
 
     pub fn shrink_data_structure_to_fit(&mut self, fs: &mut Ext2FS) {
@@ -361,6 +363,7 @@ impl Ext2RawInode {
 
 
 
+
     pub fn read_bytes(&self, offset: usize, len: usize, e2fs: &Ext2FS) -> Option<Vec<u8>> {
         if offset+len > self.get_size() { return None; }
         let starting_block_index = offset/(e2fs.get_block_size() as usize);
@@ -411,7 +414,6 @@ impl Ext2RawInode {
     }
 
 
-
     pub fn shrink_by(&mut self, nbytes: usize, e2fs: &mut Ext2FS) -> Option<()> {
         let mut blocks_to_remove = 0;
         // Calculate blocks to remove
@@ -419,24 +421,54 @@ impl Ext2RawInode {
             let mut bytes_to_remove = nbytes;
             let bytes_used_in_last_block = if self.get_size()%e2fs.get_block_size() as usize == 0 { e2fs.get_block_size() as usize } else { self.get_size()%e2fs.get_block_size() as usize };
         
-            if nbytes >= bytes_used_in_last_block {
+            if bytes_to_remove >= bytes_used_in_last_block {
+                // Calculation to remove last block
                 blocks_to_remove += 1;
                 bytes_to_remove -= bytes_used_in_last_block;
+
+                // Calculation to remove the rest of the blocks
+                blocks_to_remove += bytes_to_remove/e2fs.get_block_size() as usize;
+
+                // bytes_to_remove%e2fs.get_block_size() is the number of bytes
+                // that we would need to be removed from the first block, but that first block will also contain 
+                // data that we don't want to remove, so we just don't remove that block, and instead 
+                // simply set the size so as to ignore those bytes in the first block
             }
-            blocks_to_remove += bytes_to_remove/e2fs.get_block_size() as usize;
-            // bytes_to_remove%e2fs.get_block_size() is the number of bytes
-            // that we would need to remove from the first block, but that first block will also contain 
-            // data that we don't want to remove, so we just don't remvoe that block, and instead 
-            // simply set the size so as to ignroe those bytes in that block
         }
 
-        let last_data_block_index = self.get_size()/e2fs.get_block_size() as usize;
+        let last_data_block_number = self.get_last_data_block_number(e2fs);
         for i in 0..blocks_to_remove {
-            self.dealloc_data_block(last_data_block_index-i, e2fs)?;
+            self.dealloc_data_block(last_data_block_number-i, e2fs)?;
         }
         self.shrink_data_structure_to_fit(e2fs);
         self.set_size(self.get_size()-nbytes);
         Some(())
+    }
+
+    pub fn grow_by(&mut self, nbytes: usize, e2fs: &mut Ext2FS) -> Option<()> {
+        let mut blocks_to_add = 0;
+        // Calculate blocks to add
+        {
+            let mut bytes_to_add = nbytes;
+            let bytes_used_in_last_block = if self.get_size()%e2fs.get_block_size() as usize == 0 { e2fs.get_block_size() as usize } else { self.get_size()%e2fs.get_block_size() as usize };
+            let bytes_available_in_last_block = e2fs.get_block_size() as usize - bytes_used_in_last_block;
+
+            if bytes_to_add >= bytes_available_in_last_block {
+                // Calculation for adding in the bytes from the last block
+                bytes_to_add -= bytes_available_in_last_block;
+
+                // Calculation of how many blocks we actually need
+                blocks_to_add += bytes_to_add/e2fs.get_block_size() as usize + if bytes_to_add%e2fs.get_block_size() as usize != 0 { 1 } else { 0 };
+            }
+        }
+
+        self.grow_data_structure_by(blocks_to_add, e2fs);
+        let last_data_block_number = self.get_last_data_block_number(e2fs); 
+        for i in 1..=blocks_to_add {
+            self.alloc_data_block(last_data_block_number+i, e2fs)?;
+        }
+        self.set_size(self.get_size()+nbytes);
+        None
     }
 
     pub fn resize(&mut self, new_size: usize, e2fs: &mut Ext2FS) -> Option<()> {
@@ -444,7 +476,7 @@ impl Ext2RawInode {
         if new_size < self.get_size() {
             self.shrink_by(self.get_size()-new_size, e2fs)
         }else{
-            None
+            self.grow_by(new_size-self.get_size(), e2fs)
         }
     }
 
