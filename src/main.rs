@@ -409,7 +409,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
 
     let mut ignore_inc_x: bool; 
     // Basically an ad-hoc ArrayString (arrayvec crate)
-    let mut cmd_buf: [u8; 80] = [b' '; 80]; 
+    let mut cmd_buf: [u8; 2048] = [b' '; 2048]; 
     let mut buf_ind = 0; // Also length of buf, a.k.a portion of buf used
     'big_loop: loop {
         ignore_inc_x = false;
@@ -455,7 +455,6 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             puts_output.push_str(arg);
                         }
                     }
-
 
                     if let Some(redir_str) = redirect {
                         let path = if redir_str.starts_with('/'){

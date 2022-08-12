@@ -272,7 +272,7 @@ impl Ext2RawInode {
             let last_data_block_number = 
                 if let Some(val) = self.get_last_allocated_data_block_number(fs) { val } else { return Some(0); };
             
-            fs.get_block_group_descriptor_index_of_block(last_data_block_number as u32)
+            fs.get_block_group_descriptor_index_of_block(self.read_data_block_pointer(last_data_block_number, fs)?)
         };
         let descriptor_index = get_appropriate_descriptor_index()?;
         let new_block_pointer = fs.alloc_block_close_to(descriptor_index)?;
@@ -363,7 +363,7 @@ impl Ext2RawInode {
         let get_appropriate_descriptor_index = || {
 
             let last_data_block_number = if let Some(val) = self.get_last_allocated_data_block_number(fs) { val } else { return Some(0); };
-            fs.get_block_group_descriptor_index_of_block(last_data_block_number as u32)
+            fs.get_block_group_descriptor_index_of_block(self.read_data_block_pointer( last_data_block_number, fs)?)
         };
 
         let descriptor_index = get_appropriate_descriptor_index()?;
@@ -502,6 +502,8 @@ impl Ext2RawInode {
 
         let last_allocated_data_block_number = self.get_last_allocated_data_block_number(e2fs).expect("File must have allocated blocks if shrinking, we checked for it!");
         for i in 0..blocks_to_remove {
+            // use core::fmt::Write;
+            // writeln!(UART.lock(),"Deallocating block: {}", last_allocated_data_block_number-i).unwrap();
             self.dealloc_data_block(last_allocated_data_block_number-i, e2fs)?;
         }
         self.shrink_data_structure_to_fit(e2fs);
@@ -532,9 +534,11 @@ impl Ext2RawInode {
         }
 
         self.grow_data_structure_by(blocks_to_add, e2fs)?;
-        let last_data_block_number = self.get_last_allocated_data_block_number(e2fs).unwrap_or(0)/* block 0 gets allocated above if it doesn't exist, so it's ok to skip it */; 
+        let last_allocated_data_block_number = self.get_last_allocated_data_block_number(e2fs).unwrap_or(0)/* block 0 gets allocated above if it doesn't exist, so it's ok to skip it */; 
         for i in 1..=blocks_to_add {
-            self.alloc_data_block(last_data_block_number+i, e2fs)?;
+            // use core::fmt::Write;
+            // writeln!(UART.lock(),"Allocating block: {}", last_allocated_data_block_number+i).unwrap();
+            self.alloc_data_block(last_allocated_data_block_number+i, e2fs)?;
         }
 
         self.set_size(self.get_size()+nbytes);
