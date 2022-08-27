@@ -50,7 +50,7 @@ unsafe fn port_inh(addr: u16) -> u16 {
 
 impl<A: AddressSpace, T> Pointer<A, T>{
     pub unsafe fn offset(&self, o: isize) -> Self {
-        // FIXME: Does offsetting a port "address" work the same way as offestting a real memory addres?
+        // FIXME: Does offsetting a port "address" work the same way as offestting a real memory address?
         Self {
             inner: self.inner.offset(o),
             space: PhantomData,

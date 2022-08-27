@@ -57,6 +57,48 @@ pub struct Ext2ExtendedSuperblock {
     head_of_orphan_inode_list: u32
 }
 
+impl Ext2ExtendedSuperblock{
+    fn has_unrecognised_required_features(&self) -> bool {
+        self.required_features & 0x000F != self.required_features
+    }
+
+    fn has_unrecognised_write_required_features(&self) -> bool {
+        self.write_features & 0x0007 != self.write_features
+    }
+
+
+
+    fn has_required_feature_compression(&self) -> bool {
+        self.required_features & 0x0001 != 0
+    }
+
+    fn has_required_feature_directory_entry_type_field(&self) -> bool {
+        self.required_features & 0x0002 != 0
+    }
+
+    fn has_required_feature_replay_journal(&self) -> bool {
+        self.required_features & 0x0004 != 0
+    }
+
+    fn has_required_feature_journal_device(&self) -> bool {
+        self.required_features & 0x0008 != 0
+    }
+
+
+
+    fn has_write_required_feature_sparse(&self) -> bool {
+        self.write_features & 0x0001 != 0
+    }
+
+    fn has_write_required_feature_64bit_file_size(&self) -> bool {
+        self.write_features & 0x0002 != 0
+    }
+
+    fn has_write_required_feature_directory_contents_binary_tree(&self) -> bool {
+        self.write_features & 0x0004 != 0
+    }
+}
+
 
 #[derive(PackedStruct)]
 #[packed_struct(endian = "lsb")] // ext2 is little endian (https://wiki.osdev.org/Ext2#Basic_Concepts)
@@ -99,7 +141,35 @@ pub struct Ext2RawInode {
     os_value_2: [u32; 3],
 }
 
-#[derive(PackedStruct)]
+impl Default for Ext2RawInode {
+    fn default() -> Self {
+        Self { 
+            type_and_perm: 0, 
+            user_id: 0, 
+            low32_size: 0, 
+            last_access_unix_timestamp: 0, 
+            creation_unix_timestamp: 0, 
+            last_modif_unix_timestamp: 0, 
+            deletion_unix_timestamp: 0, 
+            group_id: 0, 
+            hard_links_to_inode: 0, 
+            disk_sectors_used: 0, 
+            flags: 0, 
+            os_value_1: 0, 
+            direct_block_pointers: [0; 12], 
+            singly_indirect_block_pointer: 0, 
+            doubly_indirect_block_pointer: 0, 
+            triply_indirect_block_pointer: 0, 
+            generation_number: 0, 
+            ext2_majorv1_extended_attribute_block: 0, 
+            ext2_majorv1_upper32_size: 0, 
+            block_addr_of_fragment: 0, 
+            os_value_2: [0; 3]
+        }
+    }
+}
+
+#[derive(PackedStruct, Debug)]
 #[packed_struct(endian = "lsb")] // ext2 is little endian (https://wiki.osdev.org/Ext2#Basic_Concepts)
 pub struct Ext2DirectoryEntryHeader {
     inode_addr: u32,
@@ -107,6 +177,18 @@ pub struct Ext2DirectoryEntryHeader {
     name_length_low8: u8,
     entry_type: u8
 }
+
+impl Default for Ext2DirectoryEntryHeader {
+    fn default() -> Self {
+        Self { 
+            inode_addr: 0, 
+            entry_size: Ext2FS::get_directory_entry_header_size() as u16, 
+            name_length_low8: 0, 
+            entry_type: 0 
+        }
+    }
+}
+
 
 impl Ext2RawInode {
 
@@ -181,7 +263,7 @@ impl Ext2RawInode {
     }
 
 
-    // Writes pointer over the pointer pointing to block_number in the hierarchichal data structure
+    // Writes pointer over the pointer pointing to #block_number in the hierarchichal data structure
     // NOTE: Will deallocate block to avoid data leaks
     fn write_data_block_pointer(&mut self, mut data_block_number: usize, pointer: u32, fs: &mut Ext2FS) -> Option<()> {
         // TODO: Test all posibilites of this function!!!
@@ -250,6 +332,7 @@ impl Ext2RawInode {
 
 
 
+    
     pub fn read_data_block(&self, data_block_number: usize, fs: &Ext2FS) -> Option<Vec<u8>> {
         return fs.read_block(self.read_data_block_pointer(data_block_number, fs)?);
     }
@@ -265,20 +348,20 @@ impl Ext2RawInode {
 
     // NOTE: Will deallocate block if allocated and allocate a new one
     pub fn alloc_data_block(&mut self, data_block_number: usize, fs: &mut Ext2FS) -> Option<()> {
-        // TODO: Untested yet
         // Get descriptor of last block in file and try to put new block there, if that fails, try descriptors next to it, until one succeds or all fails
         // If there are no allocated blocks use descriptor 0 and ones next to it.
         let get_appropriate_descriptor_index = || {
             let last_data_block_number = 
                 if let Some(val) = self.get_last_allocated_data_block_number(fs) { val } else { return Some(0); };
             
-            fs.get_block_group_descriptor_index_of_block(self.read_data_block_pointer(last_data_block_number, fs)?)
+            fs.get_descriptor_index_of_block_number(self.read_data_block_pointer(last_data_block_number, fs)?)
         };
-        let descriptor_index = get_appropriate_descriptor_index()?;
+        let descriptor_index = get_appropriate_descriptor_index()?; // Avoid borrowing fs twice
         let new_block_pointer = fs.alloc_block_close_to(descriptor_index)?;
         self.write_data_block_pointer(data_block_number, new_block_pointer, fs)?;
         Some(())
     }
+
 
 
     pub fn shrink_data_structure_to_fit(&mut self, fs: &mut Ext2FS) {
@@ -363,10 +446,10 @@ impl Ext2RawInode {
         let get_appropriate_descriptor_index = || {
 
             let last_data_block_number = if let Some(val) = self.get_last_allocated_data_block_number(fs) { val } else { return Some(0); };
-            fs.get_block_group_descriptor_index_of_block(self.read_data_block_pointer( last_data_block_number, fs)?)
+            fs.get_descriptor_index_of_block_number(self.read_data_block_pointer( last_data_block_number, fs)?)
         };
 
-        let descriptor_index = get_appropriate_descriptor_index()?;
+        let descriptor_index = get_appropriate_descriptor_index()?; // Avoid borrowing fs twice
 
 
         if self.singly_indirect_block_pointer == 0 {
@@ -450,6 +533,7 @@ impl Ext2RawInode {
         let starting_block_addr = offset/(e2fs.get_block_size() as usize);
         let offset_in_starting_block = offset%(e2fs.get_inode_size() as usize);
         let mut iter = data.iter();
+        let mut bytes_written = 0;
 
         let extra_block = if data.len()%e2fs.get_block_size() as usize != 0 { 1 } else { 0 };
         let mut ind = offset_in_starting_block;
@@ -461,17 +545,19 @@ impl Ext2RawInode {
                 vec![0u8; e2fs.get_block_size() as usize]
             };
 
-            while let Some(a) = iter.next() {
+            loop {
                 if ind >= v.len() { break; }
-                v[ind] = *a; 
+                let byte_to_write = if let Some(val) = iter.next() { val } else { break; };
+                v[ind] = *byte_to_write; 
                 ind += 1; 
+                bytes_written += 1;
             }
             ind = 0;
 
-            self.write_data_block(starting_block_addr+block_ind, &v, e2fs);
+            self.write_data_block(starting_block_addr+block_ind, &v, e2fs)?;
         }
 
-        Some(data.len())
+        Some(bytes_written)
     }
 
 
@@ -502,7 +588,6 @@ impl Ext2RawInode {
 
         let last_allocated_data_block_number = self.get_last_allocated_data_block_number(e2fs).expect("File must have allocated blocks if shrinking, we checked for it!");
         for i in 0..blocks_to_remove {
-            // use core::fmt::Write;
             // writeln!(UART.lock(),"Deallocating block: {}", last_allocated_data_block_number-i).unwrap();
             self.dealloc_data_block(last_allocated_data_block_number-i, e2fs)?;
         }
@@ -517,10 +602,12 @@ impl Ext2RawInode {
         // Calculate blocks to add
         {
             let mut bytes_to_add = nbytes;
+            // Here last block means the block after the last completly-full block, or if no blocks are full, then block 0
             let bytes_used_in_last_block = self.get_size()%e2fs.get_block_size() as usize;
             if bytes_used_in_last_block == 0 {
                 // Make sure the last block exists
-                self.alloc_data_block(self.get_last_allocated_data_block_number(e2fs).unwrap_or(0)/* if no blocks allocated, then the last block is the first block, block 0, and it doesn't exist, so this is definetly needed */, e2fs)?;
+                self.grow_data_structure_by(1, e2fs)?; // In case the last block doesn't exist and it would overflow in a non-allocated part of the inode strucutre, a.k.a if the indirect blocks don't exist
+                self.alloc_data_block(self.get_last_allocated_data_block_number(e2fs).map(|last_block_n|last_block_n+1).unwrap_or(0)/* if no blocks allocated, then the last block is the first block, block 0, and it doesn't exist, so this is definetly needed */, e2fs)?;
             }
             let bytes_available_in_last_block = e2fs.get_block_size() as usize - bytes_used_in_last_block;
 
@@ -532,11 +619,10 @@ impl Ext2RawInode {
                 blocks_to_add += bytes_to_add/e2fs.get_block_size() as usize + if bytes_to_add%e2fs.get_block_size() as usize != 0 { 1 } else { 0 };
             }
         }
-
         self.grow_data_structure_by(blocks_to_add, e2fs)?;
+
         let last_allocated_data_block_number = self.get_last_allocated_data_block_number(e2fs).unwrap_or(0)/* block 0 gets allocated above if it doesn't exist, so it's ok to skip it */; 
         for i in 1..=blocks_to_add {
-            // use core::fmt::Write;
             // writeln!(UART.lock(),"Allocating block: {}", last_allocated_data_block_number+i).unwrap();
             self.alloc_data_block(last_allocated_data_block_number+i, e2fs)?;
         }
@@ -556,7 +642,7 @@ impl Ext2RawInode {
 
     pub fn as_vfs_node(self, fs: Rc<RefCell<Ext2FS>>, inode_addr: u32) -> Option<vfs::Node> {
         if self.type_and_perm & 0xF000 == 0x4000 { 
-            return Some(vfs::Node::Folder(Rc::new(RefCell::new(Ext2Folder{inode: self, fs})) as Rc<RefCell<dyn IFolder>>));
+            return Some(vfs::Node::Folder(Rc::new(RefCell::new(Ext2Folder{inode: self, inode_addr, fs})) as Rc<RefCell<dyn IFolder>>));
         }
         if self.type_and_perm & 0xF000 == 0x8000 {
             return Some(vfs::Node::File(Rc::new(RefCell::new(Ext2File{inode: self, inode_addr, fs})) as Rc<RefCell<dyn IFile>>));
@@ -571,6 +657,8 @@ impl Ext2RawInode {
 
     fn set_size(&mut self, new_size: usize) {
         self.low32_size = new_size as u32;
+        // FIXME: Can the size of a disk sector in ext2 ever be anything else than 512 bytes?
+        self.disk_sectors_used = new_size as u32/512 + if new_size as u32%512 != 0 { 1 } else { 0 };
     }
 
 }
@@ -581,21 +669,21 @@ pub struct Ext2File {
     fs: Rc<RefCell<Ext2FS>>,
 }
 
-impl vfs::IFile for Ext2File{
-    fn read(&self, offset: usize, len: usize) -> Option<Vec<u8>> {
-        self.inode.read_bytes(offset, len, &*self.fs.borrow())
+impl vfs::IFile for Ext2File {
+    fn read(&self, offset: u64, len: usize) -> Option<Vec<u8>> {
+        self.inode.read_bytes(offset as usize, len, &*self.fs.borrow())
     }
 
-    fn write(&mut self, offset: usize, data: &[u8]) -> Option<usize> {
-        self.inode.write_bytes(offset, data, &mut *self.fs.borrow_mut())
+    fn write(&mut self, offset: u64, data: &[u8]) -> Option<usize> {
+        self.inode.write_bytes(offset as usize, data, &mut *self.fs.borrow_mut())
     }
 
-    fn get_size(&self) -> usize {
-        self.inode.get_size()
+    fn get_size(&self) -> u64 {
+        self.inode.get_size() as u64
     }
 
-    fn resize(&mut self, new_size: usize) -> Option<()>{
-        self.inode.resize(new_size, &mut *self.fs.borrow_mut())?;
+    fn resize(&mut self, new_size: u64) -> Option<()>{
+        self.inode.resize(new_size as usize, &mut *self.fs.borrow_mut())?;
         self.fs.borrow_mut().write_inode(self.inode_addr, &self.inode)?;
         Some(())
     }
@@ -603,38 +691,247 @@ impl vfs::IFile for Ext2File{
 
 pub struct Ext2Folder {
     inode: Ext2RawInode, 
+    inode_addr: u32,
     fs: Rc<RefCell<Ext2FS>>
 }
 
-impl IFolder for Ext2Folder {
-    fn get_children(&self) -> Vec<(alloc::string::String, vfs::Node)> {
-        let raw_data = self.inode.read_bytes(0, self.inode.low32_size as usize, &*self.fs.borrow());
+impl Ext2Folder {
+    fn get_entries(&self) -> Vec<(usize, Ext2DirectoryEntryHeader, alloc::string::String)> {
+        let raw_data = self.inode.read_bytes(0, self.inode.get_size() as usize, &*self.fs.borrow());
+        let raw_data = if let Some(val) = raw_data { val } else { return Vec::new(); };
+        let mut cur_ind = 0;
+
         let mut res = Vec::new();
-        if let Some(raw_data) = raw_data {
-            let mut cur_ind = 0;
-            while cur_ind < raw_data.len(){
-                let entry = Ext2DirectoryEntryHeader::unpack(raw_data[cur_ind..cur_ind+core::mem::size_of::<Ext2DirectoryEntryHeader>()].try_into().expect("Reading directory entry should always work!")).expect("Parsing directory entry should always work!");
-                cur_ind += Ext2FS::get_directory_entry_header_size();
-                
-                let name: &str = from_utf8(&raw_data[cur_ind..cur_ind+entry.name_length_low8 as usize]).expect("Ext2 inode name in directory entry should be valid utf-8!");
+        while cur_ind < raw_data.len() {
+            let start_ind = cur_ind;
+            let entry = Ext2DirectoryEntryHeader::unpack(raw_data[cur_ind..cur_ind+core::mem::size_of::<Ext2DirectoryEntryHeader>()].try_into().expect("Reading directory entry should always work!")).expect("Parsing directory entry should always work!");
+            cur_ind += Ext2FS::get_directory_entry_header_size();
+        
+            if entry.inode_addr == 0 {
+                // Entries with inode addr 0 are supposed to be skipped
+                // Source: https://www.nongnu.org/ext2-doc/ext2.html#linked-directory-entry-structure
                 cur_ind += entry.entry_size as usize-Ext2FS::get_directory_entry_header_size();
-                let inode = self.fs.borrow().read_inode(entry.inode_addr).expect("Inode in directory entry should be valid!");
-                res.push((name.to_owned(), inode.as_vfs_node(self.fs.clone(), entry.inode_addr).expect("Inodes should be parsable as vfs nodes!")))
+                continue;
             }
-        }
+
+            let name: &str = from_utf8(&raw_data[cur_ind..cur_ind+entry.name_length_low8 as usize]).expect("Ext2 inode name in directory entry should be valid utf-8!");
+            cur_ind += entry.entry_size as usize-Ext2FS::get_directory_entry_header_size();
+            res.push((start_ind, entry, name.to_owned()))   
+        }  
         res
     }
+}
+
+
+impl IFolder for Ext2Folder {
+    fn get_children(&self) -> Vec<(alloc::string::String, vfs::Node)> {
+        self.get_entries().into_iter().map(|(_, entry, name)|{
+            let child_inode = self.fs.borrow().read_inode(entry.inode_addr).expect("Inode in directory should be readable!");
+            (name, child_inode.as_vfs_node(self.fs.clone(), entry.inode_addr).expect("Inodes should be parsable as vfs nodes!"))
+        }).collect()
+    }
+
+    fn unlink_or_delete_empty_child(&mut self, child_name: &str) -> Option<()> {
+        let mut child = None; 
+        let mut last = None;
+        for e in self.get_entries() {
+            if e.2 == child_name {
+                child = Some(e);
+                break;
+            }
+            last = Some(e);
+        }
+        let child = child?;
+        let last = last?;
+
+        let child_inode_addr = child.1.inode_addr;
+        let child_entry_size = child.1.entry_size;
+        let mut last_entry = last.1;
+        let last_entry_start = last.0;
+
+
+        { 
+            // Update inode that is being unlinked/deleted
+            let mut child_inode = self.fs.borrow().read_inode(child_inode_addr).expect("Inode in directory entry should be valid!");
+
+            if child_inode.hard_links_to_inode >= 1 {
+                child_inode.hard_links_to_inode -= 1; 
+
+                // If inode is no longer hard linked to fs then try to fully deallocate it
+                if child_inode.hard_links_to_inode == 0 {
+                    if child_inode.get_size() != 0 { 
+                        child_inode.hard_links_to_inode = 1;
+                        return None; 
+                    }
+
+                    self.fs.borrow_mut().dealloc_inode(child_inode_addr)?;
+                }
+            }
+
+            // NOTE: Technically this is unecessary and kind of wierd if we just deallocated the inode, because then we don't need to update the inode since it's deallocated, but it makes the logic simpler to understand
+            self.fs.borrow_mut().write_inode(child_inode_addr, &child_inode)?;
+        }
+
+        // Delete entry, by updating last entry to point past this entry
+        // FIXME: This "leaks" the entry currently, though it is possible to clean it up later
+
+        last_entry.entry_size += child_entry_size;
+
+
+        let mut raw_data = self.inode.read_bytes(0, self.inode.get_size() as usize, &*self.fs.borrow())?;
+        
+        // Write updated last entry to raw data
+        let mut indx = last_entry_start;
+        for byte in last_entry.pack().ok()? {
+            raw_data[indx] = byte;
+            indx += 1;
+        }
+
+        // Update directory entries
+        // NOTE: No need to change(shrink) inode(directory) size, so no need to update inode(directory), since we just "leak" the entry the size of the inode shouldn't change
+        assert!(self.inode.get_size() == raw_data.len());
+        if self.inode.write_bytes(0, &raw_data, &mut *self.fs.borrow_mut())? != raw_data.len() { return None; }
+
+        Some(())
+    }
+
+    fn create_empty_child(&mut self, name: &str, typ: vfs::NodeType) -> Option<vfs::Node> {
+        let mut new_child = Ext2RawInode::default();
+        let mut entries = self.get_entries();
+        let last_entry: &mut (usize, Ext2DirectoryEntryHeader, alloc::string::String) = entries.last_mut()?;
+
+        let get_appropriate_descriptor_index = || -> Option<u32> {
+            Some(Ext2FS::get_descriptor_index_of_inode_addr(&self.fs.borrow(), last_entry.1.inode_addr))
+        };
+        let descriptor_index = get_appropriate_descriptor_index().unwrap_or(0); // Avoid borrowing fs twice
+        let new_child_inode_addr = self.fs.borrow_mut().alloc_inode_close_to(descriptor_index)?;
+
+        new_child.type_and_perm = match typ {
+            // FIXME: For now, since we don't deal with permissions, we just create an inode with all permissions
+            vfs::NodeType::File => 0x8000 | 0x1FF,
+            vfs::NodeType::Folder => 0x4000 | 0x1FF,
+        };
+
+        new_child.hard_links_to_inode = 1;
+
+        self.fs.borrow_mut().write_inode(new_child_inode_addr, &new_child)?;
+        
+        // We don't need to mutate new_child anymore, and name is only ever used as bytes from here on
+        let new_child = new_child;
+        let name = name.as_bytes();
+
+
+
+        // Create new directory entry
+        let mut raw_data = self.inode.read_bytes(0, self.inode.get_size() as usize, &*self.fs.borrow())?;
+
+        let mut new_entry = {
+            let mut entry_type = 0;
+            if let Some(esb) = &self.fs.borrow().extended_sb {
+                if esb.has_required_feature_directory_entry_type_field() {
+                    entry_type = match typ {
+                        vfs::NodeType::File => 1,
+                        vfs::NodeType::Folder => 2,
+                    };
+                }
+            }
+
+            Ext2DirectoryEntryHeader{
+                inode_addr: new_child_inode_addr,
+                entry_size: name.len() as u16 + Ext2FS::get_directory_entry_header_size() as u16,
+                name_length_low8: name.len() as u8,
+                entry_type
+            }
+        };
+
+        let new_entry_first_byte: usize = {
+            // FIXME: It would be better to try all entries and see if any of them have enough free space for the new entry
+            // But right now it's easier, especially with the code to "grow" the new entry to the end of the block, to
+            // only test the last entry
+
+            // Test to see if the entry could fit in the free space of the last entry in the list
+            // And if so shrink the last entry and put the new entry there, otherwise put the new entry after the last entry
+            // So the new entry will always become the new last entry
+
+            let mut actual_space_used_by_last_entry = Ext2FS::get_directory_entry_header_size() + usize::from(last_entry.1.name_length_low8);
+            // Comply with the requirement that entries must be 4-byte aligned when calculating if there is enough free space and when updating the size of the last entry if there is enough free space
+            // https://www.nongnu.org/ext2-doc/ext2.html#directory
+            if actual_space_used_by_last_entry % 4 != 0 {
+                actual_space_used_by_last_entry += 4 - (actual_space_used_by_last_entry % 4);
+            }
+
+            let free_space_in_last_entry = last_entry.1.entry_size as usize - actual_space_used_by_last_entry;
+
+            if free_space_in_last_entry >= new_entry.entry_size as usize {
+                // Shrink the last entry
+                last_entry.1.entry_size = actual_space_used_by_last_entry as u16;
+
+                // Write the updated last entry header to buffer
+                let mut indx = last_entry.0;
+                for byte in last_entry.1.pack().ok()? {
+                    raw_data[indx] = byte;
+                    indx += 1;
+                }
+            }
+
+            // This is fine since the last entry is either pointing to the end of the block, so the new entry will NOT
+            // span a block boundry and it will be 4-byte aligned
+            // Or we just shrunk it because the new entry would fit in the current block, and since we shrunk it to a multiple of 4, 
+            // the new entry will be 4-byte aligned and NOT span a block boundry
+            last_entry.0 + usize::from(last_entry.1.entry_size)
+        };
+
+        // Grow new entry to the end of the current block
+        let location_of_new_entry_end_in_block = (new_entry_first_byte+new_entry.entry_size as usize)%(self.fs.borrow().get_block_size() as usize);
+        // Note location_of_new_entry_end_in_block points one past the end of the entry, because new_entry_first_byte+new_entry.entry_size points one past the end of the entry
+        // This is correct, since if the last byte is byte 0 of the current block, then we only want to grow by 1023 bytes, but 1024-0 = 1024, but 1024-1 = 1023, 
+        // so location_of_new_entry_end_in_block pointing one past the end is correct
+        let space_to_grow_by = self.fs.borrow().get_block_size() as usize - location_of_new_entry_end_in_block;
+        new_entry.entry_size += space_to_grow_by as u16;
+
+
+
+        raw_data.resize(new_entry_first_byte+usize::from(new_entry.entry_size), 0);
+
+        // Resize inode(directory) to fit new entry
+        self.inode.resize(new_entry_first_byte+usize::from(new_entry.entry_size), &mut *self.fs.borrow_mut())?;
+
+        // Update inode(directory), to update its size
+        self.fs.borrow_mut().write_inode(self.inode_addr, &self.inode)?;
+
+
+        // Write new entry
+        let mut indx = new_entry_first_byte;
+        for byte in new_entry.pack().ok()? {
+            raw_data[indx] = byte;
+            indx += 1;
+        }
+
+        for byte in name {
+            raw_data[indx] = *byte;
+            indx += 1;
+        }
+
+        
+        // Update directory entries
+        assert!(self.inode.get_size() == raw_data.len());
+        self.inode.write_bytes(0, &raw_data, &mut *self.fs.borrow_mut())?;
+
+        Some(new_child.as_vfs_node(self.fs.clone(), new_child_inode_addr).expect("New child inode should be valid!"))
+    }
+
 }
 
 pub struct Ext2FS {
     backing_device: Rc<RefCell<dyn IFile>>,
     pub sb: Ext2SuperBlock,
     pub extended_sb: Option<Ext2ExtendedSuperblock>,
+    read_only: bool
 }
 
 
 impl Ext2FS {
-    pub fn new(backing_dev: Rc<RefCell<dyn IFile>>) -> Option<Ext2FS>{
+    pub fn new(backing_dev: Rc<RefCell<dyn IFile>>, mut read_only: bool) -> Option<Ext2FS>{
         // The Superblock is always located at byte 1024 from the beginning of the volume and is exactly 1024 bytes in length.
         // Source: https://wiki.osdev.org/Ext2#Locating_the_Superblock
 
@@ -644,23 +941,67 @@ impl Ext2FS {
 
         let mut extended_sb = None;
         if sb.major_version >= 1{
-            let extended_sb_data: Vec<u8> = backing_dev.borrow().read(1024+core::mem::size_of::<Ext2SuperBlock>(), core::mem::size_of::<Ext2ExtendedSuperblock>())?;
-            extended_sb = Some(Ext2ExtendedSuperblock::unpack(extended_sb_data.as_slice().try_into().ok()?).ok()?);
+            let extended_sb_data: Vec<u8> = backing_dev.borrow().read(1024+core::mem::size_of::<Ext2SuperBlock>() as u64, core::mem::size_of::<Ext2ExtendedSuperblock>())?;
+            let esb: Ext2ExtendedSuperblock = Ext2ExtendedSuperblock::unpack(extended_sb_data.as_slice().try_into().ok()?).ok()?;
+                use core::fmt::Write;
+
+            if esb.has_unrecognised_required_features() {
+                writeln!(UART.lock(), "ERROR: Ext2FS has unrecognised required features!").unwrap();
+                return None;
+            }
+
+            if esb.has_required_feature_compression() {
+                writeln!(UART.lock(), "ERROR: Ext2FS has compression, which is not supported!").unwrap();
+                return None;
+            }
+
+            if esb.has_required_feature_journal_device() {
+                writeln!(UART.lock(), "ERROR: Ext2FS has a journal device, which is not supported!").unwrap();
+                return None;
+            }
+
+            if esb.has_required_feature_replay_journal() {
+                writeln!(UART.lock(), "ERROR: Ext2FS requires a journal replay, which is not supported!").unwrap();
+                return None;
+            }
+
+
+            
+            if esb.has_unrecognised_write_required_features() {
+                writeln!(UART.lock(), "WARNING: Ext2FS has unrecognised write-required features, mounting as read-only!").unwrap();
+                read_only = true;
+            }
+
+            if esb.has_write_required_feature_directory_contents_binary_tree() {
+                writeln!(UART.lock(), "WARNING: Ext2FS uses a binary tree to store directory contents, which is not supported, mounting as read-only!").unwrap();
+                read_only = true;       
+            }
+
+            // NOTE: We support (at least in theory) 64-bit file sizes, directory entry type field and sparse superblocks and group descriptor tables 
+            // Actual level of support
+            // 64-bit file sizes: full support, but not really tested
+            // directory entry type field: full support, but not really tested
+            // sparse superblocks and group descriptor tables: lol no support, but i don't think it actually matters unless the filesystem gets corrupted so honestly it's more of an optional feature anyways
+            // nonetheless i should probs FIXME add support for sparse superblocks and group descriptor tables, to comply with the spec
+
+            extended_sb = Some(esb);
         }
         Some(Ext2FS{
             backing_device: backing_dev,
             sb: sb,
-            extended_sb: extended_sb
+            extended_sb: extended_sb,
+            read_only
         })
     }
 
     fn read(&self, addr: u32, size: usize) -> Option<Vec<u8>>{
-        (*self.backing_device).borrow().read(addr as usize, size)
+        (*self.backing_device).borrow().read(addr as u64, size)
     }
 
     fn write(&mut self, addr: u32, data: &[u8]) -> Option<usize> {
         use core::fmt::Write;
-        let res = (*self.backing_device).borrow_mut().write(addr as usize, data);
+        if self.read_only { return None; }
+        let res = (*self.backing_device).borrow_mut().write(addr as u64, data);
 
         let written_data = self.read(addr, data.len())?;
         let mut is_sane = true;
@@ -697,8 +1038,8 @@ impl Ext2FS {
     pub fn dealloc_block(&mut self, number: u32) -> Option<()> {
         if self.sb.unallocated_blocks == self.sb.max_no_of_blocks { return None; }
         // TODO: Test to make sure we don't leak blocks
-        let block_group_descriptor_index = self.get_block_group_descriptor_index_of_block(number)?;
-        let offset_in_block_group = number%self.sb.blocks_per_block_group;
+        let block_group_descriptor_index = self.get_descriptor_index_of_block_number(number)?;
+        let offset_in_block_group = self.get_descriptor_subindex_of_block_number(number)?;
         
         let mut descriptor = self.read_block_group_descriptor(block_group_descriptor_index)?;
         if u32::from(descriptor.unallocated_blocks_in_group) == self.sb.blocks_per_block_group {
@@ -710,15 +1051,20 @@ impl Ext2FS {
         // Test if block is already deallocated
         if val_to_edit & (1 << (offset_in_block_group%8)) == 0 { return None; }
 
-        // create a mask of all ones except a zero at the location of the block to deallocate, by anding this mask with the current value we mark the block as deallocated while leaving other blocks in the same state
+        // Create a mask of all ones except a zero at the location of the block to deallocate, by anding this mask with the current value we mark the block as deallocated while leaving other blocks in the same state
         val_to_edit &= !(1 << (offset_in_block_group%8)); 
         bitmap[(offset_in_block_group/8) as usize] = val_to_edit;
-        // Write modified bitmap
+
+        // Update bitmap
         self.write_block(descriptor.block_addr_for_block_usage_bitmap,&bitmap);
+
+        // Update descriptor
         descriptor.unallocated_blocks_in_group += 1;
-        // Write modified descriptor
         self.write_block_group_descriptor(block_group_descriptor_index, &mut descriptor)?;
+
+        // Update superblock
         self.sb.unallocated_blocks += 1;
+        self.flush_super_blocks();
 
         Some(())
     }
@@ -733,8 +1079,8 @@ impl Ext2FS {
 
         let found_loc_and_byte = bitmap.iter().cloned().enumerate().find(|(_, val)| *val != 0xff)?;
         let mut found_bit = 0;
-        while (found_loc_and_byte.1 >> found_bit) & 1 != 0 {found_bit += 1;}
-        let free_block_in_blockgroup =   found_loc_and_byte.0*8+found_bit;
+        while (found_loc_and_byte.1 >> found_bit) & 1 != 0 /* 0 == free */ {found_bit += 1;}
+        let free_block_in_blockgroup =   found_loc_and_byte.0*8 + found_bit;
 
         let block_pointer_to_allocate = free_block_in_blockgroup as u32 + block_group_descriptor_index*self.sb.blocks_per_block_group + self.get_number_of_special_blocks() as u32;
 
@@ -747,9 +1093,13 @@ impl Ext2FS {
         descriptor.unallocated_blocks_in_group -= 1;
         self.write_block_group_descriptor(block_group_descriptor_index, &descriptor)?;
 
-        // zero out new block
-        self.write_block(block_pointer_to_allocate as u32, &vec![0; self.get_block_size() as usize])?;
+        // Update super block
         self.sb.unallocated_blocks -= 1;
+        self.flush_super_blocks();
+    
+        // Zero out new block
+        self.write_block(block_pointer_to_allocate as u32, &vec![0; self.get_block_size() as usize])?;
+        
         return Some(block_pointer_to_allocate);
     }
 
@@ -761,17 +1111,17 @@ impl Ext2FS {
                 break; 
             }
             block_group_descriptor_index += 1;
-            if block_group_descriptor_index*self.sb.blocks_per_block_group > self.sb.max_no_of_blocks { return None; }
+            if block_group_descriptor_index > self.get_number_of_block_groups() { return None; }
         }
         Some(new_block_pointer)
     }
 
     pub fn read_inode(&self, inode_addr: u32) -> Option<Ext2RawInode> {
         // Inode indexing starts at 1
-        let block_group_descriptor_index = (inode_addr-1)/self.sb.inodes_per_block_group;
+        let block_group_descriptor_index = self.get_descriptor_index_of_inode_addr(inode_addr);
         let block_group_descriptor = self.read_block_group_descriptor(block_group_descriptor_index)?;
         let inode_table_addr = block_group_descriptor.block_addr_for_inode_table*self.get_block_size();
-        let inode_index_in_table = (inode_addr-1)%self.sb.inodes_per_block_group;
+        let inode_index_in_table = self.get_descriptor_subindex_of_inode_addr(inode_addr);
         // Inode size in list is self.get_inode_size() but only core::mem::size_of::<Ext2Inode>() bytes of the entire thing are useful for us
         let raw_inode = self.read(inode_table_addr+inode_index_in_table*self.get_inode_size() as u32, core::mem::size_of::<Ext2RawInode>())?;
         Ext2RawInode::unpack(raw_inode.as_slice().try_into().ok()?).ok()
@@ -779,14 +1129,104 @@ impl Ext2FS {
 
     pub fn write_inode(&mut self, inode_addr: u32, raw_inode: &Ext2RawInode) -> Option<()> {
         // Inode indexing starts at 1
-        let block_group_descriptor_index = (inode_addr-1)/self.sb.inodes_per_block_group;
+        let block_group_descriptor_index = self.get_descriptor_index_of_inode_addr(inode_addr);
         let block_group_descriptor = self.read_block_group_descriptor(block_group_descriptor_index)?;
         let inode_table_addr = block_group_descriptor.block_addr_for_inode_table*self.get_block_size();
-        let inode_index_in_table = (inode_addr-1)%self.sb.inodes_per_block_group;
+        let inode_index_in_table = self.get_descriptor_subindex_of_inode_addr(inode_addr);
         // Inode size in list is self.get_inode_size() but only core::mem::size_of::<Ext2Inode>() bytes of the entire thing are useful for us
         self.write(inode_table_addr+inode_index_in_table*self.get_inode_size() as u32, &raw_inode.pack().ok()?)?;
         Some(())
     }
+
+    // WARNING: DOES NOT DEALLOCATE INODE'S DATA, WILL LEAK IF GIVEN THE OPPORTUNITY
+    // TODO: This is inconsistent with write_data_block_pointer, which will deallocate data, if needed, instead of leaking it
+    pub fn dealloc_inode(&mut self, inode_addr: u32) -> Option<()> {
+        if self.sb.unallocated_inodes == self.sb.max_no_of_inodes { return None; }
+        let block_group_descriptor_index = self.get_descriptor_index_of_inode_addr(inode_addr);
+        let offset_in_block_group = self.get_descriptor_subindex_of_inode_addr(inode_addr);
+
+        let mut descriptor = self.read_block_group_descriptor(block_group_descriptor_index)?;
+        // If we have already deallocated all inodes
+        if u32::from(descriptor.unallocated_inodes_in_group) == self.sb.inodes_per_block_group {
+            return None;
+        }
+
+        let mut allocation_bitmap = self.read_block(descriptor.block_addr_for_inode_usage_bitmap)?;
+        let mut val_to_edit = allocation_bitmap[offset_in_block_group as usize/8];    
+        
+        // Test if inode is already deallocated
+        if val_to_edit & (1 << (offset_in_block_group%8)) == 0 { return None; }
+    
+        // Create a mask of all ones except a zero at the location of the inode to deallocate, by anding this mask with the current value we mark the inode as deallocated while leaving other inodes in the same state
+        val_to_edit &= !(1 << (offset_in_block_group%8));
+        allocation_bitmap[offset_in_block_group as usize/8] = val_to_edit;
+        
+        // Update bitmap
+        self.write_block(descriptor.block_addr_for_inode_usage_bitmap, &allocation_bitmap)?;
+        
+        // Update descriptor
+        descriptor.unallocated_inodes_in_group += 1;
+        self.write_block_group_descriptor(block_group_descriptor_index, &descriptor)?;
+
+        // Update superblock
+        self.sb.unallocated_inodes += 1;
+        self.flush_super_blocks();
+
+        Some(())
+    }
+
+    pub fn alloc_inode(&mut self, block_group_descriptor_index:  u32) -> Option<u32> {
+        if self.sb.unallocated_inodes == 0 { return None; }
+        
+        let mut descriptor = self.read_block_group_descriptor(block_group_descriptor_index)?;
+        // If we have already allocated all of the inodes
+        if descriptor.unallocated_inodes_in_group == 0 { return None; }
+
+        let mut allocation_bitmap = self.read_block(descriptor.block_addr_for_inode_usage_bitmap)?;
+
+        let found_loc_and_byte = allocation_bitmap.iter().cloned().enumerate().find(|(_, val)| *val != 0xff)?;
+        let mut found_bit = 0;
+        while (found_loc_and_byte.1 >> found_bit) & 1 != 0 /* 0 == free */ {found_bit += 1;}
+
+        let free_inode_index_in_table = found_loc_and_byte.0*8+found_bit;
+        let inode_addr_to_allocate = free_inode_index_in_table as u32 + self.sb.inodes_per_block_group as u32*block_group_descriptor_index + 1;
+
+        if inode_addr_to_allocate == 1 {
+            // Maybe don't
+            return None;
+        }
+        allocation_bitmap[found_loc_and_byte.0] |= 1 << found_bit; // Mark as allocated
+
+        // Update bitmap
+        self.write_block(descriptor.block_addr_for_inode_usage_bitmap, &allocation_bitmap)?; 
+
+        // Update descriptor
+        descriptor.unallocated_inodes_in_group -= 1;
+        self.write_block_group_descriptor(block_group_descriptor_index, &descriptor)?;
+        
+        // Update superblock
+        self.sb.unallocated_inodes -= 1;
+        self.flush_super_blocks();
+
+        // Zero out new inode
+        self.write_inode(inode_addr_to_allocate, &Ext2RawInode::default())?;
+
+        Some(inode_addr_to_allocate)
+    }
+
+    pub fn alloc_inode_close_to(&mut self, mut block_group_descriptor_index: u32) -> Option<u32> {
+        let new_inode_addr;
+        loop {
+            if let Some(addr) = self.alloc_inode(block_group_descriptor_index) {
+                new_inode_addr = addr;
+                break; 
+            }
+            block_group_descriptor_index += 1;
+            if block_group_descriptor_index > self.get_number_of_block_groups() { return None; }
+        }
+        Some(new_inode_addr)
+    }
+    
 
     pub fn read_block_group_descriptor(&self, block_group_descriptor_index: u32) -> Option<Ext2BlockGroupDescriptor> {
         let offset_of_descriptor_in_table = block_group_descriptor_index * Self::get_block_group_descriptor_size() as u32;
@@ -815,11 +1255,36 @@ impl Ext2FS {
         self.write(table_addr+offset_of_descriptor_in_table, &descriptor.pack().ok()?)?;
         Some(())
     }
+
+    pub fn flush_super_blocks(&mut self) -> Option<()> {
+        // Update superblock
+        self.write(1024, &self.sb.pack().ok()?)?; 
+                
+        // Update extended superblock
+        self.write(1024+Self::get_super_block_size() as u32, &self.extended_sb.as_ref().map(|v|v.pack().ok())??)?; 
+        Some(())
+    }
     
-    pub fn get_block_group_descriptor_index_of_block(&self, block_number: u32) -> Option<u32> {
+    // Maps block numbers and inode addresses to block groups indecies and offsets(subindicies)
+    pub fn get_descriptor_index_of_block_number(&self, block_number: u32) -> Option<u32> {
         if block_number < self.get_number_of_special_blocks() as u32 { return None; }
         Some((block_number-self.get_number_of_special_blocks() as u32)/self.sb.blocks_per_block_group)
     }
+
+    pub fn get_descriptor_subindex_of_block_number(&self, block_number: u32) -> Option<u32> {
+        if block_number < self.get_number_of_special_blocks() as u32 { return None; }
+        Some((block_number-self.get_number_of_special_blocks() as u32)%self.sb.blocks_per_block_group)
+    }
+
+    pub fn get_descriptor_index_of_inode_addr(&self, inode_addr: u32) -> u32 {
+        (inode_addr-1)/self.sb.inodes_per_block_group
+    }
+
+    pub fn get_descriptor_subindex_of_inode_addr(&self, inode_addr: u32) -> u32 {
+        (inode_addr-1)%self.sb.inodes_per_block_group
+    }
+
+
 
     fn get_number_of_block_groups(&self) -> u32 {
         assert!(self.sb.max_no_of_blocks/self.sb.blocks_per_block_group + if self.sb.max_no_of_blocks%self.sb.blocks_per_block_group != 0 { 1 } else { 0 } 
@@ -828,7 +1293,9 @@ impl Ext2FS {
     }
 
     fn get_number_of_special_blocks(&self) -> usize {
-        let initial_blocks = (1024/*reserved space*/+1024/*superblock*/)/self.get_block_size() as usize + if (1024+1024)/self.get_block_size() as usize != 0 { 1 } else { 0 };
+        let initial_blocks = (1024/*reserved space*/+1024/*superblock*/)/self.get_block_size() as usize + if (1024+1024)%self.get_block_size() as usize != 0 { 1 } else { 0 };
+        
+        // Size of the block group table in blocks
         let block_group_table_blocks = Self::get_block_group_descriptor_size() * self.get_number_of_block_groups() as usize/self.get_block_size() as usize + if (Self::get_block_group_descriptor_size() * self.get_number_of_block_groups() as usize)%self.get_block_size() as usize != 0 { 1 } else { 0 };
         return initial_blocks+block_group_table_blocks;
     }
@@ -846,6 +1313,14 @@ impl Ext2FS {
         32
     }
 
+    pub fn get_super_block_size() -> usize {
+        84
+    }
+
+    pub fn get_extended_super_block_size() -> usize {
+        1024-Self::get_super_block_size()
+    }
+
     pub fn get_inode_size(&self) -> usize {
         // Inodes have a fixed size of either 128 for major version 0 Ext2 file systems, or as dictated by the field in the Superblock for major version 1 file systems
         // Source: https://wiki.osdev.org/Ext2#Inodes
@@ -854,5 +1329,12 @@ impl Ext2FS {
         }else{
             128
         }
+    }
+}
+
+impl Drop for Ext2FS {
+    fn drop(&mut self) {
+        // FIXME: Figure out why drop isn't called
+        self.flush_super_blocks();
     }
 }

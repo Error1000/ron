@@ -305,10 +305,10 @@ pub struct ATADeviceFile{
 
 
 impl IFile for ATADeviceFile{
-    fn read(&self, offset_in_bytes: usize, len: usize) -> Option<Vec<u8>> {
-      let offset_in_first_sector = offset_in_bytes % SECTOR_SIZE_IN_BYTES;
-      let first_sector = offset_in_bytes / SECTOR_SIZE_IN_BYTES;
-      let mut res: Vec<u8> = Vec::with_capacity(len);
+    fn read(&self, offset_in_bytes: u64, len: usize) -> Option<Vec<u8>> {
+      let offset_in_first_sector = (offset_in_bytes % SECTOR_SIZE_IN_BYTES as u64) as usize;
+      let first_sector = (offset_in_bytes / SECTOR_SIZE_IN_BYTES as u64) as usize;
+      let mut res: Vec<u8> = Vec::with_capacity(len as usize);
 
       // Deal with first block
       let first_block_lba = LBA28{hi: ((first_sector>>16)&0xFF) as u8, mid: ((first_sector>>8)&0xFF) as u8, low: (first_sector&0xFF) as u8};
@@ -348,58 +348,59 @@ impl IFile for ATADeviceFile{
       Some(res)
     }
 
-    fn write(&mut self, offset_in_bytes: usize, data: &[u8]) -> Option<usize> {
-       let offset_in_first_sector_in_bytes = offset_in_bytes % SECTOR_SIZE_IN_BYTES;
-       let first_sector = offset_in_bytes / SECTOR_SIZE_IN_BYTES;
+    fn write(&mut self, offset_in_bytes: u64, data: &[u8]) -> Option<usize> {
+       let offset_in_first_sector_in_bytes = (offset_in_bytes % SECTOR_SIZE_IN_BYTES as u64) as usize;
+       let first_sector = (offset_in_bytes / SECTOR_SIZE_IN_BYTES as u64) as usize;
        let mut iter = data.iter();
+       let mut bytes_written = 0;
        
        let extra_block = if data.len()%SECTOR_SIZE_IN_BYTES != 0 { 1 } else { 0 };
 
        let mut ind = offset_in_first_sector_in_bytes/2;
        let mut skip_first_byte = offset_in_first_sector_in_bytes % 2 == 1;
 
-       for sector_indx in 0..(data.len()/SECTOR_SIZE_IN_BYTES+extra_block){
+       for sector_indx in 0..data.len()/SECTOR_SIZE_IN_BYTES+extra_block {
          let offset = first_sector+sector_indx;
          let lba = LBA28{hi: ((offset>>16)&0xFF) as u8, mid: ((offset>>8)&0xFF) as u8, low: (offset&0xFF) as u8};
          
          // No need to read sectors that we know will be completly overriden
-         let mut v = if (sector_indx == (data.len()/SECTOR_SIZE_IN_BYTES+extra_block-1) && extra_block == 1) || (sector_indx == 0 && offset_in_first_sector_in_bytes != 0) { 
+         let mut v = if (sector_indx == data.len()/SECTOR_SIZE_IN_BYTES+extra_block-1 && extra_block == 1) || (sector_indx == 0 && offset_in_first_sector_in_bytes != 0) { 
             unsafe{ (*self.bus).borrow_mut().read_sector(self.bus_device, lba) }.expect("Reading device should work!")
          } else {
             [0u16; SECTOR_SIZE_IN_BYTES/core::mem::size_of::<u16>()] 
          };
 
          loop {
-            if iter.clone().next().is_none() { break; }
             if ind >= v.len() { break; }
-            let mut old_vals = v[ind].to_ne_bytes();
+            let mut bytes_to_write = v[ind].to_ne_bytes();
 
             // TODO: Test this if
             if !skip_first_byte {
-                if let Some(val) = iter.next(){ old_vals[0] = *val; }
+                if let Some(val) = iter.next(){ bytes_to_write[0] = *val; } else { break; }
             } else {
                 skip_first_byte = false;
             }
-            if let Some(val) = iter.next(){ old_vals[1] = *val; }
+            if let Some(val) = iter.next(){ bytes_to_write[1] = *val; } // Note: Don't break here because there may be data to write in old_vals[0]
 
-            v[ind] = u16::from_ne_bytes(old_vals);
+            v[ind] = u16::from_ne_bytes(bytes_to_write);
             ind += 1;
+            bytes_written += core::mem::size_of::<u16>();
          }
          ind = 0;
 
          unsafe{ (*self.bus).borrow_mut().write_sector(self.bus_device, lba, &v) }?;
         }
-        Some(data.len())
+        Some(bytes_written)
     }
 
-    fn resize(&mut self, _new_size: usize) -> Option<()> {
-        None
-    }
-
-    fn get_size(&self) -> usize{
+    fn get_size(&self) -> u64 {
       let mut ata_bus = (*self.bus).borrow_mut();
       let sector_count = unsafe{ ata_bus.get_sector_count(self.bus_device) }.expect("Rading device should work!");
-      (sector_count as usize) * SECTOR_SIZE_IN_BYTES
+      (sector_count as u64) * SECTOR_SIZE_IN_BYTES as u64
+    }
+
+    fn resize(&mut self, _new_size: u64) -> Option<()> {
+        None
     }
 
 }

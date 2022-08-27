@@ -15,6 +15,7 @@ impl<T> LazyInitialised<T>{
     pub fn unset(&mut self){
         self.inner = None;
     }
+
     pub fn set(&mut self, val: T){
         self.inner = Some(val);
     }

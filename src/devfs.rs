@@ -28,4 +28,13 @@ impl vfs::IFolder for DevFS{
        }
        v
     }
+
+    fn create_empty_child(&mut self, name: &str, typ: vfs::NodeType) -> Option<Node> {
+        None
+    }
+
+    fn unlink_or_delete_empty_child(&mut self, name: &str) -> Option<()> {
+        None
+    }
+
 }
