@@ -383,7 +383,8 @@ impl Ext2RawInode {
                             fs.dealloc_block(singly_indirect_block_pointer);
                             write_pointer_to_block(&mut doubly_indirect_block, i as usize, 0);
                         }else{
-                            break; // If this block is not empty then none of the rest should be since they are allocated sequentially
+                            // NOTE: This might not support holes in inodes, depending on how holes are implemented
+                            break; // If this block is not empty then none of the rest should be since they are sequential
                         }
                     }
                 }    
@@ -408,6 +409,7 @@ impl Ext2RawInode {
                                         fs.dealloc_block(singly_indirect_block_pointer);
                                         write_pointer_to_block( &mut doubly_indirect_block, j as usize, 0);
                                     }else{
+                                        // NOTE: This might not support holes in inodes, depending on how holes are implemented
                                         break 'big_loop; // If this block is not empty then none of the rest should be
                                     }
                                 }
@@ -856,10 +858,6 @@ impl IFolder for Ext2Folder {
         };
 
         let new_entry_first_byte: usize = {
-            // FIXME: It would be better to try all entries and see if any of them have enough free space for the new entry
-            // But right now it's easier, especially with the code to "grow" the new entry to the end of the block, to
-            // only test the last entry
-
             // Test to see if the entry could fit in the free space of the last entry in the list
             // And if so shrink the last entry and put the new entry there, otherwise put the new entry after the last entry
             // So the new entry will always become the new last entry
