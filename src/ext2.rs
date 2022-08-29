@@ -507,7 +507,6 @@ impl Ext2RawInode {
 
 
 
-
     pub fn read_bytes(&self, offset: usize, len: usize, e2fs: &Ext2FS) -> Option<Vec<u8>> {
         if offset+len > self.get_size() { return None; }
         let starting_block_index = offset/(e2fs.get_block_size() as usize);
@@ -720,6 +719,25 @@ impl Ext2Folder {
         }  
         res
     }
+
+    fn write_entry_header_to_buffer(&mut self, raw_data: &mut [u8], entry: &(usize, Ext2DirectoryEntryHeader, alloc::string::String)) -> Option<()> {
+        let mut indx = entry.0;
+        for byte in entry.1.pack().ok()? {
+            raw_data[indx] = byte;
+            indx += 1;
+        }
+        Some(())
+    }
+
+    fn write_entry_string_to_buffer(&mut self, raw_data: &mut [u8], entry: &(usize, Ext2DirectoryEntryHeader, alloc::string::String)) -> Option<()> {
+        let mut indx = entry.0+Ext2FS::get_directory_entry_header_size();
+        for byte in entry.2.bytes() {
+            raw_data[indx] = byte;
+            indx += 1;
+        }
+        Some(())
+    }
+
 }
 
 
@@ -742,17 +760,11 @@ impl IFolder for Ext2Folder {
             last = Some(e);
         }
         let child = child?;
-        let last = last?;
-
-        let child_inode_addr = child.1.inode_addr;
-        let child_entry_size = child.1.entry_size;
-        let mut last_entry = last.1;
-        let last_entry_start = last.0;
-
+        let mut last = last?;
 
         { 
             // Update inode that is being unlinked/deleted
-            let mut child_inode = self.fs.borrow().read_inode(child_inode_addr).expect("Inode in directory entry should be valid!");
+            let mut child_inode = self.fs.borrow().read_inode(child.1.inode_addr).expect("Inode in directory entry should be valid!");
 
             if child_inode.hard_links_to_inode >= 1 {
                 child_inode.hard_links_to_inode -= 1; 
@@ -764,28 +776,25 @@ impl IFolder for Ext2Folder {
                         return None; 
                     }
 
-                    self.fs.borrow_mut().dealloc_inode(child_inode_addr)?;
+                    self.fs.borrow_mut().dealloc_inode(child.1.inode_addr)?;
                 }
             }
 
             // NOTE: Technically this is unecessary and kind of wierd if we just deallocated the inode, because then we don't need to update the inode since it's deallocated, but it makes the logic simpler to understand
-            self.fs.borrow_mut().write_inode(child_inode_addr, &child_inode)?;
+            self.fs.borrow_mut().write_inode(child.1.inode_addr, &child_inode)?;
         }
 
         // Delete entry, by updating last entry to point past this entry
         // FIXME: This "leaks" the entry currently, though it is possible to clean it up later
 
-        last_entry.entry_size += child_entry_size;
+        last.1.entry_size += child.1.entry_size;
 
 
         let mut raw_data = self.inode.read_bytes(0, self.inode.get_size() as usize, &*self.fs.borrow())?;
         
         // Write updated last entry to raw data
-        let mut indx = last_entry_start;
-        for byte in last_entry.pack().ok()? {
-            raw_data[indx] = byte;
-            indx += 1;
-        }
+        self.write_entry_header_to_buffer(&mut raw_data, &last);
+
 
         // Update directory entries
         // NOTE: No need to change(shrink) inode(directory) size, so no need to update inode(directory), since we just "leak" the entry the size of the inode shouldn't change
@@ -796,6 +805,9 @@ impl IFolder for Ext2Folder {
     }
 
     fn create_empty_child(&mut self, name: &str, typ: vfs::NodeType) -> Option<vfs::Node> {
+        // First create the inode
+        //---------------------------------
+
         let mut new_child = Ext2RawInode::default();
         let mut entries = self.get_entries();
         let last_entry: &mut (usize, Ext2DirectoryEntryHeader, alloc::string::String) = entries.last_mut()?;
@@ -818,14 +830,13 @@ impl IFolder for Ext2Folder {
         
         // We don't need to mutate new_child anymore, and name is only ever used as bytes from here on
         let new_child = new_child;
-        let name = name.as_bytes();
 
+        // Then create a new directory entry
+        //-----------------------------------
 
-
-        // Create new directory entry
         let mut raw_data = self.inode.read_bytes(0, self.inode.get_size() as usize, &*self.fs.borrow())?;
 
-        let mut new_entry = {
+        let mut new_entry_header = {
             let mut entry_type = 0;
             if let Some(esb) = &self.fs.borrow().extended_sb {
                 if esb.has_required_feature_directory_entry_type_field() {
@@ -862,16 +873,12 @@ impl IFolder for Ext2Folder {
 
             let free_space_in_last_entry = last_entry.1.entry_size as usize - actual_space_used_by_last_entry;
 
-            if free_space_in_last_entry >= new_entry.entry_size as usize {
+            if free_space_in_last_entry >= new_entry_header.entry_size as usize {
                 // Shrink the last entry
                 last_entry.1.entry_size = actual_space_used_by_last_entry as u16;
 
                 // Write the updated last entry header to buffer
-                let mut indx = last_entry.0;
-                for byte in last_entry.1.pack().ok()? {
-                    raw_data[indx] = byte;
-                    indx += 1;
-                }
+                self.write_entry_header_to_buffer(&mut raw_data, last_entry)?;
             }
 
             // This is fine since the last entry is either pointing to the end of the block, so the new entry will NOT
@@ -882,36 +889,31 @@ impl IFolder for Ext2Folder {
         };
 
         // Grow new entry to the end of the current block
-        let location_of_new_entry_end_in_block = (new_entry_first_byte+new_entry.entry_size as usize)%(self.fs.borrow().get_block_size() as usize);
+        let location_of_new_entry_end_in_block = (new_entry_first_byte+new_entry_header.entry_size as usize)%(self.fs.borrow().get_block_size() as usize);
         // Note location_of_new_entry_end_in_block points one past the end of the entry, because new_entry_first_byte+new_entry.entry_size points one past the end of the entry
         // This is correct, since if the last byte is byte 0 of the current block, then we only want to grow by 1023 bytes, but 1024-0 = 1024, but 1024-1 = 1023, 
         // so location_of_new_entry_end_in_block pointing one past the end is correct
         let space_to_grow_by = self.fs.borrow().get_block_size() as usize - location_of_new_entry_end_in_block;
-        new_entry.entry_size += space_to_grow_by as u16;
+        new_entry_header.entry_size += space_to_grow_by as u16;
 
 
 
-        raw_data.resize(new_entry_first_byte+usize::from(new_entry.entry_size), 0);
+        // Then write the new entry to disk
+        //----------------------------------
+
+        raw_data.resize(new_entry_first_byte+usize::from(new_entry_header.entry_size), 0);
 
         // Resize inode(directory) to fit new entry
-        self.inode.resize(new_entry_first_byte+usize::from(new_entry.entry_size), &mut *self.fs.borrow_mut())?;
+        self.inode.resize(new_entry_first_byte+usize::from(new_entry_header.entry_size), &mut *self.fs.borrow_mut())?;
 
         // Update inode(directory), to update its size
         self.fs.borrow_mut().write_inode(self.inode_addr, &self.inode)?;
 
 
         // Write new entry
-        let mut indx = new_entry_first_byte;
-        for byte in new_entry.pack().ok()? {
-            raw_data[indx] = byte;
-            indx += 1;
-        }
-
-        for byte in name {
-            raw_data[indx] = *byte;
-            indx += 1;
-        }
-
+        let new_entry = (new_entry_first_byte, new_entry_header, name.to_owned());
+        self.write_entry_header_to_buffer(&mut raw_data, &new_entry)?;
+        self.write_entry_string_to_buffer(&mut raw_data, &new_entry)?;
         
         // Update directory entries
         assert!(self.inode.get_size() == raw_data.len());
@@ -998,25 +1000,39 @@ impl Ext2FS {
         (*self.backing_device).borrow().read(addr as u64, size)
     }
 
-    fn write(&mut self, addr: u32, data: &[u8]) -> Option<usize> {
-        use core::fmt::Write;
-        if self.read_only { return None; }
-        let res = (*self.backing_device).borrow_mut().write(addr as u64, data);
 
-        let written_data = self.read(addr, data.len())?;
+    // Returns Ok(()) if sanity check passes or Err(None) if it did not and was not able to determine the offending byte
+    // or Err(Some(index)) if the sanity check did not pass and it was able to determine the offending byte
+    fn sanity_check_write(&self, addr: u32, written_data: &[u8]) -> Result<(), Option<usize>> {
+        // Read back the written data
+        let read_back_data = self.read(addr, written_data.len()).ok_or(None)?;
         let mut is_sane = true;
         let mut bad_offset = 0;
-        for i in 0..data.len() {
-            if *written_data.get(i)? != data[i] {
+        // And check that the read data and written data is the same
+        for i in 0..written_data.len() {
+            if *read_back_data.get(i).ok_or(i)? != written_data[i] {
+                bad_offset = i;
                 is_sane = false;
                 break;
             }
-            bad_offset += 1;
         }
 
         if !is_sane {
+            use core::fmt::Write;
             writeln!(UART.lock(), "Sanity check in write failed, written data was not read back, addr: {}, offset in data: {}!", addr, bad_offset).unwrap();
+            return Err(Some(bad_offset));
+        }else{
+            return Ok(());
         }
+    }
+
+    fn write(&mut self, addr: u32, data: &[u8]) -> Option<usize> {
+        if self.read_only { return None; }
+        let res = (*self.backing_device).borrow_mut().write(addr as u64, data);
+        
+        #[cfg(debug_assertions)]
+        self.sanity_check_write(addr, data).ok()?;
+        
         res
     }
 
@@ -1155,7 +1171,11 @@ impl Ext2FS {
         let mut val_to_edit = allocation_bitmap[offset_in_block_group as usize/8];    
         
         // Test if inode is already deallocated
-        if val_to_edit & (1 << (offset_in_block_group%8)) == 0 { return None; }
+        if val_to_edit & (1 << (offset_in_block_group%8)) == 0 {
+            use core::fmt::Write;
+            writeln!(UART.lock(), "ERROR: Inode {} is alreaady deallocated according to block!", inode_addr).unwrap();
+             return None;
+        }
     
         // Create a mask of all ones except a zero at the location of the inode to deallocate, by anding this mask with the current value we mark the inode as deallocated while leaving other inodes in the same state
         val_to_edit &= !(1 << (offset_in_block_group%8));
@@ -1261,7 +1281,9 @@ impl Ext2FS {
         self.write(1024, &self.sb.pack().ok()?)?; 
                 
         // Update extended superblock
-        self.write(1024+Self::get_super_block_size() as u32, &self.extended_sb.as_ref().map(|v|v.pack().ok())??)?; 
+        if let Some(esb) = &self.extended_sb{
+            self.write(1024+Self::get_super_block_size() as u32, &esb.pack().ok()?)?; 
+        }
         Some(())
     }
     

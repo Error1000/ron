@@ -679,20 +679,22 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             Ok(actual_dir)
                         };
                         let mut arg_path = if let Ok(val) = arg_path { val } else { writeln!(TERMINAL.lock(), "Bad path!").unwrap(); continue; };
-                        let name = arg_path.last().to_owned();
+                        let file_name = arg_path.last().to_owned();
                         arg_path.del_last();
                         
                         let node = if let Some(val) = arg_path.get_node() { val } else {writeln!(TERMINAL.lock(), "Non-existant path!").unwrap(); continue;};
                         if let Node::Folder(folder) = node {
-                            let child = if let Some(val) = folder.borrow_mut().get_children().into_iter().find(|child| child.0 == name) { val.1 } else { writeln!(TERMINAL.lock(), "Path is invalid!").unwrap(); continue; };
+                            let child = if let Some(val) = folder.borrow_mut().get_children().into_iter().find(|child| child.0 == file_name) { val.1 } else { writeln!(TERMINAL.lock(), "File doesn't exist in folder!").unwrap(); continue; };
                             let child = if let Node::File(f) = child { f } else { writeln!(TERMINAL.lock(), "Not a file!").unwrap(); continue; };
 
-                            writeln!(TERMINAL.lock(), "Deleting: \"{}\"", name).unwrap();
+                            writeln!(TERMINAL.lock(), "Removing the data from \"{}\"!", name).unwrap();
                             if child.borrow_mut().resize(0).is_none() {
-                                writeln!(TERMINAL.lock(), "Failed to delete!").unwrap();
-                            }
-                            if folder.borrow_mut().unlink_or_delete_empty_child(&name).is_none() {
-                                writeln!(TERMINAL.lock(), "Failed to remove from directory!").unwrap();
+                                writeln!(TERMINAL.lock(), "Failed to remove the data!").unwrap();
+                            }else{
+                                writeln!(TERMINAL.lock(), "Deleting/unlinking file!").unwrap();
+                                if folder.borrow_mut().unlink_or_delete_empty_child(&name).is_none() {
+                                    writeln!(TERMINAL.lock(), "Failed to delete/unlink file!").unwrap();
+                                }
                             }
                         }
 

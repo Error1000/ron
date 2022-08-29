@@ -7,6 +7,12 @@
             "label": "Qemu run",
             "type": "shell",
             "command": "./run.sh"
+        },
+
+        {
+            "label": "Qemu debug",
+            "type": "shell",
+            "command": "./run.sh -S -s"
         }
     ]
 }
