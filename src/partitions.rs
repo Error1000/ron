@@ -69,7 +69,7 @@ impl IFile for MBRPartitionFile{
         self.partition_size
     }
 
-    fn resize(&mut self, new_size: u64) -> Option<()> {
+    fn resize(&mut self, _new_size: u64) -> Option<()> {
         None
     }
 }
