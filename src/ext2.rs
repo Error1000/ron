@@ -570,7 +570,7 @@ impl Ext2RawInode {
             // NOTE: get_size() is never 0, because of the initial ifs
             let bytes_used_in_last_nonempty_block = if self.get_size()%e2fs.get_block_size() as usize == 0 { e2fs.get_block_size() as usize } else { self.get_size()%e2fs.get_block_size() as usize };
         
-            if bytes_to_remove > bytes_used_in_last_nonempty_block {
+            if bytes_to_remove >= bytes_used_in_last_nonempty_block {
                 // Calculation to remove last block
                 blocks_to_remove += 1;
                 bytes_to_remove -= bytes_used_in_last_nonempty_block;
@@ -1173,8 +1173,8 @@ impl Ext2FS {
         // Test if inode is already deallocated
         if val_to_edit & (1 << (offset_in_block_group%8)) == 0 {
             use core::fmt::Write;
-            writeln!(UART.lock(), "ERROR: Inode {} is alreaady deallocated according to block!", inode_addr).unwrap();
-             return None;
+            writeln!(UART.lock(), "ERROR: Inode {} is already deallocated according to block group bitmap!", inode_addr).unwrap();
+            return None;
         }
     
         // Create a mask of all ones except a zero at the location of the inode to deallocate, by anding this mask with the current value we mark the inode as deallocated while leaving other inodes in the same state
