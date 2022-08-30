@@ -1,7 +1,7 @@
-use core::{cell::RefCell, str::from_utf8, convert::TryInto, mem::size_of};
+use core::{cell::RefCell, str::from_utf8, convert::TryInto};
 
 use alloc::{rc::Rc, vec, vec::Vec, borrow::ToOwned};
-use packed_struct::prelude::PackedStruct;
+use packed_struct::prelude::*;
 
 use crate::{vfs::{IFile, self, IFolder}, UART};
 
@@ -109,10 +109,6 @@ pub struct Ext2BlockGroupDescriptor {
     unallocated_blocks_in_group: u16,
     unallocated_inodes_in_group: u16,
     directories_in_group: u16,
-    // 14 unused bytes
-    _unused1: u64,
-    _unused2: u32,
-    _unused3: u16, 
 }
 
 #[derive(PackedStruct)]
@@ -182,7 +178,7 @@ impl Default for Ext2DirectoryEntryHeader {
     fn default() -> Self {
         Self { 
             inode_addr: 0, 
-            entry_size: Ext2FS::get_directory_entry_header_size() as u16, 
+            entry_size: Ext2FS::get_ondisk_directory_entry_header_size() as u16, 
             name_length_low8: 0, 
             entry_type: 0 
         }
@@ -193,10 +189,12 @@ impl Default for Ext2DirectoryEntryHeader {
 impl Ext2RawInode {
 
     fn read_value_from_u32_array_as_le_bytes(bytes: &[u8], index: usize) -> Option<u32> {
+        use core::mem::size_of;
         Some(u32::from_le_bytes(bytes[index*size_of::<u32>()..(index+1)*size_of::<u32>()].try_into().ok()?))
     }
 
     fn write_value_to_u32_array_as_le_bytes(bytes: &mut [u8], index: usize, val: u32) -> Option<()>{
+        use core::mem::size_of;
         let bytes_to_write = u32::to_le_bytes(val);
         let mut iter = bytes_to_write.iter();
         for byte_ind in index*size_of::<u32>()..(index+1)*size_of::<u32>(){
@@ -436,6 +434,7 @@ impl Ext2RawInode {
     }
 
     pub fn grow_data_structure_by(&mut self, nblocks: usize, fs: &mut Ext2FS) -> Option<()> {
+        use core::mem::size_of;
         use core::convert::TryFrom;
         let mut new_block_size: isize = isize::try_from(self.get_size()/fs.get_block_size() as usize).ok()? + if self.get_size()%fs.get_block_size() as usize != 0 { 1 } else { 0 } + isize::try_from(nblocks).ok()?;
         let write_pointer_to_block = Self::write_value_to_u32_array_as_le_bytes;
@@ -532,7 +531,7 @@ impl Ext2RawInode {
     pub fn write_bytes(&self, offset: usize, data: &[u8], e2fs: &mut Ext2FS) -> Option<usize> {
         if offset+data.len() > self.get_size() { return None; }
         let starting_block_addr = offset/(e2fs.get_block_size() as usize);
-        let offset_in_starting_block = offset%(e2fs.get_inode_size() as usize);
+        let offset_in_starting_block = offset%(e2fs.get_ondisk_inode_size() as usize);
         let mut iter = data.iter();
         let mut bytes_written = 0;
 
@@ -705,18 +704,18 @@ impl Ext2Folder {
         let mut res = Vec::new();
         while cur_ind < raw_data.len() {
             let start_ind = cur_ind;
-            let entry = Ext2DirectoryEntryHeader::unpack(raw_data[cur_ind..cur_ind+core::mem::size_of::<Ext2DirectoryEntryHeader>()].try_into().expect("Reading directory entry should always work!")).expect("Parsing directory entry should always work!");
-            cur_ind += Ext2FS::get_directory_entry_header_size();
+            let entry = Ext2DirectoryEntryHeader::unpack(raw_data[cur_ind..cur_ind+Ext2FS::get_ondisk_directory_entry_header_size()].try_into().expect("Reading directory entry should always work!")).expect("Parsing directory entry should always work!");
+            cur_ind += Ext2FS::get_ondisk_directory_entry_header_size();
         
             if entry.inode_addr == 0 {
                 // Entries with inode addr 0 are supposed to be skipped
                 // Source: https://www.nongnu.org/ext2-doc/ext2.html#linked-directory-entry-structure
-                cur_ind += entry.entry_size as usize-Ext2FS::get_directory_entry_header_size();
+                cur_ind += entry.entry_size as usize-Ext2FS::get_ondisk_directory_entry_header_size();
                 continue;
             }
 
             let name: &str = from_utf8(&raw_data[cur_ind..cur_ind+entry.name_length_low8 as usize]).expect("Ext2 inode name in directory entry should be valid utf-8!");
-            cur_ind += entry.entry_size as usize-Ext2FS::get_directory_entry_header_size();
+            cur_ind += entry.entry_size as usize-Ext2FS::get_ondisk_directory_entry_header_size();
             res.push((start_ind, entry, name.to_owned()))   
         }  
         res
@@ -732,7 +731,7 @@ impl Ext2Folder {
     }
 
     fn write_entry_string_to_buffer(&mut self, raw_data: &mut [u8], entry: &(usize, Ext2DirectoryEntryHeader, alloc::string::String)) -> Option<()> {
-        let mut indx = entry.0+Ext2FS::get_directory_entry_header_size();
+        let mut indx = entry.0+Ext2FS::get_ondisk_directory_entry_header_size();
         for byte in entry.2.bytes() {
             raw_data[indx] = byte;
             indx += 1;
@@ -851,7 +850,7 @@ impl IFolder for Ext2Folder {
 
             Ext2DirectoryEntryHeader{
                 inode_addr: new_child_inode_addr,
-                entry_size: name.len() as u16 + Ext2FS::get_directory_entry_header_size() as u16,
+                entry_size: name.len() as u16 + Ext2FS::get_ondisk_directory_entry_header_size() as u16,
                 name_length_low8: name.len() as u8,
                 entry_type
             }
@@ -862,7 +861,7 @@ impl IFolder for Ext2Folder {
             // And if so shrink the last entry and put the new entry there, otherwise put the new entry after the last entry
             // So the new entry will always become the new last entry
 
-            let mut actual_space_used_by_last_entry = Ext2FS::get_directory_entry_header_size() + usize::from(last_entry.1.name_length_low8);
+            let mut actual_space_used_by_last_entry = Ext2FS::get_ondisk_directory_entry_header_size() + usize::from(last_entry.1.name_length_low8);
             // Comply with the requirement that entries must be 4-byte aligned when calculating if there is enough free space and when updating the size of the last entry if there is enough free space
             // https://www.nongnu.org/ext2-doc/ext2.html#directory
             if actual_space_used_by_last_entry % 4 != 0 {
@@ -935,13 +934,13 @@ impl Ext2FS {
         // The Superblock is always located at byte 1024 from the beginning of the volume and is exactly 1024 bytes in length.
         // Source: https://wiki.osdev.org/Ext2#Locating_the_Superblock
 
-        let sb_data: Vec<u8> = backing_dev.borrow().read(1024, core::mem::size_of::<Ext2SuperBlock>())?;
+        let sb_data: Vec<u8> = backing_dev.borrow().read(1024, Ext2SuperBlock::packed_bytes_size(None).ok()?)?;
         let sb = Ext2SuperBlock::unpack(sb_data.as_slice().try_into().ok()?).ok()?;
         if sb.inodes_per_block_group < 1 { return None; }
 
         let mut extended_sb = None;
         if sb.major_version >= 1{
-            let extended_sb_data: Vec<u8> = backing_dev.borrow().read(1024+core::mem::size_of::<Ext2SuperBlock>() as u64, core::mem::size_of::<Ext2ExtendedSuperblock>())?;
+            let extended_sb_data: Vec<u8> = backing_dev.borrow().read(1024+Ext2FS::get_ondisk_super_block_size() as u64, Ext2ExtendedSuperblock::packed_bytes_size(None).ok()?)?;
             let esb: Ext2ExtendedSuperblock = Ext2ExtendedSuperblock::unpack(extended_sb_data.as_slice().try_into().ok()?).ok()?;
                 use core::fmt::Write;
 
@@ -1136,8 +1135,7 @@ impl Ext2FS {
         let block_group_descriptor = self.read_block_group_descriptor(block_group_descriptor_index)?;
         let inode_table_addr = block_group_descriptor.block_addr_for_inode_table*self.get_block_size();
         let inode_index_in_table = self.get_descriptor_subindex_of_inode_addr(inode_addr);
-        // Inode size in list is self.get_inode_size() but only core::mem::size_of::<Ext2Inode>() bytes of the entire thing are useful for us
-        let raw_inode = self.read(inode_table_addr+inode_index_in_table*self.get_inode_size() as u32, core::mem::size_of::<Ext2RawInode>())?;
+        let raw_inode = self.read(inode_table_addr+inode_index_in_table*self.get_ondisk_inode_size() as u32, Ext2RawInode::packed_bytes_size(None).ok()?)?;
         Ext2RawInode::unpack(raw_inode.as_slice().try_into().ok()?).ok()
     }
 
@@ -1147,8 +1145,7 @@ impl Ext2FS {
         let block_group_descriptor = self.read_block_group_descriptor(block_group_descriptor_index)?;
         let inode_table_addr = block_group_descriptor.block_addr_for_inode_table*self.get_block_size();
         let inode_index_in_table = self.get_descriptor_subindex_of_inode_addr(inode_addr);
-        // Inode size in list is self.get_inode_size() but only core::mem::size_of::<Ext2Inode>() bytes of the entire thing are useful for us
-        self.write(inode_table_addr+inode_index_in_table*self.get_inode_size() as u32, &raw_inode.pack().ok()?)?;
+        self.write(inode_table_addr+inode_index_in_table*self.get_ondisk_inode_size() as u32, &raw_inode.pack().ok()?)?;
         Some(())
     }
 
@@ -1247,7 +1244,7 @@ impl Ext2FS {
     
 
     pub fn read_block_group_descriptor(&self, block_group_descriptor_index: u32) -> Option<Ext2BlockGroupDescriptor> {
-        let offset_of_descriptor_in_table = block_group_descriptor_index * Self::get_block_group_descriptor_size() as u32;
+        let offset_of_descriptor_in_table = block_group_descriptor_index * Self::get_ondisk_block_group_descriptor_size() as u32;
 
         // The block group descriptor table is located in the block immediately following the Superblock.
         // Source: https://wiki.osdev.org/Ext2#Block_Group_Descriptor_Table
@@ -1256,12 +1253,12 @@ impl Ext2FS {
         // Source: https://wiki.osdev.org/Ext2#Locating_the_Superblock
 
         let table_addr = ((1024 + 1024)/self.get_block_size())*self.get_block_size(); // Find the block that's at 2048 bytes ( a.k.a immediatly after the superblock which is 1024 bytes in length and located AT byte 1024, so the first byte of the superblock is byte number 1024 and the last is 2048 )
-        let raw_descriptor: Vec<u8> = self.read(table_addr+offset_of_descriptor_in_table, core::mem::size_of::<Ext2BlockGroupDescriptor>())?;
+        let raw_descriptor: Vec<u8> = self.read(table_addr+offset_of_descriptor_in_table, Ext2BlockGroupDescriptor::packed_bytes_size(None).ok()?)?;
         Ext2BlockGroupDescriptor::unpack(raw_descriptor.as_slice().try_into().ok()?).ok()
     }
 
     pub fn write_block_group_descriptor(&mut self, block_group_descriptor_index: u32, descriptor: &Ext2BlockGroupDescriptor) -> Option<()> {
-        let offset_of_descriptor_in_table = block_group_descriptor_index * Self::get_block_group_descriptor_size() as u32;
+        let offset_of_descriptor_in_table = block_group_descriptor_index * Self::get_ondisk_block_group_descriptor_size() as u32;
 
         // The block group descriptor table is located in the block immediately following the Superblock.
         // Source: https://wiki.osdev.org/Ext2#Block_Group_Descriptor_Table
@@ -1280,7 +1277,7 @@ impl Ext2FS {
                 
         // Update extended superblock
         if let Some(esb) = &self.extended_sb{
-            self.write(1024+Self::get_super_block_size() as u32, &esb.pack().ok()?)?; 
+            self.write(1024+Self::get_ondisk_super_block_size() as u32, &esb.pack().ok()?)?; 
         }
         Some(())
     }
@@ -1316,8 +1313,8 @@ impl Ext2FS {
         let initial_blocks = (1024/*reserved space*/+1024/*superblock*/)/self.get_block_size() as usize + if (1024+1024)%self.get_block_size() as usize != 0 { 1 } else { 0 };
         
         // Size of the block group table in blocks
-        let block_group_table_blocks = Self::get_block_group_descriptor_size() * self.get_number_of_block_groups() as usize/self.get_block_size() as usize + if (Self::get_block_group_descriptor_size() * self.get_number_of_block_groups() as usize)%self.get_block_size() as usize != 0 { 1 } else { 0 };
-        return initial_blocks+block_group_table_blocks;
+        let block_group_descriptor_table_blocks = Self::get_ondisk_block_group_descriptor_size() * self.get_number_of_block_groups() as usize/self.get_block_size() as usize + if (Self::get_ondisk_block_group_descriptor_size() * self.get_number_of_block_groups() as usize)%self.get_block_size() as usize != 0 { 1 } else { 0 };
+        return initial_blocks+block_group_descriptor_table_blocks;
     }
 
     pub fn get_block_size(&self) -> u32 {
@@ -1325,23 +1322,19 @@ impl Ext2FS {
     }
 
     // These are used for indexing in arrays instead of core::mem::size_of, so that if rust decides to add padding it doesn't mess up array indexing
-    pub fn get_directory_entry_header_size() -> usize {
+    pub fn get_ondisk_directory_entry_header_size() -> usize {
         8
     }
 
-    pub fn get_block_group_descriptor_size() -> usize {
+    pub fn get_ondisk_block_group_descriptor_size() -> usize {
         32
     }
 
-    pub fn get_super_block_size() -> usize {
+    pub fn get_ondisk_super_block_size() -> usize {
         84
     }
 
-    pub fn get_extended_super_block_size() -> usize {
-        1024-Self::get_super_block_size()
-    }
-
-    pub fn get_inode_size(&self) -> usize {
+    pub fn get_ondisk_inode_size(&self) -> usize {
         // Inodes have a fixed size of either 128 for major version 0 Ext2 file systems, or as dictated by the field in the Superblock for major version 1 file systems
         // Source: https://wiki.osdev.org/Ext2#Inodes
         if self.sb.major_version >= 1{
