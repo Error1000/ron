@@ -18,9 +18,12 @@ use alloc::borrow::ToOwned;
 use alloc::rc::Rc;
 use alloc::string::String;
 use ata::{ATADevice, ATADeviceFile, ATABus};
+use emulator::Riscv64Cpu;
+use packed_struct::EnumCatchAll;
 use vfs::{RootFSNode, IFolder, Node, IFile};
 use primitives::{Mutex, LazyInitialised};
 use vga::{Color256, Unblanked};
+use virtmem::LittleEndianVirtualMemory;
 
 use crate::allocator::ALLOCATOR;
 use crate::char_device::CharDevice;
@@ -78,10 +81,12 @@ mod framebuffer;
 mod vfs;
 mod devfs;
 mod ext2;
+mod elf;
 mod partitions;
 mod char_device;
 mod allocator;
 mod primitives;
+mod emulator;
 
 #[no_mangle]
 pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
@@ -704,7 +709,47 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                 }else if cmnd.contains("exit"){
                     break 'big_loop;
                 }else{
-                    writeln!(TERMINAL.lock(), "Unrecognised command!").unwrap();
+                    let executable_path = if cmnd.starts_with('/'){
+                        vfs::Path::try_from(cmnd)
+                    }else if cmnd.starts_with('.'){
+                        let mut actual_dir = cur_dir.clone();
+                        actual_dir.push_str(cmnd);
+                        Ok(actual_dir)
+                    }else{
+                        Err(())
+                    };
+                    let executable_path = if let Ok(val) = executable_path { val } else { writeln!(TERMINAL.lock(), "Unrecognised command!").unwrap(); continue; };
+                    let node = executable_path.get_node();
+                    let node = if let Some(val) = node { val } else { writeln!(TERMINAL.lock(), "Invalid executable path!").unwrap(); continue; };
+                    if let Node::File(executable) = node {
+                        let contents = executable.borrow().read(0, executable.borrow().get_size() as usize);
+                        let contents = if let Some(res) = contents { res } else { writeln!(TERMINAL.lock(), "Failed to read executable!").unwrap(); continue; };
+                        let elf = elf::ElfFile::from_bytes(&contents);                        
+                        let elf = if let Some(res) = elf { res } else { writeln!(TERMINAL.lock(), "Executable is not an elf file!").unwrap(); continue; };
+                        if elf.header.instruction_set != elf::elf_header::InstructionSet::RiscV { writeln!(TERMINAL.lock(), "Currently only riscv is supported!").unwrap(); }
+                        if elf.header.elf_type != elf::elf_header::ElfType::EXECUTABLE { writeln!(TERMINAL.lock(), "Currently only executables are supported!").unwrap(); }
+            
+                        writeln!(UART.lock(), "Program entry point: {}", elf.header.program_entry).unwrap();
+                        writeln!(UART.lock(), "Number of parsed program headers in elf: {}", elf.program_headers.len()).unwrap();
+                        
+                        let mut virt_mem = LittleEndianVirtualMemory::new();
+                        let mut current_phys = 0;
+                        for header in elf.program_headers {
+                            writeln!(UART.lock(), "Found program header in elf file, type: {:?}, in-file offset: {}, in-file size: {}, virtual offset: {}, virtual size: {}, flags: {:?}", header.segment_type, header.segment_file_offset, header.segment_file_size, header.segment_virtual_address, header.segment_virtual_size, header.flags).unwrap();
+                            if header.segment_type == EnumCatchAll::from(elf::elf_program_header::ProgramHeaderType::Load) {
+                                let mut segment_data = contents[header.segment_file_offset as usize..(header.segment_file_offset+header.segment_file_size) as usize].to_owned();
+                                segment_data.resize(header.segment_virtual_size as usize, 0);
+                                virt_mem.add_region(current_phys, header.segment_virtual_address as usize, &segment_data);
+                                current_phys += segment_data.len();
+                            }
+                        }
+
+                        let mut emu = Riscv64Cpu::from(&mut virt_mem, elf.header.program_entry);
+                        while emu.tick().is_some() {}
+                        writeln!(UART.lock(), "CPU state after program ended: {:?}", emu).unwrap();
+                    }else {
+                        writeln!(TERMINAL.lock(), "Executable path is not a file!").unwrap();
+                    }
                 }
 
             }
