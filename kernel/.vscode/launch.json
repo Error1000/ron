@@ -8,7 +8,7 @@
             "type": "gdb",
             "request": "attach",
             "name": "Attach to ron kernel in qemu",
-            "executable": "./target/x86_64-unknown-linux-gnu/debug/ron",
+            "executable": "../target/debug/ron",
             "target": "localhost:1234",
             "remote": true,
             "cwd": "${workspaceRoot}",

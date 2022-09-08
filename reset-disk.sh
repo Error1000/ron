@@ -1,9 +1,15 @@
 #!/bin/sh
-sudo losetup /dev/loop0 test-disk-1mb.img
+sudo losetup /dev/loop0 disk.img
+# Clear image
 sudo wipefs -a /dev/loop0p1
 sudo dd if=/dev/zero of=/dev/loop0p1
+
+# Remake the image
 sudo mkfs.ext2 /dev/loop0p1
-sudo mount /dev/loop0p1 /mnt/loop
-sudo cp /tmp/output /mnt/loop
-sudo umount /mnt/loop
+sudo mkdir -p /tmp/ron-loop
+sudo mount /dev/loop0p1 /tmp/ron-loop
+sudo cp -r ./disk/. /tmp/ron-loop
+
+# Clean up
+sudo umount /tmp/ron-loop
 sudo losetup -d /dev/loop0

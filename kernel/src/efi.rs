@@ -6,36 +6,36 @@ use core::ffi::c_void;
 pub const GOP_GUID: u128 = 0xdea94290dc23384a96fb7aded080516a_u128.to_be();
 
 #[repr(C)]
-pub struct EfiTableHeader{
+pub struct EfiTableHeader {
     pub signature: u64,
     pub rev: u32,
     pub table_size: u32,
     pub crc: u32,
-    _reserved: u32
+    _reserved: u32,
 }
 
 type EfiStatus = usize;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub enum EfiGraphicsPixelFormat{
-    RgbR8bit = 0, // 4 bytes in the order: red green blue reserved, in big endian
-    BgrR8bit = 1, // 4 bytes in the order: blue green red reserved, in big endian
-    BitMask = 2, // use mask for the pixel format
-    BltOnly = 3, // no framebuffer, must use blit function from uefi
-    FormatMax = 4 // no format above this, including this is valid
+pub enum EfiGraphicsPixelFormat {
+    RgbR8bit = 0,  // 4 bytes in the order: red green blue reserved, in big endian
+    BgrR8bit = 1,  // 4 bytes in the order: blue green red reserved, in big endian
+    BitMask = 2,   // use mask for the pixel format
+    BltOnly = 3,   // no framebuffer, must use blit function from uefi
+    FormatMax = 4, // no format above this, including this is valid
 }
 
 #[repr(C)]
-pub struct EfiPixelBitMask{
+pub struct EfiPixelBitMask {
     pub red_mask: u32,
     pub green_mask: u32,
     pub blue_mask: u32,
-    reserved_mask: u32
+    reserved_mask: u32,
 }
 
 #[repr(C)]
-pub struct EfiGopModeInfo{
+pub struct EfiGopModeInfo {
     pub version: u32,
     pub horz_res: u32,
     pub vert_res: u32,
@@ -45,26 +45,31 @@ pub struct EfiGopModeInfo{
 }
 
 #[repr(C)]
-pub struct EfiGopMode<'a>{
+pub struct EfiGopMode<'a> {
     pub max_mode: u32,
     pub mode: u32,
-    pub info: &'a  EfiGopModeInfo,
+    pub info: &'a EfiGopModeInfo,
     pub size_of_info: usize,
     pub framebuffer_base: u64, /* yes even on 32-bit efi */
-    pub framebuffer_size: usize
+    pub framebuffer_size: usize,
 }
 
 #[repr(C)]
-pub struct EfiGop<'a>{
-    pub query_mode: extern "efiapi" fn(this: &EfiGop, mode_numer: u32, size_of_info: &mut usize, info: *mut *const EfiGopModeInfo) -> EfiStatus,
+pub struct EfiGop<'a> {
+    pub query_mode: extern "efiapi" fn(
+        this: &EfiGop,
+        mode_numer: u32,
+        size_of_info: &mut usize,
+        info: *mut *const EfiGopModeInfo,
+    ) -> EfiStatus,
     pub set_mode: extern "efiapi" fn(this: &mut EfiGop, mode_number: u32) -> EfiStatus,
     blt: *const c_void,
-    pub mode: &'a mut EfiGopMode<'a>
+    pub mode: &'a mut EfiGopMode<'a>,
 }
 
 #[repr(C)]
 #[derive(Default)]
-pub struct EfiTime{
+pub struct EfiTime {
     pub yr: u16,
     pub month: u8,
     pub day: u8,
@@ -75,21 +80,26 @@ pub struct EfiTime{
     pub nanosec: u32,
     pub tz: i16,
     pub daylight: u8,
-    _pad2: u8
+    _pad2: u8,
 }
 
 #[repr(C)]
-pub struct EfiRuntimeServices{
+pub struct EfiRuntimeServices {
     pub hdr: EfiTableHeader,
-    pub get_time: extern "efiapi" fn(efi_time: *mut EfiTime, capabilities: *const c_void) -> EfiStatus,
+    pub get_time:
+        extern "efiapi" fn(efi_time: *mut EfiTime, capabilities: *const c_void) -> EfiStatus,
 }
 
-
 #[repr(C)]
-pub struct EfiBootServices{
+pub struct EfiBootServices {
     pub hdr: EfiTableHeader,
-    _we_dont_care_about_the_first_couple_of_function_pointers_for_now_dont_worry_about_it: [*const c_void; 37],
-    pub locate_protocol: extern "efiapi" fn(guid: *const u128, optional: *const c_void, interface: *mut *mut EfiGop) -> EfiStatus,
+    _we_dont_care_about_the_first_couple_of_function_pointers_for_now_dont_worry_about_it:
+        [*const c_void; 37],
+    pub locate_protocol: extern "efiapi" fn(
+        guid: *const u128,
+        optional: *const c_void,
+        interface: *mut *mut EfiGop,
+    ) -> EfiStatus,
     pub install_multiple_protocol_interfaces: u32,
     uninstall_multiple_protocol_interfaces: *const c_void,
     calculate_crc32: *const c_void,
@@ -99,11 +109,11 @@ pub struct EfiBootServices{
 }
 
 #[repr(C)]
-pub struct EfiSystemTable{
+pub struct EfiSystemTable {
     pub hdr: EfiTableHeader, /* 24 bytes */
     pub firmware_vendor: *const u16,
     pub firmware_rev: u32,
-    
+
     console_in: *const c_void,
     simple_in_interface: *const c_void,
 
@@ -117,5 +127,5 @@ pub struct EfiSystemTable{
     pub boot_services: &'static mut EfiBootServices,
 
     config_table_no_of_enteries: usize,
-    config_table: *const c_void
+    config_table: *const c_void,
 }

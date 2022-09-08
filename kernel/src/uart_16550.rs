@@ -1,10 +1,8 @@
-use core::fmt::Write;
 use core::fmt::Debug;
+use core::fmt::Write;
 
 use crate::{virtmem::KernPointer, X86Default};
 use packed_struct::prelude::*;
-
-
 
 pub struct UARTDevice {
     data: KernPointer<u8>,
@@ -146,7 +144,6 @@ impl UARTDevice {
             );
             /***************************************/
 
-            
             // Enable FIFO, clear TX/RX queues and set interrupt watermark at 14 bytes
             self.fifo_ctrl.write(
                 FIFOControlRegister {
@@ -176,7 +173,9 @@ impl UARTDevice {
             // self.int_en.write(InterruptEnableRegister{data_available_interrupt: true, ..InterruptEnableRegister::default()}.pack().unwrap()[0]);
         }
     }
-    fn line_sts(&self) -> LineStatusFlags { unsafe { LineStatusFlags::unpack(&[self.line_status.read()]).unwrap() } }
+    fn line_sts(&self) -> LineStatusFlags {
+        unsafe { LineStatusFlags::unpack(&[self.line_status.read()]).unwrap() }
+    }
 
     pub fn send(&mut self, data: u8) {
         unsafe {
@@ -193,15 +192,22 @@ impl UARTDevice {
     }
 }
 
-impl Debug for UARTDevice{
+impl Debug for UARTDevice {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("UARTDevice").field("data", &self.data).field("int_en", &self.int_en).field("fifo_ctrl", &self.fifo_ctrl).field("line_ctrl", &self.line_ctrl).field("modem_ctrl", &self.modem_ctrl).field("line_status", &self.line_status).finish()
+        f.debug_struct("UARTDevice")
+            .field("data", &self.data)
+            .field("int_en", &self.int_en)
+            .field("fifo_ctrl", &self.fifo_ctrl)
+            .field("line_ctrl", &self.line_ctrl)
+            .field("modem_ctrl", &self.modem_ctrl)
+            .field("line_status", &self.line_status)
+            .finish()
     }
 }
 
-impl Write for UARTDevice{
+impl Write for UARTDevice {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        s.chars().for_each(|c|{
+        s.chars().for_each(|c| {
             self.send(c as u8);
             if c == '\n' {
                 self.send(b'\r')
@@ -212,5 +218,7 @@ impl Write for UARTDevice{
 }
 
 impl X86Default for UARTDevice {
-    unsafe fn x86_default() -> Self { Self::new(KernPointer::<u8>::from_port(0x3f8)) }
+    unsafe fn x86_default() -> Self {
+        Self::new(KernPointer::<u8>::from_port(0x3f8))
+    }
 }

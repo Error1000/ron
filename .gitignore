@@ -1,5 +1,7 @@
-target/
-iso/boot/*
-!iso/boot/grub
+*/target/
+/target/
+iso/boot/ron
+Cargo.lock
+*/Cargo.lock
 Cargo.lock
 out.iso

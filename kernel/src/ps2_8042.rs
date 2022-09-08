@@ -1,6 +1,9 @@
-use crate::{X86Default, hio::{KeyboardPacket, KeyboardPacketType}, virtmem::KernPointer};
+use crate::{
+    hio::{KeyboardPacket, KeyboardPacketType},
+    virtmem::KernPointer,
+    X86Default,
+};
 use packed_struct::prelude::*;
-
 
 #[derive(PackedStruct, Clone, Copy)]
 #[packed_struct(bit_numbering = "lsb0", size_bytes = "2")]
@@ -31,12 +34,16 @@ pub struct SpecialKeys {
     pub esc: bool,
 }
 
-
-impl SpecialKeys{
-    pub fn any_shift(&self) -> bool { self.left_shift || self.right_shift }
-    pub fn any_alt(&self) -> bool { self.left_alt || self.right_alt }
-    pub fn any_ctrl(&self) -> bool { self.left_ctrl || self.right_alt }
-
+impl SpecialKeys {
+    pub fn any_shift(&self) -> bool {
+        self.left_shift || self.right_shift
+    }
+    pub fn any_alt(&self) -> bool {
+        self.left_alt || self.right_alt
+    }
+    pub fn any_ctrl(&self) -> bool {
+        self.left_ctrl || self.right_alt
+    }
 }
 
 #[derive(PackedStruct)]
@@ -62,7 +69,7 @@ struct StatusRegister {
 pub struct PS2Device {
     data: KernPointer<u8>,
     status_and_command: KernPointer<u8>,
-    special_keys: SpecialKeys
+    special_keys: SpecialKeys,
 }
 
 impl X86Default for PS2Device {
@@ -70,9 +77,13 @@ impl X86Default for PS2Device {
         let mut ps2 = Self {
             data: KernPointer::<u8>::from_port(0x60),
             status_and_command: KernPointer::<u8>::from_port(0x64),
-            special_keys: SpecialKeys::unpack(&[0, 0]).unwrap()
+            special_keys: SpecialKeys::unpack(&[0, 0]).unwrap(),
         };
-        wait_for!(!StatusRegister::unpack_from_slice(&[ps2.status_and_command.read()]).unwrap().is_input_buf_full);
+        wait_for!(
+            !StatusRegister::unpack_from_slice(&[ps2.status_and_command.read()])
+                .unwrap()
+                .is_input_buf_full
+        );
         ps2.status_and_command.write(0xA7);
         ps2
     }
@@ -85,12 +96,16 @@ pub const SCAN_CODE_SET_1: [char; 128] = [
     '*', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
     ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
     ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
-    ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '
+    ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
 ];
 
 impl PS2Device {
     pub unsafe fn read_byte(&mut self) -> u8 {
-        wait_for!(StatusRegister::unpack_from_slice(&[self.status_and_command.read()]).unwrap().is_output_buf_full);
+        wait_for!(
+            StatusRegister::unpack_from_slice(&[self.status_and_command.read()])
+                .unwrap()
+                .is_output_buf_full
+        );
         self.data.read()
     }
 
@@ -104,7 +119,7 @@ impl PS2Device {
             multibyte = true;
         }
         let old_special = self.special_keys;
-        
+
         match b {
             0x2A => self.special_keys.left_shift = true,
             0xAA => self.special_keys.left_shift = false,
@@ -126,7 +141,7 @@ impl PS2Device {
 
             0x3A => self.special_keys.caps_lock = true,
             0xBA => self.special_keys.caps_lock = false,
-            
+
             0x48 => self.special_keys.up_arrow = true,
             0xC8 => self.special_keys.up_arrow = false,
 
@@ -142,15 +157,26 @@ impl PS2Device {
             0x01 => self.special_keys.esc = true,
             0x81 => self.special_keys.esc = false,
 
-            _ => {},
+            _ => {}
         }
-        let dc = SCAN_CODE_SET_1[(b&0x7f) as usize];
+        let dc = SCAN_CODE_SET_1[(b & 0x7f) as usize];
         KeyboardPacket {
             scancode: b & 0x7F,
-            char_codepoint: if dc == ' ' && (b & 0x7F) != 0x39 { None } else { Some(dc) },
-            special_keys: if b & 0x80 == 0 { self.special_keys } else { old_special },
-            typ: if b & 0x80 == 0 { KeyboardPacketType::KeyPressed } else { KeyboardPacketType::KeyReleased }
+            char_codepoint: if dc == ' ' && (b & 0x7F) != 0x39 {
+                None
+            } else {
+                Some(dc)
+            },
+            special_keys: if b & 0x80 == 0 {
+                self.special_keys
+            } else {
+                old_special
+            },
+            typ: if b & 0x80 == 0 {
+                KeyboardPacketType::KeyPressed
+            } else {
+                KeyboardPacketType::KeyReleased
+            },
         }
     }
-
 }

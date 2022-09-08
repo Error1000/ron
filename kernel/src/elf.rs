@@ -20,7 +20,7 @@ struct ElfIdentification {
     arch_width: ArchWidth,
     #[packed_field(size_bytes = "1", ty = "enum")]
     endianess: Endianess,
-    elf_version: u8
+    elf_version: u8,
 }
 
 // TODO: Use a macro to avoid the copy-pasta
@@ -366,7 +366,6 @@ pub mod elf_program_header {
     }
 }
 
-
 use elf_header::*;
 use elf_program_header::*;
 
@@ -380,8 +379,12 @@ impl ElfFile {
         use core::convert::TryInto;
         let mut curr_offset = 0;
         // First parse identification
-        let id: ElfIdentification =
-            ElfIdentification::unpack(bytes[curr_offset..curr_offset+ElfIdentification::packed_bytes_size(None).ok()?].try_into().ok()?).ok()?;
+        let id: ElfIdentification = ElfIdentification::unpack(
+            bytes[curr_offset..curr_offset + ElfIdentification::packed_bytes_size(None).ok()?]
+                .try_into()
+                .ok()?,
+        )
+        .ok()?;
         curr_offset += Self::get_ondisk_identification_size();
 
         if id.magic != [0x7f, b'E', b'L', b'F'] {
@@ -393,13 +396,43 @@ impl ElfFile {
         }
 
         let universal_header: UniversalElfHeader = match (id.endianess, id.arch_width) {
-            (Endianess::LITTLE, ArchWidth::Width32Bit) => ElfHeader32BitLittle::unpack(bytes[curr_offset..curr_offset+ElfHeader32BitLittle::packed_bytes_size(None).ok()?].try_into().ok()?).ok()?.into(),
-            (Endianess::LITTLE, ArchWidth::Width64Bit) => ElfHeader64BitLittle::unpack(bytes[curr_offset..curr_offset+ElfHeader64BitLittle::packed_bytes_size(None).ok()?].try_into().ok()?).ok()?.into(),
-            (Endianess::BIG, ArchWidth::Width32Bit) => ElfHeader32BitBig::unpack(bytes[curr_offset..curr_offset+ElfHeader32BitBig::packed_bytes_size(None).ok()?].try_into().ok()?).ok()?.into(),
-            (Endianess::BIG, ArchWidth::Width64Bit) => ElfHeader64BitBig::unpack(bytes[curr_offset..curr_offset+ElfHeader64BitBig::packed_bytes_size(None).ok()?].try_into().ok()?).ok()?.into()
+            (Endianess::LITTLE, ArchWidth::Width32Bit) => ElfHeader32BitLittle::unpack(
+                bytes[curr_offset
+                    ..curr_offset + ElfHeader32BitLittle::packed_bytes_size(None).ok()?]
+                    .try_into()
+                    .ok()?,
+            )
+            .ok()?
+            .into(),
+            (Endianess::LITTLE, ArchWidth::Width64Bit) => ElfHeader64BitLittle::unpack(
+                bytes[curr_offset
+                    ..curr_offset + ElfHeader64BitLittle::packed_bytes_size(None).ok()?]
+                    .try_into()
+                    .ok()?,
+            )
+            .ok()?
+            .into(),
+            (Endianess::BIG, ArchWidth::Width32Bit) => ElfHeader32BitBig::unpack(
+                bytes
+                    [curr_offset..curr_offset + ElfHeader32BitBig::packed_bytes_size(None).ok()?]
+                    .try_into()
+                    .ok()?,
+            )
+            .ok()?
+            .into(),
+            (Endianess::BIG, ArchWidth::Width64Bit) => ElfHeader64BitBig::unpack(
+                bytes
+                    [curr_offset..curr_offset + ElfHeader64BitBig::packed_bytes_size(None).ok()?]
+                    .try_into()
+                    .ok()?,
+            )
+            .ok()?
+            .into(),
         };
 
-        if usize::from(universal_header.header_size) != Self::get_ondisk_elf_header_size(id.arch_width) {
+        if usize::from(universal_header.header_size)
+            != Self::get_ondisk_elf_header_size(id.arch_width)
+        {
             return None;
         }
 
@@ -413,10 +446,40 @@ impl ElfFile {
             let mut curr_offset = universal_header.program_header_table_offset as usize;
             for _ in 0..universal_header.program_header_table_len {
                 let universal_program_header = match (id.endianess, id.arch_width) {
-                    (Endianess::LITTLE, ArchWidth::Width32Bit) => ProgramHeader32BitLittle::unpack(bytes[curr_offset..curr_offset+ProgramHeader32BitLittle::packed_bytes_size(None).ok()?].try_into().ok()?).ok()?.into(),
-                    (Endianess::LITTLE, ArchWidth::Width64Bit) => ProgramHeader64BitLittle::unpack(bytes[curr_offset..curr_offset+ProgramHeader64BitLittle::packed_bytes_size(None).ok()?].try_into().ok()?).ok()?.into(),
-                    (Endianess::BIG, ArchWidth::Width32Bit) => ProgramHeader32BitBig::unpack(bytes[curr_offset..curr_offset+ProgramHeader32BitBig::packed_bytes_size(None).ok()?].try_into().ok()?).ok()?.into(),
-                    (Endianess::BIG, ArchWidth::Width64Bit) => ProgramHeader64BitBig::unpack(bytes[curr_offset..curr_offset+ProgramHeader64BitBig::packed_bytes_size(None).ok()?].try_into().ok()?).ok()?.into()
+                    (Endianess::LITTLE, ArchWidth::Width32Bit) => ProgramHeader32BitLittle::unpack(
+                        bytes[curr_offset
+                            ..curr_offset
+                                + ProgramHeader32BitLittle::packed_bytes_size(None).ok()?]
+                            .try_into()
+                            .ok()?,
+                    )
+                    .ok()?
+                    .into(),
+                    (Endianess::LITTLE, ArchWidth::Width64Bit) => ProgramHeader64BitLittle::unpack(
+                        bytes[curr_offset
+                            ..curr_offset
+                                + ProgramHeader64BitLittle::packed_bytes_size(None).ok()?]
+                            .try_into()
+                            .ok()?,
+                    )
+                    .ok()?
+                    .into(),
+                    (Endianess::BIG, ArchWidth::Width32Bit) => ProgramHeader32BitBig::unpack(
+                        bytes[curr_offset
+                            ..curr_offset + ProgramHeader32BitBig::packed_bytes_size(None).ok()?]
+                            .try_into()
+                            .ok()?,
+                    )
+                    .ok()?
+                    .into(),
+                    (Endianess::BIG, ArchWidth::Width64Bit) => ProgramHeader64BitBig::unpack(
+                        bytes[curr_offset
+                            ..curr_offset + ProgramHeader64BitBig::packed_bytes_size(None).ok()?]
+                            .try_into()
+                            .ok()?,
+                    )
+                    .ok()?
+                    .into(),
                 };
                 vec.push(universal_program_header);
                 curr_offset += universal_header.program_header_table_entry_size as usize;
@@ -426,7 +489,7 @@ impl ElfFile {
 
         Some(ElfFile {
             header: universal_header,
-            program_headers
+            program_headers,
         })
     }
 
@@ -440,5 +503,4 @@ impl ElfFile {
             ArchWidth::Width64Bit => 64,
         }
     }
-
 }

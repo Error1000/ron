@@ -1,17 +1,11 @@
-[package]
-name = "ron"
-version = "0.1.0"
-edition = "2018"
+[workspace]
 
-[build-dependencies]
-cc = "*"
-
-[dependencies]
-packed_struct = {version = "0.10", default-features = false}
+members = [
+	"kernel"
+]
 
 [profile.dev]
 panic = "abort"
 
 [profile.release]
 panic = "abort"
-

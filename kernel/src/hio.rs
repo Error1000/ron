@@ -2,8 +2,9 @@ use crate::SpecialKeys;
 // Human input/output
 #[repr(u8)]
 #[derive(PartialEq)]
-pub enum KeyboardPacketType{
-    KeyPressed, KeyReleased
+pub enum KeyboardPacketType {
+    KeyPressed,
+    KeyReleased,
 }
 pub struct KeyboardPacket {
     pub scancode: u8,
@@ -12,10 +13,9 @@ pub struct KeyboardPacket {
     pub typ: KeyboardPacketType,
 }
 
-impl KeyboardPacket{
+impl KeyboardPacket {
     pub fn shift_codepoint(&self) -> Option<char> {
-        let c = self.char_codepoint.map(|v|{
-        match v.to_ascii_uppercase() {
+        let c = self.char_codepoint.map(|v| match v.to_ascii_uppercase() {
             '1' => '!',
             '2' => '@',
             '3' => '#',
@@ -36,8 +36,7 @@ impl KeyboardPacket{
             '/' => '?',
             '\\' => '|',
             _ => v.to_ascii_uppercase(),
-        }
-    });
-    c
+        });
+        c
     }
 }

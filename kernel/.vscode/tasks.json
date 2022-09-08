@@ -6,13 +6,13 @@
         {
             "label": "Qemu run",
             "type": "shell",
-            "command": "./run.sh"
+            "command": "cd .. && ./run.sh"
         },
 
         {
             "label": "Qemu debug",
             "type": "shell",
-            "command": "./run.sh -S -s"
+            "command": "cd .. && ./run.sh -S -s"
         }
     ]
 }
