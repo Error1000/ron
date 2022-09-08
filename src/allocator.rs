@@ -55,7 +55,7 @@ impl BasicAlloc{
         }
 
         // Or if we have deallocated all the allocations
-        if self.alloc_count == 0 { 
+        if self.alloc_count == 0 {            
             self.next = 0; 
             for e in self.stashed_deallocations.iter_mut(){
                 *e = (null_mut(), core::alloc::Layout::new::<u8>());
@@ -76,7 +76,7 @@ unsafe impl GlobalAlloc for Mutex<BasicAlloc>{
                 s.next += padding.size();
                 if s.next >= s.len { return null_mut(); } // OOM :^( 
                 // Note since we never call dealloc() on this padding allocation explicitely there is no need to inc alloc_count
-                let padding_ptr = s.base.add(s.next).add(padding.size());
+                let padding_ptr = s.base.add(s.next).sub(padding.size());
                 if let Some(ind) = s.find_free_ind() {
                     s.stashed_deallocations[ind] = (padding_ptr, padding);
                 } else {
@@ -121,7 +121,7 @@ unsafe impl GlobalAlloc for Mutex<BasicAlloc>{
                     s.stashed_deallocations[i] = (null_mut(), core::alloc::Layout::new::<u8>());
                 }else{
                     // If we can't deallocate the allocation with the highest address, there is no point in trying the others because they will be under it
-                     break; 
+                    break; 
                 }
             }
 

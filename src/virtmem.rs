@@ -164,16 +164,19 @@ where
 
 pub type KernPointer<T> = Pointer<KernelSpace, T>;
 
+
 /// Docs for in: https://www.felixcloutier.com/x86/in
 /// Docs for out: https://www.felixcloutier.com/x86/out
 /// From docs there are no ways to provide an address with more than 16 bits, so the port address space is 16 bits
 /// The form of the instruction which accepts 8 bits can not access the entire port address space:
 /// "Using the DX register as a source operand allows I/O port addresses from 0 to 65,535 to be accessed; using a byte immediate allows I/O port addresses 0 to 255 to be accessed."
+#[cfg(any(target_arch="x86",target_arch="x86_64"))]
 #[inline(always)]
 unsafe fn port_outb(addr: u16, val: u8) {
     asm!("out dx, al", in("al") val, in("dx") addr, options(nostack, nomem));
 }
 
+#[cfg(any(target_arch="x86",target_arch="x86_64"))]
 #[inline(always)]
 unsafe fn port_inb(addr: u16) -> u8 {
     let mut res: u8;
@@ -181,17 +184,48 @@ unsafe fn port_inb(addr: u16) -> u8 {
     return res;
 }
 
+#[cfg(any(target_arch="x86",target_arch="x86_64"))]
 #[inline(always)]
 unsafe fn port_outh(addr: u16, val: u16) {
     asm!("out dx, ax", in("ax") val, in("dx") addr, options(nostack, nomem));
 }
 
+#[cfg(any(target_arch="x86",target_arch="x86_64"))]
 #[inline(always)]
 unsafe fn port_inh(addr: u16) -> u16 {
     let mut res: u16;
     asm!("in ax, dx", out("ax") res, in("dx") addr, options(nostack, nomem));
     return res;
 }
+
+
+
+
+#[cfg(not(any(target_arch="x86",target_arch="x86_64")))]
+#[inline(always)]
+unsafe fn port_outb(addr: u16, val: u8) {
+    todo!();
+}
+
+#[cfg(not(any(target_arch="x86",target_arch="x86_64")))]
+#[inline(always)]
+unsafe fn port_inb(addr: u16) -> u8 {
+    todo!();
+
+}
+
+#[cfg(not(any(target_arch="x86",target_arch="x86_64")))]
+#[inline(always)]
+unsafe fn port_outh(addr: u16, val: u16) {
+    todo!();
+}
+
+#[cfg(not(any(target_arch="x86",target_arch="x86_64")))]
+#[inline(always)]
+unsafe fn port_inh(addr: u16) -> u16 {
+    todo!();
+}
+
 
 
 impl<A: AddressSpace, T> Pointer<A, T>{

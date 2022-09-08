@@ -18,12 +18,10 @@ use alloc::borrow::ToOwned;
 use alloc::rc::Rc;
 use alloc::string::String;
 use ata::{ATADevice, ATADeviceFile, ATABus};
-use emulator::Riscv64Cpu;
-use packed_struct::EnumCatchAll;
+use program::Program;
 use vfs::{RootFSNode, IFolder, Node, IFile};
 use primitives::{Mutex, LazyInitialised};
 use vga::{Color256, Unblanked};
-use virtmem::LittleEndianVirtualMemory;
 
 use crate::allocator::ALLOCATOR;
 use crate::char_device::CharDevice;
@@ -87,6 +85,8 @@ mod char_device;
 mod allocator;
 mod primitives;
 mod emulator;
+mod program;
+mod syscall;
 
 #[no_mangle]
 pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
@@ -317,7 +317,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     }
     // FIXME: Don't hardcode the starting location of the heap
     // Stack size: 1mb, executable size (as of 22 may 2022): ~4mb, so starting the heap at 8mb should be a safe bet.
-    allocator::ALLOCATOR.lock().init((8*1024*1024) as *mut u8, 1*1024*1024);
+    allocator::ALLOCATOR.lock().init((8*1024*1024) as *mut u8, 4*1024*1024);
 
     vfs::VFS_ROOT.lock().set(Rc::new(RefCell::new(RootFSNode::new_root())));
 
@@ -724,29 +724,19 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                     if let Node::File(executable) = node {
                         let contents = executable.borrow().read(0, executable.borrow().get_size() as usize);
                         let contents = if let Some(res) = contents { res } else { writeln!(TERMINAL.lock(), "Failed to read executable!").unwrap(); continue; };
-                        let elf = elf::ElfFile::from_bytes(&contents);                        
-                        let elf = if let Some(res) = elf { res } else { writeln!(TERMINAL.lock(), "Executable is not an elf file!").unwrap(); continue; };
-                        if elf.header.instruction_set != elf::elf_header::InstructionSet::RiscV { writeln!(TERMINAL.lock(), "Currently only riscv is supported!").unwrap(); }
-                        if elf.header.elf_type != elf::elf_header::ElfType::EXECUTABLE { writeln!(TERMINAL.lock(), "Currently only executables are supported!").unwrap(); }
-            
-                        writeln!(UART.lock(), "Program entry point: {}", elf.header.program_entry).unwrap();
-                        writeln!(UART.lock(), "Number of parsed program headers in elf: {}", elf.program_headers.len()).unwrap();
-                        
-                        let mut virt_mem = LittleEndianVirtualMemory::new();
-                        let mut current_phys = 0;
-                        for header in elf.program_headers {
-                            writeln!(UART.lock(), "Found program header in elf file, type: {:?}, in-file offset: {}, in-file size: {}, virtual offset: {}, virtual size: {}, flags: {:?}", header.segment_type, header.segment_file_offset, header.segment_file_size, header.segment_virtual_address, header.segment_virtual_size, header.flags).unwrap();
-                            if header.segment_type == EnumCatchAll::from(elf::elf_program_header::ProgramHeaderType::Load) {
-                                let mut segment_data = contents[header.segment_file_offset as usize..(header.segment_file_offset+header.segment_file_size) as usize].to_owned();
-                                segment_data.resize(header.segment_virtual_size as usize, 0);
-                                virt_mem.add_region(current_phys, header.segment_virtual_address as usize, &segment_data);
-                                current_phys += segment_data.len();
+                        {
+                            let elf = elf::ElfFile::from_bytes(&contents);                        
+                            let elf = if let Some(res) = elf { res } else { writeln!(TERMINAL.lock(), "Executable is not an elf file!").unwrap(); continue; };
+                
+                            writeln!(UART.lock(), "Program entry point: {}", elf.header.program_entry).unwrap();
+                            writeln!(UART.lock(), "Number of parsed program headers in elf: {}", elf.program_headers.len()).unwrap();
+                            for header in elf.program_headers {
+                                writeln!(UART.lock(), "Found program header in elf file, type: {:?}, in-file offset: {}, in-file size: {}, virtual offset: {}, virtual size: {}, flags: {:?}", header.segment_type, header.segment_file_offset, header.segment_file_size, header.segment_virtual_address, header.segment_virtual_size, header.flags).unwrap();
                             }
                         }
-
-                        let mut emu = Riscv64Cpu::from(&mut virt_mem, elf.header.program_entry);
-                        while emu.tick().is_some() {}
-                        writeln!(UART.lock(), "CPU state after program ended: {:?}", emu).unwrap();
+                        let mut program = if let Some(p) = Program::from_elf(&contents) { p } else { writeln!(TERMINAL.lock(), "Failed to load elf file into program!").unwrap(); continue; };
+                        program.run();
+                        writeln!(UART.lock(), "CPU state after program ended: {:?}", program).unwrap();
                     }else {
                         writeln!(TERMINAL.lock(), "Executable path is not a file!").unwrap();
                     }
