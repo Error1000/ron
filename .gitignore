@@ -9,6 +9,3 @@ toolchain/build.log
 
 Cargo.lock
 */Cargo.lock
-
-ports/dash/.git
-ports/dash/.gitignore

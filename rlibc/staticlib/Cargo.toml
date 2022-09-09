@@ -1,12 +1,14 @@
 [package]
-name = "rlibc-rust"
+name = "rlibc"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 
 [lib]
-crate-type = ["lib"]
+path = "../src/lib.rs"
+crate-type = ["staticlib"]
 
 [features]
+default = ["used-as-library"]
 used-as-library = []

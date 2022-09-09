@@ -7,7 +7,7 @@
 #![allow(dead_code)]
 
 extern crate alloc;
-extern crate rlibc;
+extern crate rlibc_rust;
 
 use core::cell::RefCell;
 use core::cmp::min;

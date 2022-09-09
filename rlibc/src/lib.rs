@@ -1,5 +1,13 @@
 #![no_std]
 
+use {core::panic::PanicInfo, core::arch::asm};
+
+#[cfg(feature="used-as-library")]
+#[panic_handler]
+fn panic(_: &PanicInfo) -> ! {
+    loop {}
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     if n < core::mem::size_of::<usize>() {
@@ -109,3 +117,39 @@ pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mu
     }
     dest
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn exit(code: usize) {
+    load_syscall_argument_1(code);
+    syscall(1);
+}
+
+
+#[cfg(target_arch="riscv64")]
+#[inline(always)]
+unsafe fn load_syscall_argument_1(value: usize) {
+    // NOTE: Uses linux abi
+    asm!(
+        "",
+        in("a0") value,
+    );
+}
+
+#[cfg(target_arch="riscv64")]
+#[inline(always)]
+unsafe fn syscall(number: usize) {
+    // NOTE: Uses linux abi
+    asm!(
+        "",
+        in("a7") number,
+    );
+    asm!(
+        "ecall"
+    );
+}
+
+#[cfg(not(target_arch="riscv64"))]
+unsafe fn syscall(_number: usize) { unimplemented!("No syscall function defined in c library for your architecture!"); }
+
+#[cfg(not(target_arch="riscv64"))]
+unsafe fn load_syscall_argument_1(_value: usize) { unimplemented!("No syscall argument 1 loading function defined in c library for your architecture!"); }

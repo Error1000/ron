@@ -257,25 +257,25 @@ unsafe fn port_inh(addr: u16) -> u16 {
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 #[inline(always)]
 unsafe fn port_outb(addr: u16, val: u8) {
-    todo!();
+    unimplemented!("The port_outb function is either not avilable on your architecture or your architecture is not supported.");
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 #[inline(always)]
 unsafe fn port_inb(addr: u16) -> u8 {
-    todo!();
+    unimplemented!("The port_inb function is either not avilable on your architecture or your architecture is not supported.");
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 #[inline(always)]
 unsafe fn port_outh(addr: u16, val: u16) {
-    todo!();
+    unimplemented!("The port_outh function is either not avilable on your architecture or your architecture is not supported.");
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 #[inline(always)]
 unsafe fn port_inh(addr: u16) -> u16 {
-    todo!();
+    unimplemented!("The port_inh function is either not avilable on your architecture or your architecture is not supported.");
 }
 
 impl<A: AddressSpace, T> Pointer<A, T> {
