@@ -5,7 +5,7 @@ fn main() {
     for arg in &[
         "-ffreestanding",
         "-nostartfiles",  // no crt0
-        "-nodefaultlibs", // no libc
+        "-nostdlib",      // no default libc
         "-static",        // all static because kernels cannot easily be loaded dynamically
         "-Tkernel/link.x",       // linker script
     ] {

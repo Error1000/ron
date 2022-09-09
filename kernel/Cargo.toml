@@ -11,3 +11,4 @@ cc = "*"
 
 [dependencies]
 packed_struct = {version = "0.10", default-features = false}
+rlibc = {version = "0.1", path="../rlibc"}

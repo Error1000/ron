@@ -1,7 +1,14 @@
 */target/
 /target/
+
 iso/boot/ron
+out.iso
+
+toolchain/.build
+toolchain/build.log
+
 Cargo.lock
 */Cargo.lock
-Cargo.lock
-out.iso
+
+ports/dash/.git
+ports/dash/.gitignore

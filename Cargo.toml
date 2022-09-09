@@ -1,7 +1,8 @@
 [workspace]
 
 members = [
-	"kernel"
+	"kernel",
+	"rlibc"
 ]
 
 [profile.dev]
