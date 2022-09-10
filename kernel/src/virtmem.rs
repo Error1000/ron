@@ -13,7 +13,7 @@ struct VirtRange {
 
 impl VirtRange {
     fn try_map(&self, virt_addr: usize) -> Option<usize> {
-        if (self.virtual_start..self.virtual_start + self.len).contains(&virt_addr) {
+        if (self.virtual_start..=(self.virtual_start - 1 + self.len)).contains(&virt_addr) {
             return Some(virt_addr - self.virtual_start + self.phys_start);
         } else {
             return None;
@@ -22,12 +22,20 @@ impl VirtRange {
 
     fn virtually_overlaps_with(&self, other: &VirtRange) -> bool {
         // If our start is after their end, then we don't overlap
-        if self.virtual_start >= other.virtual_start + other.len {
+        // NOTE:
+        // self.virtual_start - other.len >= other.virtual_start
+        // is the same as
+        // self.virtual_start >= other.virtual_start + other.len
+        if self.virtual_start - other.len >= other.virtual_start {
             return false;
         }
 
         // Our if our end is before their start, then we don't overlap
-        if self.virtual_start + self.len <= other.virtual_start {
+        // NOTE:
+        // self.virtual_start <= other.virtual_start - self.len
+        // is the same as
+        // self.virtual_start + self.len <= other.virtual_start
+        if self.virtual_start <= other.virtual_start - self.len {
             return false;
         }
 
@@ -111,6 +119,7 @@ impl EmulatorMemory for LittleEndianVirtualMemory {
         self.backing_storage[phys_addr] = val;
     }
 
+    // WARNING: Reading/writing more than 1 byte across a region boundry is not supported
     fn read_u16_ne(&self, addr: u64) -> u16 {
         let phys_addr = if let Some(val) = self.try_map(addr as usize) {
             val

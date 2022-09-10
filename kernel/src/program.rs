@@ -45,7 +45,7 @@ impl Program {
         }
 
         // Add 4kb stack at the end of the address space
-        virt_mem.add_region(cur_phys, usize::MAX-4096, &[0; 4096])?;
+        virt_mem.add_region(cur_phys, usize::MAX-4096+1/* the address itself is included in the region */, &[0; 4096])?;
         cur_phys += 4096;
     
         let emu = Riscv64Cpu::from(
