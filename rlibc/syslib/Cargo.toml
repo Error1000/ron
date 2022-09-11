@@ -1,5 +1,5 @@
 [package]
-name = "rlibc"
+name = "rlibc-sys"
 version = "0.1.0"
 edition = "2021"
 
@@ -10,5 +10,5 @@ path = "../src/lib.rs"
 crate-type = ["staticlib"]
 
 [features]
-default = ["used-as-library"]
-used-as-library = []
+default = ["used-as-system-library"]
+used-as-system-library = []

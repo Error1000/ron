@@ -121,27 +121,15 @@ impl UARTDevice {
             /***************************************/
             // Enable setting the divisor
             self.line_ctrl.write(
-                LineControlRegister {
-                    divisor_latch_access_bit: true,
-                    ..LineControlRegister::default()
-                }
-                .pack()
-                .unwrap()[0],
+                LineControlRegister { divisor_latch_access_bit: true, ..LineControlRegister::default() }.pack().unwrap()[0],
             );
             // Set 38400=115200/3 baud rate
             self.data.write(0xff);
-            self.int_en
-                .write(InterruptEnableRegister::all_disabled().pack().unwrap()[0]);
+            self.int_en.write(InterruptEnableRegister::all_disabled().pack().unwrap()[0]);
 
             // Disable setting the divisor and set data length to 8 bits, 1 stop bit, no parity
-            self.line_ctrl.write(
-                LineControlRegister {
-                    no_of_data_bits: 3,
-                    ..LineControlRegister::default()
-                }
-                .pack()
-                .unwrap()[0],
-            );
+            self.line_ctrl
+                .write(LineControlRegister { no_of_data_bits: 3, ..LineControlRegister::default() }.pack().unwrap()[0]);
             /***************************************/
 
             // Enable FIFO, clear TX/RX queues and set interrupt watermark at 14 bytes

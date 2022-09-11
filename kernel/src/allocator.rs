@@ -137,8 +137,7 @@ unsafe impl GlobalAlloc for Mutex<BasicAlloc> {
             // Maybe the deallocation we just did allows us to deallocate even more
             // NOTE: sort_by allocates, so don't use it
             // Sort array by allocations that are closest to the top of the stack ( a.k.a descending order, highest addresses first because we grow the allocator's stack by adding to the base address )
-            s.stashed_deallocations
-                .sort_unstable_by(|alloc1, alloc2| alloc2.0.cmp(&alloc1.0));
+            s.stashed_deallocations.sort_unstable_by(|alloc1, alloc2| alloc2.0.cmp(&alloc1.0));
 
             for i in 0..s.stashed_deallocations.len() {
                 let stashed_dealloc = s.stashed_deallocations[i];

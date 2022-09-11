@@ -32,16 +32,23 @@ impl VirtRange {
 
         // Our if our end is before their start, then we don't overlap
         // NOTE:
-        // self.virtual_start <= other.virtual_start - self.len
+        // self.virtual_start < other.virtual_start - self.len
         // is the same as
-        // self.virtual_start + self.len <= other.virtual_start
-        if self.virtual_start <= other.virtual_start - self.len {
+        // self.virtual_start + self.len < other.virtual_start
+        if self.virtual_start < other.virtual_start - self.len {
             return false;
         }
 
         // Otherwise return true
         return true;
     }
+}
+
+pub trait VirtualMemory {
+    fn try_map(&self, virt_addr: usize) -> Option<usize>;
+    fn add_region(&mut self, phys_addr: usize, virt_addr: usize, data: &[u8]) -> Option<()>;
+    fn get_slice_mut(&mut self) -> &mut [u8];
+    fn get_slice(&self) -> &[u8];
 }
 
 #[derive(Debug)]
@@ -52,30 +59,30 @@ pub struct LittleEndianVirtualMemory {
 
 impl LittleEndianVirtualMemory {
     pub fn new() -> Self {
-        Self {
-            backing_storage: Vec::new(),
-            map: Vec::new(),
-        }
+        Self { backing_storage: Vec::new(), map: Vec::new() }
     }
+}
+
+impl VirtualMemory for LittleEndianVirtualMemory {
     fn try_map(&self, virt_addr: usize) -> Option<usize> {
         self.map.iter().find_map(|range| range.try_map(virt_addr))
     }
 
-    pub fn add_region(&mut self, phys_addr: usize, virt_addr: usize, data: &[u8]) -> Option<()> {
+    fn get_slice(&self) -> &[u8] {
+        self.backing_storage.as_slice()
+    }
+
+    fn get_slice_mut(&mut self) -> &mut [u8] {
+        self.backing_storage.as_mut_slice()
+    }
+
+    fn add_region(&mut self, phys_addr: usize, virt_addr: usize, data: &[u8]) -> Option<()> {
         // First check for overlap in the virtual space
         // (Overlap in the physical space is fine, as lone as one virtual address only maps to one physical address it's fine)
 
-        let new_range = VirtRange {
-            virtual_start: virt_addr,
-            phys_start: phys_addr,
-            len: data.len(),
-        };
+        let new_range = VirtRange { virtual_start: virt_addr, phys_start: phys_addr, len: data.len() };
 
-        if self
-            .map
-            .iter()
-            .any(|range| range.virtually_overlaps_with(&new_range))
-        {
+        if self.map.iter().any(|range| range.virtually_overlaps_with(&new_range)) {
             return None;
         }
 
@@ -100,14 +107,17 @@ impl LittleEndianVirtualMemory {
     }
 }
 
-impl EmulatorMemory for LittleEndianVirtualMemory {
+impl<T> EmulatorMemory for T
+where
+    T: VirtualMemory,
+{
     fn read_u8_ne(&self, addr: u64) -> u8 {
         let phys_addr = if let Some(val) = self.try_map(addr as usize) {
             val
         } else {
             panic!("Virtual address: {} should be mapped!", addr)
         };
-        self.backing_storage[phys_addr]
+        self.get_slice()[phys_addr]
     }
 
     fn write_u8_ne(&mut self, addr: u64, val: u8) {
@@ -116,7 +126,7 @@ impl EmulatorMemory for LittleEndianVirtualMemory {
         } else {
             panic!("Virtual address: {} should be mapped!", addr)
         };
-        self.backing_storage[phys_addr] = val;
+        self.get_slice_mut()[phys_addr] = val;
     }
 
     // WARNING: Reading/writing more than 1 byte across a region boundry is not supported
@@ -126,11 +136,7 @@ impl EmulatorMemory for LittleEndianVirtualMemory {
         } else {
             panic!("Virtual address: {} should be mapped!", addr)
         };
-        u16::from_le_bytes(
-            self.backing_storage[phys_addr..phys_addr + core::mem::size_of::<u16>()]
-                .try_into()
-                .unwrap(),
-        )
+        u16::from_le_bytes(self.get_slice()[phys_addr..phys_addr + core::mem::size_of::<u16>()].try_into().unwrap())
     }
 
     fn write_u16_ne(&mut self, addr: u64, val: u16) {
@@ -141,7 +147,7 @@ impl EmulatorMemory for LittleEndianVirtualMemory {
         };
         let mut indx = 0;
         for byte in val.to_le_bytes() {
-            self.backing_storage[phys_addr + indx] = byte;
+            self.get_slice_mut()[phys_addr + indx] = byte;
             indx += 1;
         }
     }
@@ -152,11 +158,7 @@ impl EmulatorMemory for LittleEndianVirtualMemory {
         } else {
             panic!("Virtual address: {} should be mapped!", addr)
         };
-        u32::from_le_bytes(
-            self.backing_storage[phys_addr..phys_addr + core::mem::size_of::<u32>()]
-                .try_into()
-                .unwrap(),
-        )
+        u32::from_le_bytes(self.get_slice()[phys_addr..phys_addr + core::mem::size_of::<u32>()].try_into().unwrap())
     }
 
     fn write_u32_ne(&mut self, addr: u64, val: u32) {
@@ -167,7 +169,7 @@ impl EmulatorMemory for LittleEndianVirtualMemory {
         };
         let mut indx = 0;
         for byte in val.to_le_bytes() {
-            self.backing_storage[phys_addr + indx] = byte;
+            self.get_slice_mut()[phys_addr + indx] = byte;
             indx += 1;
         }
     }
@@ -178,11 +180,7 @@ impl EmulatorMemory for LittleEndianVirtualMemory {
         } else {
             panic!("Virtual address: {} should be mapped!", addr)
         };
-        u64::from_le_bytes(
-            self.backing_storage[phys_addr..phys_addr + core::mem::size_of::<u64>()]
-                .try_into()
-                .unwrap(),
-        )
+        u64::from_le_bytes(self.get_slice()[phys_addr..phys_addr + core::mem::size_of::<u64>()].try_into().unwrap())
     }
 
     fn write_u64_ne(&mut self, addr: u64, val: u64) {
@@ -193,7 +191,7 @@ impl EmulatorMemory for LittleEndianVirtualMemory {
         };
         let mut indx = 0;
         for byte in val.to_le_bytes() {
-            self.backing_storage[phys_addr + indx] = byte;
+            self.get_slice_mut()[phys_addr + indx] = byte;
             indx += 1;
         }
     }
@@ -204,31 +202,27 @@ impl EmulatorMemory for LittleEndianVirtualMemory {
         } else {
             panic!("Virtual address: {} should be mapped!", addr)
         };
-        u32::from_le_bytes(
-            self.backing_storage[phys_addr..phys_addr + core::mem::size_of::<u32>()]
-                .try_into()
-                .unwrap(),
-        )
+        u32::from_le_bytes(self.get_slice()[phys_addr..phys_addr + core::mem::size_of::<u32>()].try_into().unwrap())
     }
 }
 
-pub trait AddressSpace {}
-
 #[derive(Clone, Copy, Debug)]
-pub struct KernelSpace {}
-impl AddressSpace for KernelSpace {}
-
-#[derive(Clone, Copy, Debug)]
-pub struct Pointer<A, T>
+pub struct KernPointer<T>
 where
-    A: AddressSpace,
+    T: ?Sized,
 {
     inner: *mut T,
     is_port: bool,
-    address_space: PhantomData<A>,
 }
 
-pub type KernPointer<T> = Pointer<KernelSpace, T>;
+#[derive(Clone, Copy, Debug)]
+pub struct UserPointer<T>
+where
+    T: ?Sized,
+{
+    inner: u64,
+    phantom_hold: PhantomData<*mut T>,
+}
 
 /// Docs for in: https://www.felixcloutier.com/x86/in
 /// Docs for out: https://www.felixcloutier.com/x86/out
@@ -287,32 +281,20 @@ unsafe fn port_inh(addr: u16) -> u16 {
     unimplemented!("The port_inh function is either not avilable on your architecture or your architecture is not supported.");
 }
 
-impl<A: AddressSpace, T> Pointer<A, T> {
+impl<T> KernPointer<T> {
     pub unsafe fn offset(&self, o: isize) -> Self {
         // FIXME: Does offsetting a port "address" work the same way as offestting a real memory address?
-        Self {
-            inner: self.inner.offset(o),
-            address_space: PhantomData,
-            is_port: self.is_port,
-        }
+        Self { inner: self.inner.offset(o), is_port: self.is_port }
     }
 }
 
-impl Pointer<KernelSpace, u8> {
+impl KernPointer<u8> {
     // SAFTEY: Constructors assume address is in correct space
-    pub unsafe fn from_mem(a: *mut u8) -> Self {
-        Self {
-            inner: a,
-            address_space: PhantomData,
-            is_port: false,
-        }
+    pub unsafe fn from_mem(addr: *mut u8) -> Self {
+        Self { inner: addr, is_port: false }
     }
-    pub unsafe fn from_port(p: u16) -> Self {
-        Self {
-            inner: p as *mut u8,
-            address_space: PhantomData,
-            is_port: true,
-        }
+    pub unsafe fn from_port(port: u16) -> Self {
+        Self { inner: port as *mut u8, is_port: true }
     }
 
     #[inline(always)]
@@ -335,21 +317,14 @@ impl Pointer<KernelSpace, u8> {
     }
 }
 
-impl Pointer<KernelSpace, u16> {
+impl KernPointer<u16> {
     // SAFTEY: Constructors assume address is in correct space
-    pub unsafe fn from_mem(a: *mut u16) -> Self {
-        Self {
-            inner: a,
-            address_space: PhantomData,
-            is_port: false,
-        }
+    pub unsafe fn from_mem(addr: *mut u16) -> Self {
+        Self { inner: addr, is_port: false }
     }
-    pub unsafe fn from_port(p: u16) -> Self {
-        Self {
-            inner: p as *mut u16,
-            address_space: PhantomData,
-            is_port: true,
-        }
+
+    pub unsafe fn from_port(port: u16) -> Self {
+        Self { inner: port as *mut u16, is_port: true }
     }
 
     #[inline(always)]
@@ -369,5 +344,29 @@ impl Pointer<KernelSpace, u16> {
         } else {
             *self.inner
         }
+    }
+}
+
+impl UserPointer<u8> {
+    // SAFTEY: Constructors assume address is in correct space
+    pub unsafe fn from_mem(addr: u64) -> Self {
+        Self { inner: addr, phantom_hold: PhantomData }
+    }
+
+    pub fn try_as_ref<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<&'mem mut u8> {
+        let offset = virtual_memory.try_map(self.inner as usize)?;
+        virtual_memory.get_slice_mut().get_mut(offset)
+    }
+}
+
+impl UserPointer<[u8]> {
+    // SAFTEY: Constructors assume address is in correct space
+    pub unsafe fn from_mem(addr: u64) -> Self {
+        Self { inner: addr, phantom_hold: PhantomData }
+    }
+
+    pub fn try_as_ref<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory, count: usize) -> Option<&'mem mut [u8]> {
+        let begin_offset = virtual_memory.try_map(self.inner as usize)?;
+        Some(&mut virtual_memory.get_slice_mut()[begin_offset..begin_offset + count])
     }
 }

@@ -86,20 +86,15 @@ pub struct EfiTime {
 #[repr(C)]
 pub struct EfiRuntimeServices {
     pub hdr: EfiTableHeader,
-    pub get_time:
-        extern "efiapi" fn(efi_time: *mut EfiTime, capabilities: *const c_void) -> EfiStatus,
+    pub get_time: extern "efiapi" fn(efi_time: *mut EfiTime, capabilities: *const c_void) -> EfiStatus,
 }
 
 #[repr(C)]
 pub struct EfiBootServices {
     pub hdr: EfiTableHeader,
-    _we_dont_care_about_the_first_couple_of_function_pointers_for_now_dont_worry_about_it:
-        [*const c_void; 37],
-    pub locate_protocol: extern "efiapi" fn(
-        guid: *const u128,
-        optional: *const c_void,
-        interface: *mut *mut EfiGop,
-    ) -> EfiStatus,
+    _we_dont_care_about_the_first_couple_of_function_pointers_for_now_dont_worry_about_it: [*const c_void; 37],
+    pub locate_protocol:
+        extern "efiapi" fn(guid: *const u128, optional: *const c_void, interface: *mut *mut EfiGop) -> EfiStatus,
     pub install_multiple_protocol_interfaces: u32,
     uninstall_multiple_protocol_interfaces: *const c_void,
     calculate_crc32: *const c_void,

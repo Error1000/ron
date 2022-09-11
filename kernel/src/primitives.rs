@@ -64,10 +64,7 @@ where
     T: Debug,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
-        f.debug_struct("Mutex")
-            .field("lock", &self.lock)
-            .field("inner", unsafe { &*self.inner.get() })
-            .finish()
+        f.debug_struct("Mutex").field("lock", &self.lock).field("inner", unsafe { &*self.inner.get() }).finish()
     }
 }
 impl<T> Mutex<T>
@@ -79,10 +76,7 @@ where
     }
 
     pub const fn from(val: T) -> Self {
-        Self {
-            inner: UnsafeCell::new(val),
-            lock: AtomicBool::new(false),
-        }
+        Self { inner: UnsafeCell::new(val), lock: AtomicBool::new(false) }
     }
 
     pub fn with(&self, f: fn(MutexGuard<T>)) {
@@ -93,12 +87,7 @@ where
         let mut deadlock_warning_iter_count = 1_000_000; // FIXME: Arbitrary number
         while self
             .lock
-            .compare_exchange_weak(
-                false,
-                true,
-                core::sync::atomic::Ordering::Acquire,
-                core::sync::atomic::Ordering::Relaxed,
-            )
+            .compare_exchange_weak(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed)
             .is_err()
         {
             while self.is_locked() {
@@ -110,10 +99,7 @@ where
             }
         }
 
-        MutexGuard {
-            lock_ref: &self.lock,
-            inner_ref: unsafe { &mut *self.inner.get() },
-        }
+        MutexGuard { lock_ref: &self.lock, inner_ref: unsafe { &mut *self.inner.get() } }
     }
 }
 
@@ -134,12 +120,7 @@ impl<'lock_lifetime, T> Drop for MutexGuard<'lock_lifetime, T> {
     fn drop(&mut self) {
         while self
             .lock_ref
-            .compare_exchange_weak(
-                true,
-                false,
-                core::sync::atomic::Ordering::Release,
-                core::sync::atomic::Ordering::Relaxed,
-            )
+            .compare_exchange_weak(true, false, core::sync::atomic::Ordering::Release, core::sync::atomic::Ordering::Relaxed)
             .is_err()
         {
             core::hint::spin_loop();

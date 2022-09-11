@@ -24,12 +24,12 @@ pub trait EmulatorMemory {
                                              // Source: RISC-V Volume I 20191213, Section 1.5, in a footnote: "We have to fix the order in which instruction parcels are stored in memory, independent
                                              // of memory system endianness, to ensure that the length-encoding bits always appear first in
                                              // halfword address order"
-                                             // If they didn't do this then there would be ambigous cases in big endian, like: 40 85 01 37 01 37
+                                             // If they didn't do this then there would be ambiguous cases in big endian, like: 40 85 01 37 01 37
                                              // where 40 85 = 0x4085 - li x1, 1
                                              // 01 37 01 37 = 0x01370137 - lui x2, 0x01370
                                              // but 40 85 01 37 = 0x40850137 could also be lui x2, 0x040850
-                                             // Howver because it's little endian, then it is: 85 40 37 01 37 01
-                                             // And it is no longer ambigous
+                                             // However because it's little endian, then it is: 85 40 37 01 37 01
+                                             // And it is no longer ambiguous
                                              // As 85 40 37 01 = 0x01374085, cannot be lui
 }
 
@@ -104,46 +104,40 @@ mod riscv_instruction {
     }
 
     pub fn get_compressed_instruction_type(inst: u16) -> Option<RiscvCompressedInstType> {
-        Some(
-            match (
-                RiscvCompressedOpcode::from_primitive((inst & 0b11) as u8)?,
-                (inst >> 13) & 0b111,
-                (inst >> 10) & 0b11,
-            ) {
-                (RiscvCompressedOpcode::C0, 0b000, _) => RiscvCompressedInstType::CIWType,
-                (RiscvCompressedOpcode::C0, 0b001, _) => RiscvCompressedInstType::CLType,
-                (RiscvCompressedOpcode::C0, 0b010, _) => RiscvCompressedInstType::CLType,
-                (RiscvCompressedOpcode::C0, 0b011, _) => RiscvCompressedInstType::CLType,
-                (RiscvCompressedOpcode::C0, 0b100, _) => return None, // Reserved
-                (RiscvCompressedOpcode::C0, 0b101, _) => RiscvCompressedInstType::CSType,
-                (RiscvCompressedOpcode::C0, 0b110, _) => RiscvCompressedInstType::CSType,
-                (RiscvCompressedOpcode::C0, 0b111, _) => RiscvCompressedInstType::CSType,
+        Some(match (RiscvCompressedOpcode::from_primitive((inst & 0b11) as u8)?, (inst >> 13) & 0b111, (inst >> 10) & 0b11) {
+            (RiscvCompressedOpcode::C0, 0b000, _) => RiscvCompressedInstType::CIWType,
+            (RiscvCompressedOpcode::C0, 0b001, _) => RiscvCompressedInstType::CLType,
+            (RiscvCompressedOpcode::C0, 0b010, _) => RiscvCompressedInstType::CLType,
+            (RiscvCompressedOpcode::C0, 0b011, _) => RiscvCompressedInstType::CLType,
+            (RiscvCompressedOpcode::C0, 0b100, _) => return None, // Reserved
+            (RiscvCompressedOpcode::C0, 0b101, _) => RiscvCompressedInstType::CSType,
+            (RiscvCompressedOpcode::C0, 0b110, _) => RiscvCompressedInstType::CSType,
+            (RiscvCompressedOpcode::C0, 0b111, _) => RiscvCompressedInstType::CSType,
 
-                (RiscvCompressedOpcode::C1, 0b000, _) => RiscvCompressedInstType::CIType,
-                (RiscvCompressedOpcode::C1, 0b001, _) => RiscvCompressedInstType::CIType, /* Note: This is different on RV32 */
-                (RiscvCompressedOpcode::C1, 0b010, _) => RiscvCompressedInstType::CIType,
-                (RiscvCompressedOpcode::C1, 0b011, _) => RiscvCompressedInstType::CIType,
+            (RiscvCompressedOpcode::C1, 0b000, _) => RiscvCompressedInstType::CIType,
+            (RiscvCompressedOpcode::C1, 0b001, _) => RiscvCompressedInstType::CIType, /* Note: This is different on RV32 */
+            (RiscvCompressedOpcode::C1, 0b010, _) => RiscvCompressedInstType::CIType,
+            (RiscvCompressedOpcode::C1, 0b011, _) => RiscvCompressedInstType::CIType,
 
-                (RiscvCompressedOpcode::C1, 0b100, 0b00) => RiscvCompressedInstType::CBType,
-                (RiscvCompressedOpcode::C1, 0b100, 0b01) => RiscvCompressedInstType::CBType,
-                (RiscvCompressedOpcode::C1, 0b100, 0b10) => RiscvCompressedInstType::CBType,
-                (RiscvCompressedOpcode::C1, 0b100, 0b11) => RiscvCompressedInstType::CAType,
+            (RiscvCompressedOpcode::C1, 0b100, 0b00) => RiscvCompressedInstType::CBType,
+            (RiscvCompressedOpcode::C1, 0b100, 0b01) => RiscvCompressedInstType::CBType,
+            (RiscvCompressedOpcode::C1, 0b100, 0b10) => RiscvCompressedInstType::CBType,
+            (RiscvCompressedOpcode::C1, 0b100, 0b11) => RiscvCompressedInstType::CAType,
 
-                (RiscvCompressedOpcode::C1, 0b101, _) => RiscvCompressedInstType::CJType,
-                (RiscvCompressedOpcode::C1, 0b110, _) => RiscvCompressedInstType::CBType,
-                (RiscvCompressedOpcode::C1, 0b111, _) => RiscvCompressedInstType::CBType,
+            (RiscvCompressedOpcode::C1, 0b101, _) => RiscvCompressedInstType::CJType,
+            (RiscvCompressedOpcode::C1, 0b110, _) => RiscvCompressedInstType::CBType,
+            (RiscvCompressedOpcode::C1, 0b111, _) => RiscvCompressedInstType::CBType,
 
-                (RiscvCompressedOpcode::C2, 0b000, _) => RiscvCompressedInstType::CIType,
-                (RiscvCompressedOpcode::C2, 0b001, _) => RiscvCompressedInstType::CIType,
-                (RiscvCompressedOpcode::C2, 0b010, _) => RiscvCompressedInstType::CIType,
-                (RiscvCompressedOpcode::C2, 0b011, _) => RiscvCompressedInstType::CIType,
-                (RiscvCompressedOpcode::C2, 0b100, _) => RiscvCompressedInstType::CRType,
-                (RiscvCompressedOpcode::C2, 0b101, _) => RiscvCompressedInstType::CSSType,
-                (RiscvCompressedOpcode::C2, 0b110, _) => RiscvCompressedInstType::CSSType,
-                (RiscvCompressedOpcode::C2, 0b111, _) => RiscvCompressedInstType::CSSType,
-                _ => return None,
-            },
-        )
+            (RiscvCompressedOpcode::C2, 0b000, _) => RiscvCompressedInstType::CIType,
+            (RiscvCompressedOpcode::C2, 0b001, _) => RiscvCompressedInstType::CIType,
+            (RiscvCompressedOpcode::C2, 0b010, _) => RiscvCompressedInstType::CIType,
+            (RiscvCompressedOpcode::C2, 0b011, _) => RiscvCompressedInstType::CIType,
+            (RiscvCompressedOpcode::C2, 0b100, _) => RiscvCompressedInstType::CRType,
+            (RiscvCompressedOpcode::C2, 0b101, _) => RiscvCompressedInstType::CSSType,
+            (RiscvCompressedOpcode::C2, 0b110, _) => RiscvCompressedInstType::CSSType,
+            (RiscvCompressedOpcode::C2, 0b111, _) => RiscvCompressedInstType::CSSType,
+            _ => return None,
+        })
     }
 
     #[derive(PackedStruct)]
@@ -181,13 +175,7 @@ mod riscv_instruction {
     impl RiscvITypeInstruction {
         // Note truncates imm to 12 bits
         pub fn from(opcode: RiscvOpcode, rd: u8, funct3: u8, rs1: u8, imm: u32) -> Self {
-            RiscvITypeInstruction {
-                opcode,
-                rd,
-                funct3,
-                rs1,
-                imm: imm as u16,
-            }
+            RiscvITypeInstruction { opcode, rd, funct3, rs1, imm: imm as u16 }
         }
 
         pub fn parse_imm(&self) -> u32 {
@@ -200,7 +188,7 @@ mod riscv_instruction {
             if sign {
                 return non_sign_extended_imm | (!all_ones); // Make sure the top bits are one
             } else {
-                // NOTE: This should be a no-op, because it should zero-extened anyway, but for clarity i added it anyway
+                // NOTE: This should be a no-op, because it should zero-extend anyway, but for clarity i added it anyway
                 return non_sign_extended_imm & all_ones; // Make sure the top bits are zero
             }
         }
@@ -241,13 +229,12 @@ mod riscv_instruction {
             let top_bit: u32 = 1 << (12 - 1);
             let all_ones: u32 = (1 << 12) - 1;
 
-            let non_sign_extended_imm: u32 =
-                u32::from(u8::from(self.imm_low5)) | u32::from(u8::from(self.imm_hi7)) << 5;
+            let non_sign_extended_imm: u32 = u32::from(u8::from(self.imm_low5)) | u32::from(u8::from(self.imm_hi7)) << 5;
             let sign = (non_sign_extended_imm & top_bit) != 0;
             if sign {
                 return non_sign_extended_imm | (!all_ones); // Make sure the top bits are one
             } else {
-                // NOTE: This should be a no-op, because it should zero-extened anyway, but for clarity i added it anyway
+                // NOTE: This should be a no-op, because it should zero-extend anyway, but for clarity i added it anyway
                 return non_sign_extended_imm & all_ones; // Make sure the top bits are zero
             }
         }
@@ -302,7 +289,7 @@ mod riscv_instruction {
             if sign {
                 return non_sign_extended_imm | (!all_ones); // Make sure the top bits are one
             } else {
-                // NOTE: This should be a no-op, because it should zero-extened anyway, but for clarity i added it anyway
+                // NOTE: This should be a no-op, because it should zero-extend anyway, but for clarity i added it anyway
                 return non_sign_extended_imm & all_ones; // Make sure the top bits are zero
             }
         }
@@ -322,11 +309,7 @@ mod riscv_instruction {
     impl RiscvUTypeInstruction {
         // Note: Immediate bottom 12 bits will be ignored
         pub fn from(opcode: RiscvOpcode, rd: u8, imm: u32) -> Self {
-            RiscvUTypeInstruction {
-                opcode,
-                rd,
-                imm: imm >> 12,
-            }
+            RiscvUTypeInstruction { opcode, rd, imm: imm >> 12 }
         }
 
         pub fn parse_imm(&self) -> u32 {
@@ -377,7 +360,7 @@ mod riscv_instruction {
             if sign {
                 return non_sign_extended_imm | (!all_ones); // Make sure the top bits are one
             } else {
-                // NOTE: This should be a no-op, because it should zero-extened anyway, but for clarity i added it anyway
+                // NOTE: This should be a no-op, because it should zero-extend anyway, but for clarity i added it anyway
                 return non_sign_extended_imm & all_ones; // Make sure the top bits are zero
             }
         }
@@ -462,11 +445,7 @@ mod riscv_instruction {
                             | ((self.imm_part1 as u32) & 0b10000);
                         let sign_bit = (self.imm_part2 as u32) & 1 != 0;
                         let all_ones = 0b11_1111_1111;
-                        let imm = if sign_bit {
-                            non_sign_extended_imm | (!all_ones)
-                        } else {
-                            non_sign_extended_imm & all_ones
-                        };
+                        let imm = if sign_bit { non_sign_extended_imm | (!all_ones) } else { non_sign_extended_imm & all_ones };
                         return Some(imm);
                     }
                 }
@@ -676,11 +655,7 @@ mod riscv_instruction {
                         | (imm_part2 & 0b11) << 3
                         | (imm_part1 & 0b110);
                     let all_ones = 0b1_1111_1111 as u32;
-                    let imm = if sign_bit {
-                        non_sign_extended_imm | (!all_ones)
-                    } else {
-                        non_sign_extended_imm & all_ones
-                    };
+                    let imm = if sign_bit { non_sign_extended_imm | (!all_ones) } else { non_sign_extended_imm & all_ones };
                     return Some(imm);
                 }
 
@@ -757,7 +732,7 @@ mod riscv_instruction {
 use riscv_instruction::*;
 
 // NOTE: Does not support T's bigger than 256-bits wide
-fn sign_extend<T, U>(val: T) -> U
+pub fn sign_extend<T, U>(val: T) -> U
 where
     U: From<T>
         + From<u8>
@@ -781,11 +756,11 @@ where
     if sign {
         val | !all_ones
     } else {
-        val & all_ones /* NOTE: This should be a no-op, because it should zero-extened anyway, but for clarity i added it anyway */
+        val & all_ones /* NOTE: This should be a no-op, because it should zero-extend anyway, but for clarity i added it anyway */
     }
 }
 
-fn sign_extend_to_u64<T>(val: T) -> u64
+pub fn sign_extend_to_u64<T>(val: T) -> u64
 where
     u64: From<T>,
 {
@@ -800,7 +775,7 @@ where
 {
     program_counter: u64,
     registers: [u64; 31],
-    memory: MemType,
+    pub memory: MemType,
     halted: bool,
     syscall: fn(&mut Self),
 }
@@ -823,13 +798,7 @@ where
     MemType: EmulatorMemory,
 {
     pub fn from(mem: MemType, start_address: u64, syscall: fn(&mut Self)) -> Riscv64Cpu<MemType> {
-        Riscv64Cpu {
-            program_counter: start_address,
-            registers: [0u64; 31],
-            memory: mem,
-            halted: false,
-            syscall,
-        }
+        Riscv64Cpu { program_counter: start_address, registers: [0u64; 31], memory: mem, halted: false, syscall }
     }
 
     pub fn write_reg(&mut self, reg_n: u8, val: u64) {
@@ -857,12 +826,14 @@ where
             return None;
         }
         let mut instruction = self.memory.read_u32_le(self.program_counter);
+        if cfg!(debug_assertions) {
+            use crate::UART;
+            use core::fmt::Write;
+            writeln!(UART.lock(), "Parsing instruction at: 0x{:x}", self.program_counter).unwrap();
+        }
         let is_compressed = (instruction & 0b11) != 0b11;
-        let inst_size = if is_compressed {
-            core::mem::size_of::<u16>() as u64
-        } else {
-            core::mem::size_of::<u32>() as u64
-        };
+        let inst_size = if is_compressed { core::mem::size_of::<u16>() as u64 } else { core::mem::size_of::<u32>() as u64 };
+
         if is_compressed {
             let compressed_inst = instruction as u16;
 
@@ -871,22 +842,15 @@ where
 
             match get_compressed_instruction_type(compressed_inst)? {
                 RiscvCompressedInstType::CRType => {
-                    let inst: RiscvCRTypeInstruction =
-                        RiscvCRTypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
+                    let inst: RiscvCRTypeInstruction = RiscvCRTypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
                     match (inst.funct4, inst.opcode) {
                         (0b1000, RiscvCompressedOpcode::C2) => {
                             if inst.rs2 == 0 {
                                 // C.JR
                                 instruction = u32::from_msb_bytes(
-                                    &RiscvITypeInstruction::from(
-                                        RiscvOpcode::JALR,
-                                        0, /*x0*/
-                                        0b000,
-                                        inst.rd_rs1,
-                                        0,
-                                    )
-                                    .pack()
-                                    .ok()?,
+                                    &RiscvITypeInstruction::from(RiscvOpcode::JALR, 0 /*x0*/, 0b000, inst.rd_rs1, 0)
+                                        .pack()
+                                        .ok()?,
                                 )
                             } else {
                                 // C.MV
@@ -911,28 +875,14 @@ where
                                 if inst.rd_rs1 != 0 {
                                     // C.JALR is only valid when rs1̸=x0; the code point with rs1=x0 corresponds to the C.EBREAK instruction. (RISC-V Volume I, section 16.4)
                                     instruction = u32::from_msb_bytes(
-                                        &RiscvITypeInstruction::from(
-                                            RiscvOpcode::JALR,
-                                            1, /*x1*/
-                                            0b000,
-                                            inst.rd_rs1,
-                                            0,
-                                        )
-                                        .pack()
-                                        .ok()?,
+                                        &RiscvITypeInstruction::from(RiscvOpcode::JALR, 1 /*x1*/, 0b000, inst.rd_rs1, 0)
+                                            .pack()
+                                            .ok()?,
                                     )
                                 } else {
                                     // C.EBREAK
                                     instruction = u32::from_msb_bytes(
-                                        &RiscvITypeInstruction::from(
-                                            RiscvOpcode::SYSTEM,
-                                            0,
-                                            0b000,
-                                            0,
-                                            1,
-                                        )
-                                        .pack()
-                                        .ok()?,
+                                        &RiscvITypeInstruction::from(RiscvOpcode::SYSTEM, 0, 0b000, 0, 1).pack().ok()?,
                                     )
                                 }
                             } else {
@@ -958,8 +908,7 @@ where
                 }
 
                 RiscvCompressedInstType::CIType => {
-                    let inst: RiscvCITypeInstruction =
-                        RiscvCITypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
+                    let inst: RiscvCITypeInstruction = RiscvCITypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
                     match (inst.funct3, inst.opcode) {
                         (0b000, RiscvCompressedOpcode::C2) =>
                         // C.SLLI
@@ -1029,13 +978,9 @@ where
                             if inst.rd_rs1 != 2 {
                                 // C.LUI
                                 instruction = u32::from_msb_bytes(
-                                    &RiscvUTypeInstruction::from(
-                                        RiscvOpcode::LUI,
-                                        inst.rd_rs1,
-                                        inst.parse_imm()?,
-                                    )
-                                    .pack()
-                                    .ok()?,
+                                    &RiscvUTypeInstruction::from(RiscvOpcode::LUI, inst.rd_rs1, inst.parse_imm()?)
+                                        .pack()
+                                        .ok()?,
                                 )
                             } else {
                                 // C.ADDI16SP
@@ -1090,8 +1035,7 @@ where
                 }
 
                 RiscvCompressedInstType::CSSType => {
-                    let inst: RiscvCSSTypeInstruction =
-                        RiscvCSSTypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
+                    let inst: RiscvCSSTypeInstruction = RiscvCSSTypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
                     match (inst.funct3, inst.opcode) {
                         (0b110, RiscvCompressedOpcode::C2) =>
                         // C.SWSP
@@ -1130,8 +1074,7 @@ where
                 }
 
                 RiscvCompressedInstType::CIWType => {
-                    let inst: RiscvCIWTypeInstruction =
-                        RiscvCIWTypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
+                    let inst: RiscvCIWTypeInstruction = RiscvCIWTypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
                     match (inst.funct3, inst.opcode) {
                         (0b000, RiscvCompressedOpcode::C0) =>
                         // C.ADDI4SPN
@@ -1153,8 +1096,7 @@ where
                 }
 
                 RiscvCompressedInstType::CLType => {
-                    let inst: RiscvCLTypeInstruction =
-                        RiscvCLTypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
+                    let inst: RiscvCLTypeInstruction = RiscvCLTypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
                     match (inst.funct3, inst.opcode) {
                         (0b010, RiscvCompressedOpcode::C0) =>
                         // C.LW
@@ -1193,8 +1135,7 @@ where
                 }
 
                 RiscvCompressedInstType::CSType => {
-                    let inst: RiscvCSTypeInstruction =
-                        RiscvCSTypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
+                    let inst: RiscvCSTypeInstruction = RiscvCSTypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
                     match (inst.funct3, inst.opcode) {
                         (0b110, RiscvCompressedOpcode::C0) =>
                         // C.SW
@@ -1233,8 +1174,7 @@ where
                 }
 
                 RiscvCompressedInstType::CAType => {
-                    let inst: RiscvCATypeInstruction =
-                        RiscvCATypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
+                    let inst: RiscvCATypeInstruction = RiscvCATypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
                     match (inst.funct6, inst.funct2, inst.opcode) {
                         (0b100011, 0b11, RiscvCompressedOpcode::C1) =>
                         // C.AND
@@ -1342,8 +1282,7 @@ where
                 }
 
                 RiscvCompressedInstType::CBType => {
-                    let inst: RiscvCBTypeInstruction =
-                        RiscvCBTypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
+                    let inst: RiscvCBTypeInstruction = RiscvCBTypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
                     match (inst.funct3, inst.opcode) {
                         (0b110, RiscvCompressedOpcode::C1) =>
                         // C.BEQZ
@@ -1438,20 +1377,13 @@ where
                 }
 
                 RiscvCompressedInstType::CJType => {
-                    let inst: RiscvCJTypeInstruction =
-                        RiscvCJTypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
+                    let inst: RiscvCJTypeInstruction = RiscvCJTypeInstruction::unpack(&compressed_inst.to_be_bytes()).ok()?;
                     match (inst.funct3, inst.opcode) {
                         (0b101, RiscvCompressedOpcode::C1) =>
                         // C.J
                         {
                             instruction = u32::from_msb_bytes(
-                                &RiscvJTypeInstruction::from(
-                                    RiscvOpcode::JAL,
-                                    0, /*x0*/
-                                    inst.parse_imm()?,
-                                )
-                                .pack()
-                                .ok()?,
+                                &RiscvJTypeInstruction::from(RiscvOpcode::JAL, 0 /*x0*/, inst.parse_imm()?).pack().ok()?,
                             )
                         }
                         _ => (),
@@ -1460,32 +1392,23 @@ where
             }
         }
 
-        // NOTE: I would expect the output to be [147, 0, 0, 1], since the struct is marked as little-endian, but it is [1, 0, 0, 147], that's because the byte array is always big-endian and the little-endian marker onyl applies to each field not to the endiannes of the byte array produced
+        // NOTE: I would expect the output to be [147, 0, 0, 1], since the struct is marked as little-endian, but it is [1, 0, 0, 147], that's because the byte array is always big-endian and the little-endian marker only applies to each field not to the endiannes of the byte array produced
         // Referance: Issue #92, https://github.com/hashmismatch/packed_struct.rs/issues/92
         // So therefore i am insteada using big endian for parsing instructions
         let opcode: RiscvOpcode = RiscvOpcode::from_primitive((instruction & 0b111_1111) as u8)?;
         match opcode.get_type() {
-            RiscvInstType::RType => self.execute_rtype_inst(
-                RiscvRTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?,
-            ),
-            RiscvInstType::IType => self.execute_itype_inst(
-                RiscvITypeInstruction::unpack(&instruction.to_be_bytes()).ok()?,
-                inst_size,
-            ),
-            RiscvInstType::SType => self.execute_stype_inst(
-                RiscvSTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?,
-            ),
-            RiscvInstType::BType => self.execute_btype_inst(
-                RiscvBTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?,
-                inst_size,
-            ),
-            RiscvInstType::UType => self.execute_utype_inst(
-                RiscvUTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?,
-            ),
-            RiscvInstType::JType => self.execute_jtype_inst(
-                RiscvJTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?,
-                inst_size,
-            ),
+            RiscvInstType::RType => self.execute_rtype_inst(RiscvRTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?),
+            RiscvInstType::IType => {
+                self.execute_itype_inst(RiscvITypeInstruction::unpack(&instruction.to_be_bytes()).ok()?, inst_size)
+            }
+            RiscvInstType::SType => self.execute_stype_inst(RiscvSTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?),
+            RiscvInstType::BType => {
+                self.execute_btype_inst(RiscvBTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?, inst_size)
+            }
+            RiscvInstType::UType => self.execute_utype_inst(RiscvUTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?),
+            RiscvInstType::JType => {
+                self.execute_jtype_inst(RiscvJTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?, inst_size)
+            }
         }
 
         self.program_counter += inst_size;
@@ -1498,20 +1421,12 @@ where
             // are ignored and the low XLEN bits of results are written to the destination rd. (RISC-V Volume I, section 2.4)
             (RiscvOpcode::OP, 0b000, 0b0000000) => {
                 // ADD
-                self.write_reg(
-                    inst.rd,
-                    self.read_reg(inst.rs1)
-                        .wrapping_add(self.read_reg(inst.rs2)),
-                );
+                self.write_reg(inst.rd, self.read_reg(inst.rs1).wrapping_add(self.read_reg(inst.rs2)));
             }
 
             (RiscvOpcode::OP, 0b000, 0b0100000) => {
                 // SUB
-                self.write_reg(
-                    inst.rd,
-                    self.read_reg(inst.rs1)
-                        .wrapping_sub(self.read_reg(inst.rs2)),
-                );
+                self.write_reg(inst.rd, self.read_reg(inst.rs1).wrapping_sub(self.read_reg(inst.rs2)));
             }
 
             // ADDW and SUBW are RV64I-only instructions that are defined analogously to ADD and SUB
@@ -1521,10 +1436,7 @@ where
                 // ADDW
                 self.write_reg(
                     inst.rd,
-                    sign_extend(
-                        (self.read_reg(inst.rs1) as u32)
-                            .wrapping_add(self.read_reg(inst.rs2) as u32),
-                    ),
+                    sign_extend((self.read_reg(inst.rs1) as u32).wrapping_add(self.read_reg(inst.rs2) as u32)),
                 );
             }
 
@@ -1532,10 +1444,7 @@ where
                 // SUBW
                 self.write_reg(
                     inst.rd,
-                    sign_extend(
-                        (self.read_reg(inst.rs1) as u32)
-                            .wrapping_sub(self.read_reg(inst.rs2) as u32),
-                    ),
+                    sign_extend((self.read_reg(inst.rs1) as u32).wrapping_sub(self.read_reg(inst.rs2) as u32)),
                 );
             }
 
@@ -1578,29 +1487,19 @@ where
             (RiscvOpcode::OP, 0b001, 0b0000000) => {
                 // SLL
                 let shamt_mask = 0b11_1111;
-                self.write_reg(
-                    inst.rd,
-                    self.read_reg(inst.rs1) << (self.read_reg(inst.rs2) & shamt_mask),
-                );
+                self.write_reg(inst.rd, self.read_reg(inst.rs1) << (self.read_reg(inst.rs2) & shamt_mask));
             }
 
             (RiscvOpcode::OP, 0b101, 0b0000000) => {
                 // SRL
                 let shamt_mask = 0b11_1111;
-                self.write_reg(
-                    inst.rd,
-                    self.read_reg(inst.rs1) >> (self.read_reg(inst.rs2) & shamt_mask),
-                );
+                self.write_reg(inst.rd, self.read_reg(inst.rs1) >> (self.read_reg(inst.rs2) & shamt_mask));
             }
 
             (RiscvOpcode::OP, 0b101, 0b0100000) => {
                 // SRA
                 let shamt_mask = 0b11_1111;
-                self.write_reg(
-                    inst.rd,
-                    ((self.read_reg(inst.rs1) as i64) >> (self.read_reg(inst.rs2) & shamt_mask))
-                        as u64,
-                );
+                self.write_reg(inst.rd, ((self.read_reg(inst.rs1) as i64) >> (self.read_reg(inst.rs2) & shamt_mask)) as u64);
             }
 
             // SLLW, SRLW, and SRAW are RV64I-only instructions that are analogously defined but operate
@@ -1610,10 +1509,7 @@ where
                 let shamt_mask = 0b1_1111;
                 self.write_reg(
                     inst.rd,
-                    sign_extend(
-                        (self.read_reg(inst.rs1) as u32)
-                            << ((self.read_reg(inst.rs2) as u32) & shamt_mask),
-                    ),
+                    sign_extend((self.read_reg(inst.rs1) as u32) << ((self.read_reg(inst.rs2) as u32) & shamt_mask)),
                 );
             }
 
@@ -1622,10 +1518,7 @@ where
                 let shamt_mask = 0b1_1111;
                 self.write_reg(
                     inst.rd,
-                    sign_extend(
-                        (self.read_reg(inst.rs1) as u32)
-                            >> ((self.read_reg(inst.rs2) as u32) & shamt_mask),
-                    ),
+                    sign_extend((self.read_reg(inst.rs1) as u32) >> ((self.read_reg(inst.rs2) as u32) & shamt_mask)),
                 );
             }
 
@@ -1634,11 +1527,7 @@ where
                 let shamt_mask = 0b1_1111;
                 self.write_reg(
                     inst.rd,
-                    sign_extend(
-                        ((self.read_reg(inst.rs1) as i32)
-                            >> ((self.read_reg(inst.rs2) as u32) & shamt_mask))
-                            as u32,
-                    ),
+                    sign_extend(((self.read_reg(inst.rs1) as i32) >> ((self.read_reg(inst.rs2) as u32) & shamt_mask)) as u32),
                 );
             }
 
@@ -1648,11 +1537,7 @@ where
                 // MUL
                 // MUL performs an XLEN-bit×XLEN-bit multiplication of rs1 by rs2 and places the lower XLEN bits
                 // in the destination register (RSIC-V Volume I, section 7.1)
-                self.write_reg(
-                    inst.rd,
-                    self.read_reg(inst.rs1)
-                        .wrapping_mul(self.read_reg(inst.rs2)),
-                );
+                self.write_reg(inst.rd, self.read_reg(inst.rs1).wrapping_mul(self.read_reg(inst.rs2)));
             }
 
             // MULH, MULHU, and MULHSU perform the same multiplication but re-
@@ -1667,15 +1552,13 @@ where
 
             (RiscvOpcode::OP, 0b011, 0b0000001) => {
                 // MULHU
-                let res =
-                    (self.read_reg(inst.rs1) as u128).wrapping_mul(self.read_reg(inst.rs2) as u128);
+                let res = (self.read_reg(inst.rs1) as u128).wrapping_mul(self.read_reg(inst.rs2) as u128);
                 self.write_reg(inst.rd, (res >> 64) as u64);
             }
 
             (RiscvOpcode::OP, 0b010, 0b0000001) => {
                 // MULHSU
-                let res = sign_extend::<u64, u128>(self.read_reg(inst.rs1))
-                    .wrapping_mul(self.read_reg(inst.rs2) as u128);
+                let res = sign_extend::<u64, u128>(self.read_reg(inst.rs1)).wrapping_mul(self.read_reg(inst.rs2) as u128);
                 self.write_reg(inst.rd, (res >> 64) as u64);
             }
 
@@ -1685,10 +1568,7 @@ where
                 // sign-extension of the lower 32 bits of the result into the destination register.
                 self.write_reg(
                     inst.rd,
-                    sign_extend(
-                        (self.read_reg(inst.rs1) as u32)
-                            .wrapping_mul(self.read_reg(inst.rs2) as u32),
-                    ),
+                    sign_extend((self.read_reg(inst.rs1) as u32).wrapping_mul(self.read_reg(inst.rs2) as u32)),
                 );
             }
 
@@ -1696,36 +1576,22 @@ where
             // rs2, rounding towards zero
             (RiscvOpcode::OP, 0b100, 0b0000001) => {
                 // DIV
-                self.write_reg(
-                    inst.rd,
-                    (self.read_reg(inst.rs1) as i64).wrapping_div(self.read_reg(inst.rs2) as i64)
-                        as u64,
-                );
+                self.write_reg(inst.rd, (self.read_reg(inst.rs1) as i64).wrapping_div(self.read_reg(inst.rs2) as i64) as u64);
             }
 
             (RiscvOpcode::OP, 0b101, 0b0000001) => {
                 // DIVU
-                self.write_reg(
-                    inst.rd,
-                    (self.read_reg(inst.rs1) as u64).wrapping_div(self.read_reg(inst.rs2) as u64),
-                );
+                self.write_reg(inst.rd, (self.read_reg(inst.rs1) as u64).wrapping_div(self.read_reg(inst.rs2) as u64));
             }
 
             (RiscvOpcode::OP, 0b110, 0b0000001) => {
                 // REM
-                self.write_reg(
-                    inst.rd,
-                    (self.read_reg(inst.rs1) as i64).wrapping_rem(self.read_reg(inst.rs2) as i64)
-                        as u64,
-                );
+                self.write_reg(inst.rd, (self.read_reg(inst.rs1) as i64).wrapping_rem(self.read_reg(inst.rs2) as i64) as u64);
             }
 
             (RiscvOpcode::OP, 0b111, 0b0000001) => {
                 // REMU
-                self.write_reg(
-                    inst.rd,
-                    (self.read_reg(inst.rs1) as u64).wrapping_rem(self.read_reg(inst.rs2) as u64),
-                );
+                self.write_reg(inst.rd, (self.read_reg(inst.rs1) as u64).wrapping_rem(self.read_reg(inst.rs2) as u64));
             }
 
             // DIVW and DIVUW are RV64 instructions that divide the lower 32 bits of rs1 by the lower 32
@@ -1737,11 +1603,7 @@ where
                 // DIVW
                 self.write_reg(
                     inst.rd,
-                    sign_extend(
-                        (self.read_reg(inst.rs1) as i32)
-                            .wrapping_div(self.read_reg(inst.rs2) as i32)
-                            as u32,
-                    ),
+                    sign_extend((self.read_reg(inst.rs1) as i32).wrapping_div(self.read_reg(inst.rs2) as i32) as u32),
                 );
             }
 
@@ -1749,10 +1611,7 @@ where
                 // DIVUW
                 self.write_reg(
                     inst.rd,
-                    sign_extend(
-                        (self.read_reg(inst.rs1) as u32)
-                            .wrapping_div(self.read_reg(inst.rs2) as u32),
-                    ),
+                    sign_extend((self.read_reg(inst.rs1) as u32).wrapping_div(self.read_reg(inst.rs2) as u32)),
                 );
             }
 
@@ -1760,11 +1619,7 @@ where
                 // REMW
                 self.write_reg(
                     inst.rd,
-                    sign_extend(
-                        (self.read_reg(inst.rs1) as i32)
-                            .wrapping_rem(self.read_reg(inst.rs2) as i32)
-                            as u32,
-                    ),
+                    sign_extend((self.read_reg(inst.rs1) as i32).wrapping_rem(self.read_reg(inst.rs2) as i32) as u32),
                 );
             }
 
@@ -1772,10 +1627,7 @@ where
                 // REMUW
                 self.write_reg(
                     inst.rd,
-                    sign_extend(
-                        (self.read_reg(inst.rs1) as u32)
-                            .wrapping_rem(self.read_reg(inst.rs2) as u32),
-                    ),
+                    sign_extend((self.read_reg(inst.rs1) as u32).wrapping_rem(self.read_reg(inst.rs2) as u32)),
                 );
             }
 
@@ -1791,11 +1643,7 @@ where
                 // ADDI
                 // ADDI adds the sign-extended 12-bit immediate to register rs1. Arithmetic overflow is ignored and
                 // the result is simply the low XLEN bits of the result. (RISC-V Volume I, section 2.4)
-                self.write_reg(
-                    inst.rd,
-                    self.read_reg(inst.rs1)
-                        .wrapping_add(sign_extend(inst.parse_imm())),
-                );
+                self.write_reg(inst.rd, self.read_reg(inst.rs1).wrapping_add(sign_extend(inst.parse_imm())));
             }
 
             (RiscvOpcode::OPIMM32, 0b000) => {
@@ -1803,10 +1651,7 @@ where
                 // ADDIW is an RV64I instruction that adds the sign-extended 12-bit immediate to register rs1
                 // and produces the proper sign-extension of a 32-bit result in rd. Overflows are ignored and the
                 // result is the low 32 bits of the result sign-extended to 64 bits. (RSIC-V Volume I, section 5.2)
-                self.write_reg(
-                    inst.rd,
-                    sign_extend((self.read_reg(inst.rs1) as u32).wrapping_add(inst.parse_imm())),
-                );
+                self.write_reg(inst.rd, sign_extend((self.read_reg(inst.rs1) as u32).wrapping_add(inst.parse_imm())));
             }
 
             (RiscvOpcode::OPIMM, 0b010) => {
@@ -1832,26 +1677,17 @@ where
             // and the sign-extended 12-bit immediate and place the result in rd. (RISC-V Volume I, section 2.4)
             (RiscvOpcode::OPIMM, 0b100) => {
                 // XORI
-                self.write_reg(
-                    inst.rd,
-                    self.read_reg(inst.rs1) ^ sign_extend_to_u64(inst.parse_imm()),
-                );
+                self.write_reg(inst.rd, self.read_reg(inst.rs1) ^ sign_extend_to_u64(inst.parse_imm()));
             }
 
             (RiscvOpcode::OPIMM, 0b110) => {
                 // ORI
-                self.write_reg(
-                    inst.rd,
-                    self.read_reg(inst.rs1) | sign_extend_to_u64(inst.parse_imm()),
-                );
+                self.write_reg(inst.rd, self.read_reg(inst.rs1) | sign_extend_to_u64(inst.parse_imm()));
             }
 
             (RiscvOpcode::OPIMM, 0b111) => {
                 // ANDI
-                self.write_reg(
-                    inst.rd,
-                    self.read_reg(inst.rs1) & sign_extend_to_u64(inst.parse_imm()),
-                );
+                self.write_reg(inst.rd, self.read_reg(inst.rs1) & sign_extend_to_u64(inst.parse_imm()));
             }
 
             // The operand to be shifted is in rs1, and the shift amount is encoded in the lower
@@ -1860,10 +1696,7 @@ where
                 // SLLI
                 // SLLI is a logical left shift (zeros are shifted into the lower bits)
                 let shamt_mask = 0b11_1111;
-                self.write_reg(
-                    inst.rd,
-                    self.read_reg(inst.rs1) << (sign_extend_to_u64(inst.parse_imm()) & shamt_mask),
-                );
+                self.write_reg(inst.rd, self.read_reg(inst.rs1) << (sign_extend_to_u64(inst.parse_imm()) & shamt_mask));
             }
 
             (RiscvOpcode::OPIMM, 0b101) => {
@@ -1875,10 +1708,7 @@ where
                 if imm & (!shamt_mask) != 0 {
                     // SRAI
                     // *** Arithmetic right shift on signed integer types, logical right shift on unsigned integer types. The Rust Referance, section 8.2.4
-                    self.write_reg(
-                        inst.rd,
-                        ((self.read_reg(inst.rs1) as i64) >> (imm & shamt_mask)) as u64,
-                    );
+                    self.write_reg(inst.rd, ((self.read_reg(inst.rs1) as i64) >> (imm & shamt_mask)) as u64);
                 } else {
                     // SRLI
                     self.write_reg(inst.rd, self.read_reg(inst.rs1) >> (imm & shamt_mask));
@@ -1892,12 +1722,7 @@ where
                 // SLLIW
                 // SLLIW is a logical left shift (zeros are shifted into the lower bits)
                 let shamt_mask = 0b1_1111;
-                self.write_reg(
-                    inst.rd,
-                    sign_extend(
-                        (self.read_reg(inst.rs1) as u32) << (inst.parse_imm() & shamt_mask),
-                    ),
-                );
+                self.write_reg(inst.rd, sign_extend((self.read_reg(inst.rs1) as u32) << (inst.parse_imm() & shamt_mask)));
             }
 
             (RiscvOpcode::OPIMM32, 0b101) => {
@@ -1909,18 +1734,10 @@ where
                 if imm & (!shamt_mask) != 0 {
                     // SRAIW
                     // *** Arithmetic right shift on signed integer types, logical right shift on unsigned integer types. The Rust Referance, section 8.2.4
-                    self.write_reg(
-                        inst.rd,
-                        sign_extend(
-                            ((self.read_reg(inst.rs1) as i32) >> (imm & shamt_mask)) as u32,
-                        ),
-                    );
+                    self.write_reg(inst.rd, sign_extend(((self.read_reg(inst.rs1) as i32) >> (imm & shamt_mask)) as u32));
                 } else {
                     // SRLIW
-                    self.write_reg(
-                        inst.rd,
-                        sign_extend((self.read_reg(inst.rs1) as u32) >> (imm & shamt_mask)),
-                    );
+                    self.write_reg(inst.rd, sign_extend((self.read_reg(inst.rs1) as u32) >> (imm & shamt_mask)));
                 }
             }
 
@@ -1931,15 +1748,15 @@ where
                 // the least-significant bit of the result to zero. The address of the instruction following the jump
                 // (pc+4) is written to register rd. Register x0 can be used as the destination if the result is not
                 // required.
+                let new_program_counter = sign_extend_to_u64(inst.parse_imm()).wrapping_add(self.read_reg(inst.rs1)) & (!0b1);
+                if new_program_counter == self.program_counter {
+                    use crate::UART;
+                    use core::fmt::Write;
+                    writeln!(UART.lock(), "Detected infinite loop, halting cpu!").unwrap();
+                    self.halted = true;
+                }
+                // NOTE: Order is important we cannot store to rd before calculating because rs1 might be rd
                 self.write_reg(inst.rd, self.program_counter + inst_size); // For C(compressed) instructions, because we exapnd them to full instructions
-                let new_program_counter = sign_extend_to_u64(inst.parse_imm())
-                    .wrapping_add(self.read_reg(inst.rs1))
-                    & (!0b1);
-                // if new_program_counter == self.program_counter {
-                //     use core::fmt::Write;
-                //     writeln!(UART.lock(), "Detected infinite loop, halting cpu!").unwrap();
-                //     self.halted = true;
-                // }
                 self.program_counter = new_program_counter.wrapping_sub(inst_size);
                 // Subtract inst_size to counteract the pc increment in the tick function
             }
@@ -1957,66 +1774,43 @@ where
             // LBU for 8-bit values.
             (RiscvOpcode::LOAD, 0b000) => {
                 // LB
-                let addr = self
-                    .read_reg(inst.rs1)
-                    .wrapping_add(sign_extend(inst.parse_imm()));
-                self.write_reg(
-                    inst.rd,
-                    sign_extend::<u8, u64>(self.memory.read_u8_ne(addr)),
-                );
+                let addr = self.read_reg(inst.rs1).wrapping_add(sign_extend(inst.parse_imm()));
+                self.write_reg(inst.rd, sign_extend::<u8, u64>(self.memory.read_u8_ne(addr)));
             }
 
             (RiscvOpcode::LOAD, 0b001) => {
                 // LH
-                let addr = self
-                    .read_reg(inst.rs1)
-                    .wrapping_add(sign_extend(inst.parse_imm()));
-                self.write_reg(
-                    inst.rd,
-                    sign_extend::<u16, u64>(self.memory.read_u16_ne(addr)),
-                );
+                let addr = self.read_reg(inst.rs1).wrapping_add(sign_extend(inst.parse_imm()));
+                self.write_reg(inst.rd, sign_extend::<u16, u64>(self.memory.read_u16_ne(addr)));
             }
 
             (RiscvOpcode::LOAD, 0b010) => {
                 // LW
-                let addr = self
-                    .read_reg(inst.rs1)
-                    .wrapping_add(sign_extend(inst.parse_imm()));
-                self.write_reg(
-                    inst.rd,
-                    sign_extend::<u32, u64>(self.memory.read_u32_ne(addr)),
-                );
+                let addr = self.read_reg(inst.rs1).wrapping_add(sign_extend(inst.parse_imm()));
+                self.write_reg(inst.rd, sign_extend::<u32, u64>(self.memory.read_u32_ne(addr)));
             }
 
             (RiscvOpcode::LOAD, 0b011) => {
                 // LD
-                let addr = self
-                    .read_reg(inst.rs1)
-                    .wrapping_add(sign_extend(inst.parse_imm()));
+                let addr = self.read_reg(inst.rs1).wrapping_add(sign_extend(inst.parse_imm()));
                 self.write_reg(inst.rd, self.memory.read_u64_ne(addr));
             }
 
             (RiscvOpcode::LOAD, 0b110) => {
                 // LWU
-                let addr = self
-                    .read_reg(inst.rs1)
-                    .wrapping_add(sign_extend(inst.parse_imm()));
+                let addr = self.read_reg(inst.rs1).wrapping_add(sign_extend(inst.parse_imm()));
                 self.write_reg(inst.rd, u64::from(self.memory.read_u32_ne(addr)));
             }
 
             (RiscvOpcode::LOAD, 0b101) => {
                 // LHU
-                let addr = self
-                    .read_reg(inst.rs1)
-                    .wrapping_add(sign_extend(inst.parse_imm()));
+                let addr = self.read_reg(inst.rs1).wrapping_add(sign_extend(inst.parse_imm()));
                 self.write_reg(inst.rd, u64::from(self.memory.read_u16_ne(addr)));
             }
 
             (RiscvOpcode::LOAD, 0b100) => {
                 // LBU
-                let addr = self
-                    .read_reg(inst.rs1)
-                    .wrapping_add(sign_extend(inst.parse_imm()));
+                let addr = self.read_reg(inst.rs1).wrapping_add(sign_extend(inst.parse_imm()));
                 self.write_reg(inst.rd, u64::from(self.memory.read_u8_ne(addr)));
             }
 
@@ -2039,35 +1833,25 @@ where
             // rs2 to memory (RISC-V Volume I, section 2.6)
             (RiscvOpcode::STORE, 0b000) => {
                 // SB
-                let addr = self
-                    .read_reg(inst.rs1)
-                    .wrapping_add(sign_extend(inst.parse_imm()));
+                let addr = self.read_reg(inst.rs1).wrapping_add(sign_extend(inst.parse_imm()));
                 self.memory.write_u8_ne(addr, self.read_reg(inst.rs2) as u8)
             }
 
             (RiscvOpcode::STORE, 0b001) => {
                 // SH
-                let addr = self
-                    .read_reg(inst.rs1)
-                    .wrapping_add(sign_extend(inst.parse_imm()));
-                self.memory
-                    .write_u16_ne(addr, self.read_reg(inst.rs2) as u16)
+                let addr = self.read_reg(inst.rs1).wrapping_add(sign_extend(inst.parse_imm()));
+                self.memory.write_u16_ne(addr, self.read_reg(inst.rs2) as u16)
             }
 
             (RiscvOpcode::STORE, 0b010) => {
                 // SW
-                let addr = self
-                    .read_reg(inst.rs1)
-                    .wrapping_add(sign_extend(inst.parse_imm()));
-                self.memory
-                    .write_u32_ne(addr, self.read_reg(inst.rs2) as u32)
+                let addr = self.read_reg(inst.rs1).wrapping_add(sign_extend(inst.parse_imm()));
+                self.memory.write_u32_ne(addr, self.read_reg(inst.rs2) as u32)
             }
 
             (RiscvOpcode::STORE, 0b011) => {
                 // SD
-                let addr = self
-                    .read_reg(inst.rs1)
-                    .wrapping_add(sign_extend(inst.parse_imm()));
+                let addr = self.read_reg(inst.rs1).wrapping_add(sign_extend(inst.parse_imm()));
                 self.memory.write_u64_ne(addr, self.read_reg(inst.rs2))
             }
             _ => (),
@@ -2087,60 +1871,54 @@ where
             (RiscvOpcode::BRANCH, 0b000) => {
                 // BEQ
                 if self.read_reg(inst.rs1) == self.read_reg(inst.rs2) {
-                    self.program_counter = self
-                        .program_counter
-                        .wrapping_add(sign_extend_to_u64(inst.parse_imm()))
-                        .wrapping_sub(inst_size); // Subtract inst_size to counteract the pc increment in the tick function
+                    self.program_counter =
+                        self.program_counter.wrapping_add(sign_extend_to_u64(inst.parse_imm())).wrapping_sub(inst_size);
+                    // Subtract inst_size to counteract the pc increment in the tick function
                 }
             }
 
             (RiscvOpcode::BRANCH, 0b001) => {
                 // BNE
                 if self.read_reg(inst.rs1) != self.read_reg(inst.rs2) {
-                    self.program_counter = self
-                        .program_counter
-                        .wrapping_add(sign_extend_to_u64(inst.parse_imm()))
-                        .wrapping_sub(inst_size); // Subtract inst_size to counteract the pc increment in the tick function
+                    self.program_counter =
+                        self.program_counter.wrapping_add(sign_extend_to_u64(inst.parse_imm())).wrapping_sub(inst_size);
+                    // Subtract inst_size to counteract the pc increment in the tick function
                 }
             }
 
             (RiscvOpcode::BRANCH, 0b100) => {
                 // BLT
                 if (self.read_reg(inst.rs1) as i64) < (self.read_reg(inst.rs2) as i64) {
-                    self.program_counter = self
-                        .program_counter
-                        .wrapping_add(sign_extend_to_u64(inst.parse_imm()))
-                        .wrapping_sub(inst_size); // Subtract inst_size to counteract the pc increment in the tick function
+                    self.program_counter =
+                        self.program_counter.wrapping_add(sign_extend_to_u64(inst.parse_imm())).wrapping_sub(inst_size);
+                    // Subtract inst_size to counteract the pc increment in the tick function
                 }
             }
 
             (RiscvOpcode::BRANCH, 0b101) => {
                 // BGE
                 if (self.read_reg(inst.rs1) as i64) >= (self.read_reg(inst.rs2) as i64) {
-                    self.program_counter = self
-                        .program_counter
-                        .wrapping_add(sign_extend_to_u64(inst.parse_imm()))
-                        .wrapping_sub(inst_size); // Subtract inst_size to counteract the pc increment in the tick function
+                    self.program_counter =
+                        self.program_counter.wrapping_add(sign_extend_to_u64(inst.parse_imm())).wrapping_sub(inst_size);
+                    // Subtract inst_size to counteract the pc increment in the tick function
                 }
             }
 
             (RiscvOpcode::BRANCH, 0b110) => {
                 // BLTU
                 if self.read_reg(inst.rs1) < self.read_reg(inst.rs2) {
-                    self.program_counter = self
-                        .program_counter
-                        .wrapping_add(sign_extend_to_u64(inst.parse_imm()))
-                        .wrapping_sub(inst_size); // Subtract inst_size to counteract the pc increment in the tick function
+                    self.program_counter =
+                        self.program_counter.wrapping_add(sign_extend_to_u64(inst.parse_imm())).wrapping_sub(inst_size);
+                    // Subtract inst_size to counteract the pc increment in the tick function
                 }
             }
 
             (RiscvOpcode::BRANCH, 0b111) => {
                 // BGEU
                 if self.read_reg(inst.rs1) >= self.read_reg(inst.rs2) {
-                    self.program_counter = self
-                        .program_counter
-                        .wrapping_add(sign_extend_to_u64(inst.parse_imm()))
-                        .wrapping_sub(inst_size); // Subtract inst_size to counteract the pc increment in the tick function
+                    self.program_counter =
+                        self.program_counter.wrapping_add(sign_extend_to_u64(inst.parse_imm())).wrapping_sub(inst_size);
+                    // Subtract inst_size to counteract the pc increment in the tick function
                 }
             }
             _ => (),
@@ -2154,10 +1932,7 @@ where
             }
 
             RiscvOpcode::AUIPC => {
-                self.write_reg(
-                    inst.rd,
-                    sign_extend_to_u64(inst.parse_imm()).wrapping_add(self.program_counter),
-                );
+                self.write_reg(inst.rd, sign_extend_to_u64(inst.parse_imm()).wrapping_add(self.program_counter));
             }
             _ => (),
         }
@@ -2170,14 +1945,17 @@ where
                 // signed offset in multiples of 2 bytes. The offset is sign-extended and added to the address of the
                 // jump instruction to form the jump target address. Jumps can therefore target a ±1 MiB range.
                 // JAL stores the address of the instruction following the jump (pc+4) into register rd (RISC-V Volume I, section 2.5)
+                let new_program_counter = sign_extend_to_u64(inst.parse_imm()).wrapping_add(self.program_counter);
+                if new_program_counter == self.program_counter {
+                    use crate::UART;
+                    use core::fmt::Write;
+                    writeln!(UART.lock(), "Detected infinite loop, halting cpu!").unwrap();
+                    self.halted = true;
+                }
+
+                // NOTE: Although order here is not important since calculating the new program counter does not involve reading a register, for consistency we still do it in the same order as JALR
                 self.write_reg(inst.rd, self.program_counter + inst_size); // For C(compressed) instructions, because we expand them to full instructions
-                let new_program_counter =
-                    sign_extend_to_u64(inst.parse_imm()).wrapping_add(self.program_counter);
-                // if new_program_counter == self.program_counter {
-                //     use core::fmt::Write;
-                //     writeln!(UART.lock(), "Detected infinite loop, halting cpu!").unwrap();
-                //     self.halted = true;
-                // }
+
                 self.program_counter = new_program_counter.wrapping_sub(inst_size);
                 // Subtract inst_size to counteract the pc increment in the tick function
             }

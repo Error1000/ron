@@ -35,10 +35,7 @@ pub struct MBRPartitionFile {
 }
 
 impl MBRPartitionFile {
-    pub fn from(
-        device_file: Rc<RefCell<dyn IFile>>,
-        partition_number: MBRPartitionNumber,
-    ) -> Option<Self> {
+    pub fn from(device_file: Rc<RefCell<dyn IFile>>, partition_number: MBRPartitionNumber) -> Option<Self> {
         let part_data_offset = u64::from(partition_number.0) * 16 + (0x1fe - 16 * 4);
         if let Some(part_data) = device_file.borrow().read(part_data_offset, 16) {
             // If SYSTEM_ID/partition type is 0 then the partition is unused
@@ -47,19 +44,9 @@ impl MBRPartitionFile {
             }
             Some(Self {
                 device: device_file.clone(),
-                partition_offset: u32::from_le_bytes([
-                    part_data[8],
-                    part_data[9],
-                    part_data[10],
-                    part_data[11],
-                ]) as u64
+                partition_offset: u32::from_le_bytes([part_data[8], part_data[9], part_data[10], part_data[11]]) as u64
                     * ata::SECTOR_SIZE_IN_BYTES as u64,
-                partition_size: u32::from_le_bytes([
-                    part_data[12],
-                    part_data[13],
-                    part_data[14],
-                    part_data[15],
-                ]) as u64
+                partition_size: u32::from_le_bytes([part_data[12], part_data[13], part_data[14], part_data[15]]) as u64
                     * ata::SECTOR_SIZE_IN_BYTES as u64,
                 partiton_number: partition_number,
             })
@@ -78,18 +65,14 @@ impl IFile for MBRPartitionFile {
         if offset + len as u64 > self.partition_size {
             return None;
         }
-        (*self.device)
-            .borrow()
-            .read(offset + self.partition_offset, len)
+        (*self.device).borrow().read(offset + self.partition_offset, len)
     }
 
     fn write(&mut self, offset: u64, data: &[u8]) -> Option<usize> {
         if offset + data.len() as u64 > self.partition_size {
             return None;
         }
-        (*self.device)
-            .borrow_mut()
-            .write(offset + self.partition_offset, data)
+        (*self.device).borrow_mut().write(offset + self.partition_offset, data)
     }
 
     fn get_size(&self) -> u64 {

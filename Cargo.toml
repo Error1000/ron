@@ -3,7 +3,7 @@
 members = [
 	"kernel",
 	"rlibc",
-	"rlibc/staticlib"
+	"rlibc/syslib"
 ]
 
 [profile.dev]

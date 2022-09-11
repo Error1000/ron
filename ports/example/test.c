@@ -1,5 +1,7 @@
 #include <stdlib.h>
 
-void _start() {
-	exit(8008135);
+int main() {
+	return write(2, "Hello, world!\n", 14);
+//	printf("Hello, world!\n");
+//	return 8008135;
 }

@@ -59,8 +59,7 @@ impl IORegistersLBA28 {
     }
 
     unsafe fn read_status(&self) -> ATAStatus {
-        ATAStatus::unpack(&[self.stat_command.read()])
-            .expect("Reading and parsing ata status register should always work")
+        ATAStatus::unpack(&[self.stat_command.read()]).expect("Reading and parsing ata status register should always work")
     }
 
     unsafe fn write_command(&mut self, d: u8) {
@@ -75,10 +74,7 @@ struct ControlRegistersLBA28 {
 
 impl ControlRegistersLBA28 {
     unsafe fn new(base: KernPointer<u8>) -> Self {
-        ControlRegistersLBA28 {
-            alt_stat_device_ctrl: base,
-            drive_addr: base.offset(1),
-        }
+        ControlRegistersLBA28 { alt_stat_device_ctrl: base, drive_addr: base.offset(1) }
     }
 
     unsafe fn read_alt_stat(&self) -> u8 {
@@ -137,11 +133,7 @@ pub struct LBA28 {
 impl From<u32> for LBA28 {
     fn from(v: u32) -> Self {
         let data = v.to_le_bytes();
-        LBA28 {
-            low: data[0],
-            mid: data[1],
-            hi: data[2],
-        }
+        LBA28 { low: data[0], mid: data[1], hi: data[2] }
     }
 }
 
@@ -180,26 +172,14 @@ mod ata_command {
 
 impl ATABus {
     pub unsafe fn primary_x86() -> Option<Self> {
-        ATABus::new(
-            KernPointer::<u8>::from_port(0x1F0),
-            KernPointer::<u8>::from_port(0x3F6),
-            BUSType::Primary,
-        )
+        ATABus::new(KernPointer::<u8>::from_port(0x1F0), KernPointer::<u8>::from_port(0x3F6), BUSType::Primary)
     }
 
     pub unsafe fn secondary_x86() -> Option<Self> {
-        ATABus::new(
-            KernPointer::<u8>::from_port(0x170),
-            KernPointer::<u8>::from_port(0x376),
-            BUSType::Secondary,
-        )
+        ATABus::new(KernPointer::<u8>::from_port(0x170), KernPointer::<u8>::from_port(0x376), BUSType::Secondary)
     }
 
-    unsafe fn new(
-        io_base: KernPointer<u8>,
-        cntrl_base: KernPointer<u8>,
-        typ: BUSType,
-    ) -> Option<Self> {
+    unsafe fn new(io_base: KernPointer<u8>, cntrl_base: KernPointer<u8>, typ: BUSType) -> Option<Self> {
         let bus = ATABus {
             io: IORegistersLBA28::new(io_base),
             control: ControlRegistersLBA28::new(cntrl_base),
@@ -303,12 +283,7 @@ impl ATABus {
         Some(a)
     }
 
-    pub unsafe fn write_sector(
-        &mut self,
-        device: ATADevice,
-        sector_lba: LBA28,
-        data: &Sector,
-    ) -> Option<()> {
+    pub unsafe fn write_sector(&mut self, device: ATADevice, sector_lba: LBA28, data: &Sector) -> Option<()> {
         // FIXME: This shouldn't be needed in theory
         wait_for!(self.io.read_status().ata_busy == false); // BSY clears
 
@@ -356,11 +331,7 @@ impl IFile for ATADeviceFile {
             mid: ((first_sector >> 8) & 0xFF) as u8,
             low: (first_sector & 0xFF) as u8,
         };
-        let first_block = unsafe {
-            (*self.bus)
-                .borrow_mut()
-                .read_sector(self.bus_device, first_block_lba)
-        }?;
+        let first_block = unsafe { (*self.bus).borrow_mut().read_sector(self.bus_device, first_block_lba) }?;
 
         let mut skip_first_byte = offset_in_first_sector % 2 == 1;
         for e in &first_block[offset_in_first_sector / 2..] {
@@ -374,75 +345,51 @@ impl IFile for ATADeviceFile {
         }
 
         // Read continually, until the end is included in res, overreading if necessary
-        let extra_block = if len % SECTOR_SIZE_IN_BYTES != 0 {
-            1
-        } else {
-            0
-        };
+        let extra_block = if len % SECTOR_SIZE_IN_BYTES != 0 { 1 } else { 0 };
         for sector_indx in 1..((len / SECTOR_SIZE_IN_BYTES) + extra_block) {
             if res.len() >= len {
                 break;
             }
             let offset = first_sector + sector_indx;
-            let lba = LBA28 {
-                hi: ((offset >> 16) & 0xFF) as u8,
-                mid: ((offset >> 8) & 0xFF) as u8,
-                low: (offset & 0xFF) as u8,
-            };
-            res.append(
-                &mut unsafe { (*self.bus).borrow_mut().read_sector(self.bus_device, lba) }.map(
-                    |val| {
-                        let mut v = Vec::with_capacity(SECTOR_SIZE_IN_BYTES);
-                        for e in &val {
-                            v.extend(e.to_ne_bytes());
-                        }
-                        v
-                    },
-                )?,
-            );
+            let lba =
+                LBA28 { hi: ((offset >> 16) & 0xFF) as u8, mid: ((offset >> 8) & 0xFF) as u8, low: (offset & 0xFF) as u8 };
+            res.append(&mut unsafe { (*self.bus).borrow_mut().read_sector(self.bus_device, lba) }.map(|val| {
+                let mut v = Vec::with_capacity(SECTOR_SIZE_IN_BYTES);
+                for e in &val {
+                    v.extend(e.to_ne_bytes());
+                }
+                v
+            })?);
         }
         // Get rid of overread bytes
         while res.len() > len {
             res.pop();
         }
-        assert!(
-            res.len() == len,
-            "The amount of bytes read from disk should be the same as the amount requested!"
-        );
+        assert!(res.len() == len, "The amount of bytes read from disk should be the same as the amount requested!");
         Some(res)
     }
 
     fn write(&mut self, offset_in_bytes: u64, data: &[u8]) -> Option<usize> {
-        let offset_in_first_sector_in_bytes =
-            (offset_in_bytes % SECTOR_SIZE_IN_BYTES as u64) as usize;
+        let offset_in_first_sector_in_bytes = (offset_in_bytes % SECTOR_SIZE_IN_BYTES as u64) as usize;
         let first_sector = (offset_in_bytes / SECTOR_SIZE_IN_BYTES as u64) as usize;
         let mut iter = data.iter();
         let mut bytes_written = 0;
 
-        let extra_block = if data.len() % SECTOR_SIZE_IN_BYTES != 0 {
-            1
-        } else {
-            0
-        };
+        let extra_block = if data.len() % SECTOR_SIZE_IN_BYTES != 0 { 1 } else { 0 };
 
         let mut ind = offset_in_first_sector_in_bytes / 2;
         let mut skip_first_byte = offset_in_first_sector_in_bytes % 2 == 1;
 
         for sector_indx in 0..data.len() / SECTOR_SIZE_IN_BYTES + extra_block {
             let offset = first_sector + sector_indx;
-            let lba = LBA28 {
-                hi: ((offset >> 16) & 0xFF) as u8,
-                mid: ((offset >> 8) & 0xFF) as u8,
-                low: (offset & 0xFF) as u8,
-            };
+            let lba =
+                LBA28 { hi: ((offset >> 16) & 0xFF) as u8, mid: ((offset >> 8) & 0xFF) as u8, low: (offset & 0xFF) as u8 };
 
             // No need to read sectors that we know will be completly overriden
-            let mut v = if (sector_indx == data.len() / SECTOR_SIZE_IN_BYTES + extra_block - 1
-                && extra_block == 1)
+            let mut v = if (sector_indx == data.len() / SECTOR_SIZE_IN_BYTES + extra_block - 1 && extra_block == 1)
                 || (sector_indx == 0 && offset_in_first_sector_in_bytes != 0)
             {
-                unsafe { (*self.bus).borrow_mut().read_sector(self.bus_device, lba) }
-                    .expect("Reading device should work!")
+                unsafe { (*self.bus).borrow_mut().read_sector(self.bus_device, lba) }.expect("Reading device should work!")
             } else {
                 [0u16; SECTOR_SIZE_IN_BYTES / core::mem::size_of::<u16>()]
             };
@@ -473,19 +420,14 @@ impl IFile for ATADeviceFile {
             }
             ind = 0;
 
-            unsafe {
-                (*self.bus)
-                    .borrow_mut()
-                    .write_sector(self.bus_device, lba, &v)
-            }?;
+            unsafe { (*self.bus).borrow_mut().write_sector(self.bus_device, lba, &v) }?;
         }
         Some(bytes_written)
     }
 
     fn get_size(&self) -> u64 {
         let mut ata_bus = (*self.bus).borrow_mut();
-        let sector_count = unsafe { ata_bus.get_sector_count(self.bus_device) }
-            .expect("Rading device should work!");
+        let sector_count = unsafe { ata_bus.get_sector_count(self.bus_device) }.expect("Rading device should work!");
         (sector_count as u64) * SECTOR_SIZE_IN_BYTES as u64
     }
 

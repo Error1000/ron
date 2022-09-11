@@ -10,5 +10,5 @@ fi
 cd ..
 
 
-cd rlibc/staticlib
-cargo build --lib --target=riscv64imac-unknown-none-elf --release
+cd rlibc/syslib
+cargo build -Zbuild-std=core --lib --target=../../riscv64imc-unknown-ron-elf.json --release

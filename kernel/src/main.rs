@@ -7,7 +7,7 @@
 #![allow(dead_code)]
 
 extern crate alloc;
-extern crate rlibc_rust;
+extern crate rlibc;
 
 use core::cell::RefCell;
 use core::cmp::min;
@@ -51,11 +51,7 @@ fn panic(p: &::core::panic::PanicInfo) -> ! {
     if !UART.is_locked() {
         writeln!(UART.lock()).unwrap();
         if !written {
-            writeln!(
-                UART.lock(),
-                "Bad panic, panic info cannot be formatted correctly, maybe OOM?"
-            )
-            .unwrap();
+            writeln!(UART.lock(), "Bad panic, panic info cannot be formatted correctly, maybe OOM?").unwrap();
         } else {
             writeln!(UART.lock(), "{}", &s).unwrap();
         }
@@ -64,9 +60,7 @@ fn panic(p: &::core::panic::PanicInfo) -> ! {
         let mut lock = TERMINAL.lock();
         lock.write_char('\n');
         if !written {
-            "Bad panic, panic info cannot be formatted correctly, maybe OOM?\n"
-                .chars()
-                .for_each(|c| lock.write_char(c));
+            "Bad panic, panic info cannot be formatted correctly, maybe OOM?\n".chars().for_each(|c| lock.write_char(c));
         } else {
             s.chars().for_each(|c| lock.write_char(c));
             lock.write_char('\n');
@@ -96,17 +90,12 @@ mod vfs;
 mod vga;
 mod virtmem;
 
-
 pub static UART: Mutex<LazyInitialised<UARTDevice>> = Mutex::from(LazyInitialised::uninit());
 
 #[allow(unused)]
 fn kprint_dump<T>(ptr: *const T, bytes: usize, uart: &mut UARTDevice) {
-    let arr = unsafe {
-        core::slice::from_raw_parts(
-            core::mem::transmute::<_, *mut u32>(ptr),
-            bytes / core::mem::size_of::<u32>(),
-        )
-    };
+    let arr =
+        unsafe { core::slice::from_raw_parts(core::mem::transmute::<_, *mut u32>(ptr), bytes / core::mem::size_of::<u32>()) };
     for e in arr {
         write!(uart, "0x{:02X}", *e).unwrap();
     }
@@ -144,12 +133,7 @@ impl<'a> Write for Terminal<'a> {
 
 impl<'a> Terminal<'a> {
     fn new(fb: &'a mut dyn FrameBuffer, color: Pixel) -> Self {
-        Terminal {
-            fb,
-            cursor_pos: (0, 0),
-            cursor_char: ' ',
-            color,
-        }
+        Terminal { fb, cursor_pos: (0, 0), cursor_char: ' ', color }
     }
     fn clear(&mut self) {
         for i in 0..self.fb.get_height() {
@@ -213,17 +197,11 @@ impl<'a> Terminal<'a> {
     }
 
     fn update_visual_cursor(&mut self) {
-        self.fb
-            .write_char(self.cursor_pos.0, self.cursor_pos.1, '_', self.color);
+        self.fb.write_char(self.cursor_pos.0, self.cursor_pos.1, '_', self.color);
     }
 
     fn erase_visual_cursor(&mut self) {
-        self.fb.write_char(
-            self.cursor_pos.0,
-            self.cursor_pos.1,
-            self.cursor_char,
-            self.color,
-        );
+        self.fb.write_char(self.cursor_pos.0, self.cursor_pos.1, self.cursor_char, self.color);
     }
 
     fn write_char(&mut self, c: char) {
@@ -241,8 +219,7 @@ impl<'a> Terminal<'a> {
                 self.erase_visual_cursor();
             }
             c => {
-                self.fb
-                    .write_char(self.cursor_pos.0, self.cursor_pos.1, c, self.color);
+                self.fb.write_char(self.cursor_pos.0, self.cursor_pos.1, c, self.color);
                 self.cursor_right();
             }
         }
@@ -284,13 +261,9 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     }
     // FIXME: Don't hardcode the starting location of the heap
     // Stack size: 1mb, executable size (as of 22 may 2022): ~4mb, so starting the heap at 8mb should be a safe bet.
-    allocator::ALLOCATOR
-        .lock()
-        .init((8 * 1024 * 1024) as *mut u8, 4 * 1024 * 1024);
+    allocator::ALLOCATOR.lock().init((8 * 1024 * 1024) as *mut u8, 4 * 1024 * 1024);
 
-    vfs::VFS_ROOT
-        .lock()
-        .set(Rc::new(RefCell::new(RootFSNode::new_root())));
+    vfs::VFS_ROOT.lock().set(Rc::new(RefCell::new(RootFSNode::new_root())));
 
     let dev_folder = vfs::RootFSNode::new_folder(vfs::VFS_ROOT.lock().clone(), "dev");
     let dfs = Rc::new(RefCell::new(devfs::DevFS::new()));
@@ -300,61 +273,32 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     let mut fb: Option<&mut dyn framebuffer::FrameBuffer>;
     let o;
     let mut uo;
-    fb = framebuffer::try_setup_efi_framebuffer(
-        efi_system_table_ptr as *mut efi::EfiSystemTable,
-        800,
-        600,
-    )
-    .map(|x| x as &mut dyn framebuffer::FrameBuffer);
+    fb = framebuffer::try_setup_efi_framebuffer(efi_system_table_ptr as *mut efi::EfiSystemTable, 800, 600)
+        .map(|x| x as &mut dyn framebuffer::FrameBuffer);
     if fb.is_none() {
         vga = unsafe { Vga::x86_default() };
         o = framebuffer::try_setup_vga_framebuffer(vga, 800, 600);
         if o.is_some() {
             uo = o.unwrap();
-            fb = Some(unsafe {
-                &mut *((&mut uo) as *mut Vga<Color256, Unblanked>) as &mut dyn FrameBuffer
-            });
+            fb = Some(unsafe { &mut *((&mut uo) as *mut Vga<Color256, Unblanked>) as &mut dyn FrameBuffer });
         }
     }
     let fb = fb.unwrap();
 
-    fb.fill(
-        0,
-        0,
-        fb.get_width(),
-        fb.get_height(),
-        Pixel { r: 0, g: 0, b: 0 },
-    );
-    TERMINAL.lock().set(Terminal::new(
-        fb,
-        Pixel {
-            r: 0x0,
-            g: 0xa8,
-            b: 0x54,
-        },
-    ));
+    fb.fill(0, 0, fb.get_width(), fb.get_height(), Pixel { r: 0, g: 0, b: 0 });
+    TERMINAL.lock().set(Terminal::new(fb, Pixel { r: 0x0, g: 0xa8, b: 0x54 }));
 
-    writeln!(UART.lock(), "If you see this then that means the framebuffer subsystem didn't instantly crash the kernel :)").unwrap();
+    writeln!(UART.lock(), "If you see this then that means the framebuffer subsystem didn't instantly crash the kernel :)")
+        .unwrap();
     writeln!(TERMINAL.lock(), "Hello, world!").unwrap();
 
     if let Some(primary_ata_bus) = unsafe { ATABus::primary_x86() } {
         let ata_ref = Rc::new(RefCell::new(primary_ata_bus));
         // NOTE: master device is not necessarilly the device from which the os was booted
 
-        if unsafe {
-            (*ata_ref)
-                .borrow_mut()
-                .identify(ATADevice::MASTER)
-                .is_some()
-        } {
-            let master_dev = Rc::new(RefCell::new(ATADeviceFile {
-                bus: ata_ref.clone(),
-                bus_device: ATADevice::MASTER,
-            }));
-            (*dfs).borrow_mut().add_device_file(
-                master_dev.clone() as Rc<RefCell<dyn IFile>>,
-                "hda".to_owned(),
-            );
+        if unsafe { (*ata_ref).borrow_mut().identify(ATADevice::MASTER).is_some() } {
+            let master_dev = Rc::new(RefCell::new(ATADeviceFile { bus: ata_ref.clone(), bus_device: ATADevice::MASTER }));
+            (*dfs).borrow_mut().add_device_file(master_dev.clone() as Rc<RefCell<dyn IFile>>, "hda".to_owned());
             for part_number in 0..4 {
                 if let Some(part_dev) = partitions::MBRPartitionFile::from(
                     master_dev.clone() as Rc<RefCell<dyn IFile>>,
@@ -369,23 +313,16 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         part_dev.get_offset()
                     )
                     .unwrap();
-                    (*dfs).borrow_mut().add_device_file(
-                        Rc::new(RefCell::new(part_dev)) as Rc<RefCell<dyn IFile>>,
-                        part_dev_name,
-                    );
+                    (*dfs)
+                        .borrow_mut()
+                        .add_device_file(Rc::new(RefCell::new(part_dev)) as Rc<RefCell<dyn IFile>>, part_dev_name);
                 }
             }
         }
 
         if unsafe { (*ata_ref).borrow_mut().identify(ATADevice::SLAVE).is_some() } {
-            let slave_dev = Rc::new(RefCell::new(ATADeviceFile {
-                bus: ata_ref.clone(),
-                bus_device: ATADevice::SLAVE,
-            }));
-            (*dfs).borrow_mut().add_device_file(
-                slave_dev.clone() as Rc<RefCell<dyn IFile>>,
-                "hdb".to_owned(),
-            );
+            let slave_dev = Rc::new(RefCell::new(ATADeviceFile { bus: ata_ref.clone(), bus_device: ATADevice::SLAVE }));
+            (*dfs).borrow_mut().add_device_file(slave_dev.clone() as Rc<RefCell<dyn IFile>>, "hdb".to_owned());
             for part_number in 0..4 {
                 if let Some(part_dev) = partitions::MBRPartitionFile::from(
                     slave_dev.clone() as Rc<RefCell<dyn IFile>>,
@@ -400,10 +337,9 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         part_dev.get_offset()
                     )
                     .unwrap();
-                    (*dfs).borrow_mut().add_device_file(
-                        Rc::new(RefCell::new(part_dev)) as Rc<RefCell<dyn IFile>>,
-                        part_dev_name,
-                    );
+                    (*dfs)
+                        .borrow_mut()
+                        .add_device_file(Rc::new(RefCell::new(part_dev)) as Rc<RefCell<dyn IFile>>, part_dev_name);
                 }
             }
         }
@@ -413,20 +349,9 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         let ata_ref = Rc::new(RefCell::new(secondary_ata_bus));
         // NOTE: master device is not necessarilly the device from which the os was booted
 
-        if unsafe {
-            (*ata_ref)
-                .borrow_mut()
-                .identify(ATADevice::MASTER)
-                .is_some()
-        } {
-            let master_dev = Rc::new(RefCell::new(ATADeviceFile {
-                bus: ata_ref.clone(),
-                bus_device: ATADevice::MASTER,
-            }));
-            (*dfs).borrow_mut().add_device_file(
-                master_dev.clone() as Rc<RefCell<dyn IFile>>,
-                "hdc".to_owned(),
-            );
+        if unsafe { (*ata_ref).borrow_mut().identify(ATADevice::MASTER).is_some() } {
+            let master_dev = Rc::new(RefCell::new(ATADeviceFile { bus: ata_ref.clone(), bus_device: ATADevice::MASTER }));
+            (*dfs).borrow_mut().add_device_file(master_dev.clone() as Rc<RefCell<dyn IFile>>, "hdc".to_owned());
             for part_number in 0..4 {
                 if let Some(part_dev) = partitions::MBRPartitionFile::from(
                     master_dev.clone() as Rc<RefCell<dyn IFile>>,
@@ -441,23 +366,16 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         part_dev.get_offset()
                     )
                     .unwrap();
-                    (*dfs).borrow_mut().add_device_file(
-                        Rc::new(RefCell::new(part_dev)) as Rc<RefCell<dyn IFile>>,
-                        part_dev_name,
-                    );
+                    (*dfs)
+                        .borrow_mut()
+                        .add_device_file(Rc::new(RefCell::new(part_dev)) as Rc<RefCell<dyn IFile>>, part_dev_name);
                 }
             }
         }
 
         if unsafe { (*ata_ref).borrow_mut().identify(ATADevice::SLAVE).is_some() } {
-            let slave_dev = Rc::new(RefCell::new(ATADeviceFile {
-                bus: ata_ref.clone(),
-                bus_device: ATADevice::SLAVE,
-            }));
-            (*dfs).borrow_mut().add_device_file(
-                slave_dev.clone() as Rc<RefCell<dyn IFile>>,
-                "hdd".to_owned(),
-            );
+            let slave_dev = Rc::new(RefCell::new(ATADeviceFile { bus: ata_ref.clone(), bus_device: ATADevice::SLAVE }));
+            (*dfs).borrow_mut().add_device_file(slave_dev.clone() as Rc<RefCell<dyn IFile>>, "hdd".to_owned());
             for part_number in 0..4 {
                 if let Some(part_dev) = partitions::MBRPartitionFile::from(
                     slave_dev.clone() as Rc<RefCell<dyn IFile>>,
@@ -472,10 +390,9 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         part_dev.get_offset()
                     )
                     .unwrap();
-                    (*dfs).borrow_mut().add_device_file(
-                        Rc::new(RefCell::new(part_dev)) as Rc<RefCell<dyn IFile>>,
-                        part_dev_name,
-                    );
+                    (*dfs)
+                        .borrow_mut()
+                        .add_device_file(Rc::new(RefCell::new(part_dev)) as Rc<RefCell<dyn IFile>>, part_dev_name);
                 }
             }
         }
@@ -559,25 +476,15 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         };
                         if let Some(node) = path.map(|path| path.get_node()) {
                             if let Some(Node::File(file)) = node {
-                                if (*file)
-                                    .borrow_mut()
-                                    .resize(puts_output.len() as u64)
-                                    .is_some()
-                                {
-                                    if (*file)
-                                        .borrow_mut()
-                                        .write(0, puts_output.as_bytes())
-                                        .is_none()
-                                    {
-                                        writeln!(TERMINAL.lock(), "Couldn't write to file!")
-                                            .unwrap();
+                                if (*file).borrow_mut().resize(puts_output.len() as u64).is_some() {
+                                    if (*file).borrow_mut().write(0, puts_output.as_bytes()).is_none() {
+                                        writeln!(TERMINAL.lock(), "Couldn't write to file!").unwrap();
                                     }
                                 } else {
                                     writeln!(TERMINAL.lock(), "Couldn't resize file!").unwrap();
                                 }
                             } else {
-                                writeln!(TERMINAL.lock(), "Redirect path should be valid!")
-                                    .unwrap();
+                                writeln!(TERMINAL.lock(), "Redirect path should be valid!").unwrap();
                             }
                         }
                     } else {
@@ -613,33 +520,26 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         let file_node = if let Ok(val) = file_node {
                             val
                         } else {
-                            writeln!(TERMINAL.lock(), "Malformed source path: \"{}\"!", file)
-                                .unwrap();
+                            writeln!(TERMINAL.lock(), "Malformed source path: \"{}\"!", file).unwrap();
                             continue;
                         };
                         let file_node = if let Some(val) = file_node.get_node() {
                             val
                         } else {
-                            writeln!(TERMINAL.lock(), "Source path: \"{}\" does not exist!", file)
-                                .unwrap();
+                            writeln!(TERMINAL.lock(), "Source path: \"{}\" does not exist!", file).unwrap();
                             continue;
                         };
                         let file_node = if let vfs::Node::File(val) = file_node {
                             val
                         } else {
-                            writeln!(TERMINAL.lock(), "Source path: \"{}\" is not a file!", file)
-                                .unwrap();
+                            writeln!(TERMINAL.lock(), "Source path: \"{}\" is not a file!", file).unwrap();
                             continue;
                         };
                         let e2fs = ext2::Ext2FS::new(file_node, false);
                         let e2fs = if let Some(val) = e2fs {
                             val
                         } else {
-                            writeln!(
-                                TERMINAL.lock(),
-                                "Source file does not contain a valid ext2 fs!"
-                            )
-                            .unwrap();
+                            writeln!(TERMINAL.lock(), "Source file does not contain a valid ext2 fs!").unwrap();
                             continue;
                         };
                         let e2fs = Rc::new(RefCell::new(e2fs));
@@ -698,21 +598,13 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         writeln!(TERMINAL.lock(), "Not enough arguments!").unwrap();
                     }
                 } else if cmnd.contains("ls") {
-                    for subnode in (*cur_dir
-                        .get_node()
-                        .expect("Shell path should be valid at all times!")
-                        .expect_folder())
-                    .borrow()
-                    .get_children()
+                    for subnode in (*cur_dir.get_node().expect("Shell path should be valid at all times!").expect_folder())
+                        .borrow()
+                        .get_children()
                     {
                         write!(TERMINAL.lock(), "{} ", subnode.0).unwrap();
                         if let Node::File(f) = subnode.1 {
-                            write!(
-                                TERMINAL.lock(),
-                                "(size: {} kb) ",
-                                (*f).borrow().get_size() as f32 / 1024.0
-                            )
-                            .unwrap();
+                            write!(TERMINAL.lock(), "(size: {} kb) ", (*f).borrow().get_size() as f32 / 1024.0).unwrap();
                         }
                     }
                     writeln!(TERMINAL.lock()).unwrap();
@@ -742,10 +634,9 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             };
 
                             if let Node::File(file) = node {
-                                if let Some(data) = (*file).borrow().read(
-                                    offset as u64,
-                                    min(16, (*file).borrow().get_size() as usize),
-                                ) {
+                                if let Some(data) =
+                                    (*file).borrow().read(offset as u64, min(16, (*file).borrow().get_size() as usize))
+                                {
                                     for e in data.iter() {
                                         write!(TERMINAL.lock(), "0x{:02X} ", e).unwrap();
                                     }
@@ -786,25 +677,13 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             continue;
                         };
                         if let Node::File(file) = node {
-                            writeln!(
-                                TERMINAL.lock(),
-                                "File size: {} bytes!",
-                                (*file).borrow().get_size()
-                            )
-                            .unwrap();
-                            if let Some(data) = (*file)
-                                .borrow()
-                                .read(0, (*file).borrow().get_size() as usize)
-                            {
+                            writeln!(TERMINAL.lock(), "File size: {} bytes!", (*file).borrow().get_size()).unwrap();
+                            if let Some(data) = (*file).borrow().read(0, (*file).borrow().get_size() as usize) {
                                 for e in data.iter() {
                                     write!(
                                         TERMINAL.lock(),
                                         "{}",
-                                        if e.is_ascii() && !e.is_ascii_control() {
-                                            *e as char
-                                        } else {
-                                            ' '
-                                        }
+                                        if e.is_ascii() && !e.is_ascii_control() { *e as char } else { ' ' }
                                     )
                                     .unwrap();
                                 }
@@ -841,11 +720,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             continue;
                         };
                         if let Node::Folder(folder) = node {
-                            if folder
-                                .borrow_mut()
-                                .create_empty_child(&name, vfs::NodeType::File)
-                                .is_none()
-                            {
+                            if folder.borrow_mut().create_empty_child(&name, vfs::NodeType::File).is_none() {
                                 writeln!(TERMINAL.lock(), "Failed to touch file!").unwrap();
                             }
                         }
@@ -873,36 +748,27 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                 } else if cmnd.contains("mkrootfsdir") {
                     while let Some(name) = splat.next() {
                         RootFSNode::new_folder(
-                            cur_dir
-                                .get_rootfs_node()
-                                .expect("Shell path should be valid at all times!"),
+                            cur_dir.get_rootfs_node().expect("Shell path should be valid at all times!"),
                             name,
                         );
                     }
                 } else if cmnd.contains("rmrootfsdir") {
                     while let Some(name) = splat.next() {
-                        let cur_node = cur_dir
-                            .get_rootfs_node()
-                            .expect("Shell path should be valid at all times!");
+                        let cur_node = cur_dir.get_rootfs_node().expect("Shell path should be valid at all times!");
                         // Empty folder check
-                        if let Some(child_to_sacrifice) =
-                            RootFSNode::find_folder(cur_node.clone(), name)
-                        {
+                        if let Some(child_to_sacrifice) = RootFSNode::find_folder(cur_node.clone(), name) {
                             if (*child_to_sacrifice).borrow().get_children().len() != 0 {
-                                writeln!(TERMINAL.lock(), "Folder: \"{}\", is non-empty!", name)
-                                    .unwrap();
+                                writeln!(TERMINAL.lock(), "Folder: \"{}\", is non-empty!", name).unwrap();
                                 break;
                             }
                         } else {
-                            writeln!(TERMINAL.lock(), "Folder: \"{}\", does not exist!", name)
-                                .unwrap();
+                            writeln!(TERMINAL.lock(), "Folder: \"{}\", does not exist!", name).unwrap();
                             continue;
                         }
                         ////
 
                         if !RootFSNode::del_folder(cur_node, name) {
-                            writeln!(TERMINAL.lock(), "Couldn't delete folder: \"{}\"!", name)
-                                .unwrap();
+                            writeln!(TERMINAL.lock(), "Couldn't delete folder: \"{}\"!", name).unwrap();
                         }
                     }
                 } else if cmnd.contains("rm") {
@@ -930,11 +796,8 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             continue;
                         };
                         if let Node::Folder(folder) = node {
-                            let child = if let Some(val) = folder
-                                .borrow_mut()
-                                .get_children()
-                                .into_iter()
-                                .find(|child| child.0 == file_name)
+                            let child = if let Some(val) =
+                                folder.borrow_mut().get_children().into_iter().find(|child| child.0 == file_name)
                             {
                                 val.1
                             } else {
@@ -948,19 +811,13 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                                 continue;
                             };
 
-                            writeln!(TERMINAL.lock(), "Removing the data from \"{}\"!", name)
-                                .unwrap();
+                            writeln!(TERMINAL.lock(), "Removing the data from \"{}\"!", name).unwrap();
                             if child.borrow_mut().resize(0).is_none() {
                                 writeln!(TERMINAL.lock(), "Failed to remove the data!").unwrap();
                             } else {
                                 writeln!(TERMINAL.lock(), "Deleting/unlinking file!").unwrap();
-                                if folder
-                                    .borrow_mut()
-                                    .unlink_or_delete_empty_child(&name)
-                                    .is_none()
-                                {
-                                    writeln!(TERMINAL.lock(), "Failed to delete/unlink file!")
-                                        .unwrap();
+                                if folder.borrow_mut().unlink_or_delete_empty_child(&name).is_none() {
+                                    writeln!(TERMINAL.lock(), "Failed to delete/unlink file!").unwrap();
                                 }
                             }
                         }
@@ -993,9 +850,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         continue;
                     };
                     if let Node::File(executable) = node {
-                        let contents = executable
-                            .borrow()
-                            .read(0, executable.borrow().get_size() as usize);
+                        let contents = executable.borrow().read(0, executable.borrow().get_size() as usize);
                         let contents = if let Some(res) = contents {
                             res
                         } else {
@@ -1007,37 +862,27 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             let elf = if let Some(res) = elf {
                                 res
                             } else {
-                                writeln!(TERMINAL.lock(), "Executable is not an elf file!")
-                                    .unwrap();
+                                writeln!(TERMINAL.lock(), "Executable is not an elf file!").unwrap();
                                 continue;
                             };
 
-                            writeln!(
-                                UART.lock(),
-                                "Program entry point: {}",
-                                elf.header.program_entry
-                            )
-                            .unwrap();
-                            writeln!(
-                                UART.lock(),
-                                "Number of parsed program headers in elf: {}",
-                                elf.program_headers.len()
-                            )
-                            .unwrap();
-                            for header in elf.program_headers {
-                                writeln!(UART.lock(), "Found program header in elf file, type: {:?}, in-file offset: {}, in-file size: {}, virtual offset: {}, virtual size: {}, flags: {:?}", header.segment_type, header.segment_file_offset, header.segment_file_size, header.segment_virtual_address, header.segment_virtual_size, header.flags).unwrap();
+                            if cfg!(debug_assertions) {
+                                writeln!(UART.lock(), "Program entry point: {}", elf.header.program_entry).unwrap();
+                                writeln!(UART.lock(), "Number of parsed program headers in elf: {}", elf.program_headers.len())
+                                    .unwrap();
+                                for header in elf.program_headers {
+                                    writeln!(UART.lock(), "Found program header in elf file, type: {:?}, in-file offset: {}, in-file size: {}, virtual offset: {}, virtual size: {}, flags: {:?}", header.segment_type, header.segment_file_offset, header.segment_file_size, header.segment_virtual_address, header.segment_virtual_size, header.flags).unwrap();
+                                }
                             }
                         }
                         let mut program = if let Some(p) = Program::from_elf(&contents) {
                             p
                         } else {
-                            writeln!(TERMINAL.lock(), "Failed to load elf file into program!")
-                                .unwrap();
+                            writeln!(TERMINAL.lock(), "Failed to load elf file into program!").unwrap();
                             continue;
                         };
                         program.run();
-                        writeln!(UART.lock(), "CPU state after program ended: {:?}", program)
-                            .unwrap();
+                        writeln!(UART.lock(), "CPU state after program ended: {:?}", program).unwrap();
                     } else {
                         writeln!(TERMINAL.lock(), "Executable path is not a file!").unwrap();
                     }
@@ -1056,12 +901,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         }
     }
 
-    writeln!(
-        UART.lock(),
-        "Heap usage: {} bytes",
-        allocator::ALLOCATOR.lock().get_heap_used()
-    )
-    .unwrap();
+    writeln!(UART.lock(), "Heap usage: {} bytes", allocator::ALLOCATOR.lock().get_heap_used()).unwrap();
 
     // Shutdown
     writeln!(UART.lock(), "\nIt's now safe to turn off your computer!").unwrap();
@@ -1070,22 +910,10 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     let height = TERMINAL.lock().fb.get_height();
     let cols = TERMINAL.lock().fb.get_cols();
     let rows = TERMINAL.lock().fb.get_rows();
-    TERMINAL
-        .lock()
-        .fb
-        .fill(0, 0, width, height, Pixel { r: 0, g: 0, b: 0 });
+    TERMINAL.lock().fb.fill(0, 0, width, height, Pixel { r: 0, g: 0, b: 0 });
     let s = "It's now safe to turn off your computer!";
     s.chars().enumerate().for_each(|(ind, c)| {
-        TERMINAL.lock().fb.write_char(
-            ind + cols / 2 - s.len() / 2,
-            (rows - 1) / 2,
-            c,
-            Pixel {
-                r: 0xff,
-                g: 0xff,
-                b: 0x55,
-            },
-        );
+        TERMINAL.lock().fb.write_char(ind + cols / 2 - s.len() / 2, (rows - 1) / 2, c, Pixel { r: 0xff, g: 0xff, b: 0x55 });
     });
 
     loop {}

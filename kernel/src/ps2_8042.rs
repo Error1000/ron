@@ -79,33 +79,24 @@ impl X86Default for PS2Device {
             status_and_command: KernPointer::<u8>::from_port(0x64),
             special_keys: SpecialKeys::unpack(&[0, 0]).unwrap(),
         };
-        wait_for!(
-            !StatusRegister::unpack_from_slice(&[ps2.status_and_command.read()])
-                .unwrap()
-                .is_input_buf_full
-        );
+        wait_for!(!StatusRegister::unpack_from_slice(&[ps2.status_and_command.read()]).unwrap().is_input_buf_full);
         ps2.status_and_command.write(0xA7);
         ps2
     }
 }
 
 pub const SCAN_CODE_SET_1: [char; 128] = [
-    ' ', ' ', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\r', '\t', 'q', 'w',
-    'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n', ' ', 'a', 's', 'd', 'f', 'g', 'h', 'j',
-    'k', 'l', ';', '\'', '`', ' ', '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', ' ',
-    '*', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
-    ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
-    ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
-    ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+    ' ', ' ', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\r', '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i',
+    'o', 'p', '[', ']', '\n', ' ', 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`', ' ', '\\', 'z', 'x', 'c', 'v',
+    'b', 'n', 'm', ',', '.', '/', ' ', '*', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+    ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+    ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+    ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
 ];
 
 impl PS2Device {
     pub unsafe fn read_byte(&mut self) -> u8 {
-        wait_for!(
-            StatusRegister::unpack_from_slice(&[self.status_and_command.read()])
-                .unwrap()
-                .is_output_buf_full
-        );
+        wait_for!(StatusRegister::unpack_from_slice(&[self.status_and_command.read()]).unwrap().is_output_buf_full);
         self.data.read()
     }
 
@@ -162,21 +153,9 @@ impl PS2Device {
         let dc = SCAN_CODE_SET_1[(b & 0x7f) as usize];
         KeyboardPacket {
             scancode: b & 0x7F,
-            char_codepoint: if dc == ' ' && (b & 0x7F) != 0x39 {
-                None
-            } else {
-                Some(dc)
-            },
-            special_keys: if b & 0x80 == 0 {
-                self.special_keys
-            } else {
-                old_special
-            },
-            typ: if b & 0x80 == 0 {
-                KeyboardPacketType::KeyPressed
-            } else {
-                KeyboardPacketType::KeyReleased
-            },
+            char_codepoint: if dc == ' ' && (b & 0x7F) != 0x39 { None } else { Some(dc) },
+            special_keys: if b & 0x80 == 0 { self.special_keys } else { old_special },
+            typ: if b & 0x80 == 0 { KeyboardPacketType::KeyPressed } else { KeyboardPacketType::KeyReleased },
         }
     }
 }

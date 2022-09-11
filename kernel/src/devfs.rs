@@ -10,9 +10,7 @@ pub struct DevFS {
 
 impl DevFS {
     pub fn new() -> Self {
-        Self {
-            disk_devices: Vec::new(),
-        }
+        Self { disk_devices: Vec::new() }
     }
 
     pub fn add_device_file(&mut self, dev: Rc<RefCell<dyn IFile>>, name: String) {

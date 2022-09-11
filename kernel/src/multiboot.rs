@@ -7,9 +7,8 @@ pub static multiboot_header: [u32; MULTIBOOT2_HEADER_LEN_IN_U32S] = [
     MULTIBOOT2_MAGIC,
     MULTIBOOT2_ARCH,
     (MULTIBOOT2_HEADER_LEN_IN_U32S * core::mem::size_of::<u32>()) as u32,
-    (-((MULTIBOOT2_MAGIC
-        + MULTIBOOT2_ARCH
-        + (MULTIBOOT2_HEADER_LEN_IN_U32S * core::mem::size_of::<u32>()) as u32) as i32)) as u32,
+    (-((MULTIBOOT2_MAGIC + MULTIBOOT2_ARCH + (MULTIBOOT2_HEADER_LEN_IN_U32S * core::mem::size_of::<u32>()) as u32) as i32))
+        as u32,
     0x7,
     0x8,
     // End tags

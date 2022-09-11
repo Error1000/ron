@@ -14,29 +14,17 @@ pub struct Pixel {
 
 impl Pixel {
     pub fn from_u32_rgb(val: u32) -> Pixel {
-        Pixel {
-            b: ((val & 0xFF) >> 0) as u8,
-            g: ((val & 0xFF00) >> 8) as u8,
-            r: ((val & 0xFF0000) >> 16) as u8,
-        }
+        Pixel { b: ((val & 0xFF) >> 0) as u8, g: ((val & 0xFF00) >> 8) as u8, r: ((val & 0xFF0000) >> 16) as u8 }
     }
 
     pub fn from_u32_bgr(val: u32) -> Pixel {
-        Pixel {
-            r: ((val & 0xFF) >> 0) as u8,
-            g: ((val & 0xFF00) >> 8) as u8,
-            b: ((val & 0xFF0000) >> 16) as u8,
-        }
+        Pixel { r: ((val & 0xFF) >> 0) as u8, g: ((val & 0xFF00) >> 8) as u8, b: ((val & 0xFF0000) >> 16) as u8 }
     }
 }
 
 impl Debug for Pixel {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Pixel")
-            .field("r", &self.r)
-            .field("g", &self.g)
-            .field("b", &self.b)
-            .finish()
+        f.debug_struct("Pixel").field("r", &self.r).field("g", &self.g).field("b", &self.b).finish()
     }
 }
 
@@ -64,12 +52,8 @@ impl<'a> FrameBuffer for EfiGopMode<'a> {
 
     #[inline(always)]
     fn set_pixel(&mut self, x: usize, y: usize, pixel: Pixel) -> Option<(i16, i16, i16)> {
-        let fb_ptr = unsafe {
-            slice::from_raw_parts_mut(
-                self.framebuffer_base as *mut u32,
-                self.get_width() * self.get_height(),
-            )
-        };
+        let fb_ptr =
+            unsafe { slice::from_raw_parts_mut(self.framebuffer_base as *mut u32, self.get_width() * self.get_height()) };
         if x > self.get_width() {
             return None;
         }
@@ -79,14 +63,12 @@ impl<'a> FrameBuffer for EfiGopMode<'a> {
         match self.info.pix_format {
             efi::EfiGraphicsPixelFormat::RgbR8bit => {
                 fb_ptr[y * self.get_width() + x] =
-                    ((pixel.r as u32) << 24 | (pixel.g as u32) << 16 | (pixel.b as u32) << 8)
-                        .to_be();
+                    ((pixel.r as u32) << 24 | (pixel.g as u32) << 16 | (pixel.b as u32) << 8).to_be();
                 return Some((0, 0, 0));
             }
             efi::EfiGraphicsPixelFormat::BgrR8bit => {
                 fb_ptr[y * self.get_width() + x] =
-                    ((pixel.b as u32) << 24 | (pixel.g as u32) << 16 | (pixel.r as u32) << 8)
-                        .to_be();
+                    ((pixel.b as u32) << 24 | (pixel.g as u32) << 16 | (pixel.r as u32) << 8).to_be();
                 return Some((0, 0, 0));
             }
             efi::EfiGraphicsPixelFormat::BitMask => return None,
@@ -117,21 +99,13 @@ impl<STATE: MixedRegisterState> FrameBuffer for Vga<Color256, STATE> {
             if err < best_err {
                 best_ind = i;
                 best_err = err;
-                best_color = Pixel {
-                    r: c.0,
-                    g: c.1,
-                    b: c.2,
-                };
+                best_color = Pixel { r: c.0, g: c.1, b: c.2 };
             }
         }
         unsafe {
             self.write(x, y, best_ind as u8);
         }
-        Some((
-            best_color.r as i16 - pixel.r as i16,
-            best_color.g as i16 - pixel.r as i16,
-            best_color.b as i16 - pixel.b as i16,
-        ))
+        Some((best_color.r as i16 - pixel.r as i16, best_color.g as i16 - pixel.r as i16, best_color.b as i16 - pixel.b as i16))
     }
 }
 
@@ -144,9 +118,7 @@ pub fn try_setup_efi_framebuffer(
         return None;
     }
     let efi_table = unsafe { &mut *efi_table };
-    if unsafe { core::mem::transmute::<_, *const ffi::c_void>(&*efi_table.boot_services) }
-        == ptr::null()
-    {
+    if unsafe { core::mem::transmute::<_, *const ffi::c_void>(&*efi_table.boot_services) } == ptr::null() {
         return None;
     }
 
@@ -164,11 +136,7 @@ pub fn try_setup_efi_framebuffer(
 
     let res = (gop.query_mode)(
         gop,
-        if gop.mode as *const EfiGopMode == ptr::null() {
-            0
-        } else {
-            gop.mode.mode
-        },
+        if gop.mode as *const EfiGopMode == ptr::null() { 0 } else { gop.mode.mode },
         &mut size_of_info,
         &mut info,
     );

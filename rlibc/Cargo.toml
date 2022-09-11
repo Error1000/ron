@@ -1,5 +1,5 @@
 [package]
-name = "rlibc-rust"
+name = "rlibc"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,4 +9,4 @@ edition = "2021"
 crate-type = ["lib"]
 
 [features]
-used-as-library = []
+used-as-system-library = []

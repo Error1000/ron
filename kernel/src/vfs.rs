@@ -9,8 +9,7 @@ use alloc::{borrow::ToOwned, rc::Rc, string::String, vec::Vec};
 
 use crate::primitives::{LazyInitialised, Mutex};
 
-pub static VFS_ROOT: Mutex<LazyInitialised<Rc<RefCell<RootFSNode>>>> =
-    Mutex::from(LazyInitialised::uninit());
+pub static VFS_ROOT: Mutex<LazyInitialised<Rc<RefCell<RootFSNode>>>> = Mutex::from(LazyInitialised::uninit());
 
 // Note: This file defines the vfs interface, the vfs indirection and the root fs ( which is basically a ramfs that supports overlay mounting but no files )
 
@@ -63,16 +62,11 @@ pub struct Path {
 
 impl Path {
     pub fn root() -> Self {
-        Self {
-            inner: String::from("/"),
-        }
+        Self { inner: String::from("/") }
     }
 
     pub fn last(&self) -> &str {
-        self.inner
-            .split("/")
-            .last()
-            .expect("Path should be valid at all times!")
+        self.inner.split("/").last().expect("Path should be valid at all times!")
     }
 
     pub fn del_last(&mut self) {
@@ -98,8 +92,7 @@ impl Path {
     }
 
     pub fn get_node(&self) -> Option<Node> {
-        let mut cur_node: Node =
-            Node::Folder((**VFS_ROOT.lock()).clone() as Rc<RefCell<dyn IFolder>>);
+        let mut cur_node: Node = Node::Folder((**VFS_ROOT.lock()).clone() as Rc<RefCell<dyn IFolder>>);
         let mut cur_path: Path = Path::root();
         let mut nodes = self.inner.split('/');
         'path_traversal_loop: while cur_path != *self {
@@ -179,9 +172,7 @@ impl TryFrom<&str> for Path {
         if !value.contains("/") {
             return Err(());
         }
-        Ok(Path {
-            inner: String::from(value),
-        })
+        Ok(Path { inner: String::from(value) })
     }
 }
 
@@ -195,9 +186,7 @@ impl TryFrom<String> for Path {
         if !value.contains("/") {
             return Err(());
         }
-        Ok(Path {
-            inner: String::from(value),
-        })
+        Ok(Path { inner: String::from(value) })
     }
 }
 
@@ -221,23 +210,14 @@ impl Debug for RootFSNode {
 }
 impl RootFSNode {
     pub fn new_root() -> Self {
-        Self {
-            path: Path::root(),
-            parent: None,
-            children: Vec::new(),
-            mountpoint: None,
-        }
+        Self { path: Path::root(), parent: None, children: Vec::new(), mountpoint: None }
     }
 
     pub fn new_folder(slf: Rc<RefCell<RootFSNode>>, name: &str) -> Rc<RefCell<RootFSNode>> {
         let mut new_p = (*slf).borrow().path.clone();
         new_p.push_str(name);
-        let new_f = Rc::new(RefCell::new(Self {
-            path: new_p,
-            parent: Some(slf.clone()),
-            children: Vec::new(),
-            mountpoint: None,
-        }));
+        let new_f =
+            Rc::new(RefCell::new(Self { path: new_p, parent: Some(slf.clone()), children: Vec::new(), mountpoint: None }));
         (*slf).borrow_mut().children.push(new_f.clone());
         new_f
     }
@@ -261,10 +241,7 @@ impl RootFSNode {
         }
     }
 
-    pub fn find_folder(
-        slf: Rc<RefCell<RootFSNode>>,
-        name: &str,
-    ) -> Option<Rc<RefCell<RootFSNode>>> {
+    pub fn find_folder(slf: Rc<RefCell<RootFSNode>>, name: &str) -> Option<Rc<RefCell<RootFSNode>>> {
         for c in &(*slf).borrow().children {
             if (**c).borrow().path.last() == name {
                 return Some(c.clone());
@@ -294,15 +271,10 @@ impl IFolder for RootFSNode {
 
         for c in &self.children {
             // Name resolution
-            if v.iter()
-                .any(|(child_name, _)| *child_name == (**c).borrow().path.last())
-            {
+            if v.iter().any(|(child_name, _)| *child_name == (**c).borrow().path.last()) {
                 continue;
             }
-            v.push((
-                c.as_ref().borrow().path.last().to_owned(),
-                Node::Folder(c.clone() as Rc<RefCell<dyn IFolder>>),
-            ));
+            v.push((c.as_ref().borrow().path.last().to_owned(), Node::Folder(c.clone() as Rc<RefCell<dyn IFolder>>)));
         }
         v
     }
