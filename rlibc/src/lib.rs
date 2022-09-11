@@ -4,20 +4,20 @@
 #[allow(unused_imports)]
 use core::arch::asm;
 
-#[cfg(feature = "used-as-system-library")]
+#[cfg(not(feature = "nostartfiles"))]
 #[panic_handler]
 fn panic(_: &::core::panic::PanicInfo) -> ! {
     loop {}
 }
 
-#[cfg(feature = "used-as-system-library")]
+#[cfg(not(feature = "nostartfiles"))]
 #[no_mangle]
 pub unsafe extern "C" fn _start() {
     exit(main() as isize);
     loop {}
 }
 
-#[cfg(feature = "used-as-system-library")]
+#[cfg(not(feature = "nostartfiles"))]
 extern "C" {
     pub fn main() -> core::ffi::c_int;
 }
@@ -93,7 +93,7 @@ pub unsafe extern "C" fn memset(dest: *mut u8, c: isize, n: usize) -> *mut u8 {
     let dest_size = dest as *mut usize;
     let n_size = n / core::mem::size_of::<usize>();
     // NOTE: Don't use from_ne_bytes as it causes a call to memset (don't know if directly or indirectly), causing recursion, leading to a stack overflow
-    // Endianness dosen't matter because we just need to repeat a byte
+    // Endianness doesn't matter because we just need to repeat a byte
     let mut c_size = 0usize;
     for i in 0..core::mem::size_of::<usize>() {
         c_size |= (c as usize) << (i * 8);
@@ -168,7 +168,7 @@ impl TryFrom<usize> for SyscallNumber {
         } else {
             return Ok(unsafe { core::mem::transmute(value) });
         }
-        // SAFTEY: SyscallNumber is reper(usize), value is usize
+        // SAFETY: SyscallNumber is reper(usize), value is usize
         // and we just checked that value is less than the max value of SyscallNumber
     }
 }

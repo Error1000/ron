@@ -1,9 +1,9 @@
-all: test.c
-	$(CC) -Wall -o test test.c $(LDFLAGS) $(LDLIBS) $(CFLAGS)
+all: example.c
+	$(CC) -Wall -o example example.c $(LDFLAGS) $(LDLIBS) $(CFLAGS)
 
 install:
-	rm ../../disk/test
-	cp test ../../disk
+	rm -f ../../disk/example
+	cp example ../../disk
 
 clean:
-	rm test
+	rm -f example

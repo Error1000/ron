@@ -53,12 +53,22 @@ fn exit(emu: &mut Emulator, exit_number: usize) {
     emu.halt();
 }
 
-fn write(emu: &mut Emulator, _fd: usize, user_buf: virtmem::UserPointer<[u8]>, count: usize) -> i32 {
-    let _buf = if let Some(val) = user_buf.try_as_ref(&mut emu.memory, count) {
+fn write(emu: &mut Emulator, fd: usize, user_buf: virtmem::UserPointer<[u8]>, count: usize) -> i32 {
+    let buf = if let Some(val) = user_buf.try_as_ref(&mut emu.memory, count) {
         val
     } else {
         return -1;
     };
 
-    count as i32 // TODO: This is just for testing
+    match fd {
+        1 /* stdout */ | 2 /* stderr */ => {
+            use crate::TERMINAL;
+            use core::fmt::Write;
+            let str_buf = if let Ok(val) = core::str::from_utf8(buf) { val } else { return -1; };
+            let res = writeln!(TERMINAL.lock(), "{}", str_buf);
+            if res.is_err() { return -1; }
+            return count as i32;
+        } //stdout
+        _ => return -1,
+    }
 }

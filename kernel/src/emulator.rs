@@ -826,7 +826,7 @@ where
             return None;
         }
         let mut instruction = self.memory.read_u32_le(self.program_counter);
-        if cfg!(debug_assertions) {
+        if cfg!(verbose_debug) {
             use crate::UART;
             use core::fmt::Write;
             writeln!(UART.lock(), "Parsing instruction at: 0x{:x}", self.program_counter).unwrap();

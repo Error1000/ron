@@ -3,6 +3,7 @@
 
 iso/boot/ron
 out.iso
+disk.img
 
 toolchain/.build
 toolchain/build.log

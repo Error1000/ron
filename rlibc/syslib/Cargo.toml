@@ -10,5 +10,5 @@ path = "../src/lib.rs"
 crate-type = ["staticlib"]
 
 [features]
-default = ["used-as-system-library"]
-used-as-system-library = []
+default = [] # We want startfiles in the system library
+nostartfiles = []
