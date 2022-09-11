@@ -752,7 +752,7 @@ data_end:
         j success
 error:
 	# exit(1);
-	li a7, 1
+	li a7, 0
 	li a0, 1
 	ecall
 
@@ -760,7 +760,7 @@ hlt2:	j hlt2
 
 success:
 	# exit(0);
-	li a7, 1
+	li a7, 0
 	li a0, 0
 	ecall
 hlt1:   j hlt1
