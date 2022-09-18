@@ -713,16 +713,25 @@ mod riscv_instruction {
     impl RiscvCJTypeInstruction {
         pub fn parse_imm(&self) -> Option<u32> {
             match (self.funct3, self.opcode) {
-                (0b101, RiscvCompressedOpcode::C1) => Some(
-                    (self.imm_bit11 as u32) << 11
-                        | (self.imm_bit10 as u32) << 10
-                        | (self.imm_9_8 as u32) << 8
-                        | (self.imm_bit7 as u32) << 7
-                        | (self.imm_bit6 as u32) << 6
-                        | (self.imm_bit5 as u32) << 5
-                        | (self.imm_bit4 as u32) << 4
-                        | (self.imm_3_1 as u32) << 1,
-                ),
+                (0b101, RiscvCompressedOpcode::C1) => {
+                    // The offset is sign-extended
+                    // RISC-V Volume I (section 16.4)
+                    let imm: u16 = (self.imm_bit11 as u16) << 15
+                        | (self.imm_bit11 as u16) << 14
+                        | (self.imm_bit11 as u16) << 13
+                        | (self.imm_bit11 as u16) << 12
+                        | (self.imm_bit11 as u16) << 11
+                        | (self.imm_bit10 as u16) << 10
+                        | (self.imm_9_8 as u16) << 8
+                        | (self.imm_bit7 as u16) << 7
+                        | (self.imm_bit6 as u16) << 6
+                        | (self.imm_bit5 as u16) << 5
+                        | (self.imm_bit4 as u16) << 4
+                        | (self.imm_3_1 as u16) << 1;
+
+                    Some(sign_extend(imm))
+                }
+
                 _ => return None,
             }
         }
@@ -730,6 +739,8 @@ mod riscv_instruction {
 }
 
 use riscv_instruction::*;
+
+use crate::program::ProgramData;
 
 // NOTE: Does not support T's bigger than 256-bits wide
 pub fn sign_extend<T, U>(val: T) -> U
@@ -777,7 +788,7 @@ where
     registers: [u64; 31],
     pub memory: MemType,
     halted: bool,
-    syscall: fn(&mut Self),
+    syscall: fn(&mut Self, &mut ProgramData),
 }
 
 impl<MemType> Debug for Riscv64Cpu<MemType>
@@ -797,7 +808,7 @@ impl<MemType> Riscv64Cpu<MemType>
 where
     MemType: EmulatorMemory,
 {
-    pub fn from(mem: MemType, start_address: u64, syscall: fn(&mut Self)) -> Riscv64Cpu<MemType> {
+    pub fn from(mem: MemType, start_address: u64, syscall: fn(&mut Self, &mut ProgramData)) -> Riscv64Cpu<MemType> {
         Riscv64Cpu { program_counter: start_address, registers: [0u64; 31], memory: mem, halted: false, syscall }
     }
 
@@ -821,18 +832,17 @@ where
 
     // Run one clock cycle
     // Note: Returns None when ticking fails ( for example maybe instruction parsing failed, or maybe the cpu is halted )
-    pub fn tick(&mut self) -> Option<()> {
+    pub fn tick(&mut self, prog: &mut ProgramData) -> Option<()> {
         if self.halted {
             return None;
         }
+
         let mut instruction = self.memory.read_u32_le(self.program_counter);
-        if cfg!(verbose_debug) {
-            use crate::UART;
-            use core::fmt::Write;
-            writeln!(UART.lock(), "Parsing instruction at: 0x{:x}", self.program_counter).unwrap();
-        }
         let is_compressed = (instruction & 0b11) != 0b11;
         let inst_size = if is_compressed { core::mem::size_of::<u16>() as u64 } else { core::mem::size_of::<u32>() as u64 };
+        // use crate::UART;
+        // use core::fmt::Write;
+        // writeln!(UART.lock(), "Parsing instruction: 0x{:x} at: 0x{:x}, with size: {} bytes", instruction, self.program_counter, inst_size).unwrap();
 
         if is_compressed {
             let compressed_inst = instruction as u16;
@@ -1393,13 +1403,13 @@ where
         }
 
         // NOTE: I would expect the output to be [147, 0, 0, 1], since the struct is marked as little-endian, but it is [1, 0, 0, 147], that's because the byte array is always big-endian and the little-endian marker only applies to each field not to the endiannes of the byte array produced
-        // Referance: Issue #92, https://github.com/hashmismatch/packed_struct.rs/issues/92
-        // So therefore i am insteada using big endian for parsing instructions
+        // Reference: Issue #92, https://github.com/hashmismatch/packed_struct.rs/issues/92
+        // So therefore i am instead using big endian for parsing instructions
         let opcode: RiscvOpcode = RiscvOpcode::from_primitive((instruction & 0b111_1111) as u8)?;
         match opcode.get_type() {
             RiscvInstType::RType => self.execute_rtype_inst(RiscvRTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?),
             RiscvInstType::IType => {
-                self.execute_itype_inst(RiscvITypeInstruction::unpack(&instruction.to_be_bytes()).ok()?, inst_size)
+                self.execute_itype_inst(RiscvITypeInstruction::unpack(&instruction.to_be_bytes()).ok()?, inst_size, prog)
             }
             RiscvInstType::SType => self.execute_stype_inst(RiscvSTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?),
             RiscvInstType::BType => {
@@ -1637,7 +1647,7 @@ where
         }
     }
 
-    fn execute_itype_inst(&mut self, inst: RiscvITypeInstruction, inst_size: u64) {
+    fn execute_itype_inst(&mut self, inst: RiscvITypeInstruction, inst_size: u64, prog_data: &mut ProgramData) {
         match (inst.opcode, inst.funct3) {
             (RiscvOpcode::OPIMM, 0b000) => {
                 // ADDI
@@ -1817,7 +1827,7 @@ where
             (RiscvOpcode::SYSTEM, _) => {
                 if inst.parse_imm() == 0 {
                     // ECALL
-                    (self.syscall)(self)
+                    (self.syscall)(self, prog_data)
                 }
             }
             _ => (),

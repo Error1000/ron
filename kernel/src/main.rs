@@ -18,6 +18,7 @@ use core::fmt::Write;
 use alloc::borrow::ToOwned;
 use alloc::rc::Rc;
 use alloc::string::String;
+use alloc::vec::Vec;
 use ata::{ATABus, ATADevice, ATADeviceFile};
 use primitives::{LazyInitialised, Mutex};
 use program::Program;
@@ -260,7 +261,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         i += len as usize;
     }
     // FIXME: Don't hardcode the starting location of the heap
-    // Stack size: 1mb, executable size (as of 22 may 2022): ~4mb, so starting the heap at 8mb should be a safe bet.
+    // Stack size: 2mb, executable size (as of 17 sep 2022): ~6mb, so starting the heap at 8mb should be a safe bet.
     allocator::ALLOCATOR.lock().init((8 * 1024 * 1024) as *mut u8, 4 * 1024 * 1024);
 
     vfs::VFS_ROOT.lock().set(Rc::new(RefCell::new(RootFSNode::new_root())));
@@ -347,7 +348,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
 
     if let Some(secondary_ata_bus) = unsafe { ATABus::secondary_x86() } {
         let ata_ref = Rc::new(RefCell::new(secondary_ata_bus));
-        // NOTE: master device is not necessarilly the device from which the os was booted
+        // NOTE: master device is not necessarily the device from which the os was booted
 
         if unsafe { (*ata_ref).borrow_mut().identify(ATADevice::MASTER).is_some() } {
             let master_dev = Rc::new(RefCell::new(ATADeviceFile { bus: ata_ref.clone(), bus_device: ATADevice::MASTER }));
@@ -450,7 +451,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
             let mut splat = bufs.split_inclusive(' ');
             if let Some(cmnd) = splat.next() {
                 // Handle shell built ins
-                if cmnd.contains("puts") {
+                if cmnd.starts_with("puts") {
                     let mut puts_output: String = String::new();
                     let mut redirect: Option<String> = None;
                     while let Some(arg) = splat.next() {
@@ -492,13 +493,13 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                     };
 
                     writeln!(TERMINAL.lock()).unwrap();
-                } else if cmnd.contains("whoareyou") {
+                } else if cmnd.starts_with("whoareyou") {
                     writeln!(TERMINAL.lock(), "Ron").unwrap();
-                } else if cmnd.contains("help") {
+                } else if cmnd.starts_with("help") {
                     writeln!(TERMINAL.lock(), "puts whoareyou rmrootfsdir mkrootfsdir rm touch mount.ext2 umount free hexdump cat ls cd clear exit help").unwrap();
-                } else if cmnd.contains("clear") {
+                } else if cmnd.starts_with("clear") {
                     TERMINAL.lock().clear();
-                } else if cmnd.contains("free") {
+                } else if cmnd.starts_with("free") {
                     let heap_used = ALLOCATOR.lock().get_heap_used();
                     let heap_max = ALLOCATOR.lock().get_heap_max();
                     writeln!(
@@ -509,7 +510,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         heap_used as f32 / heap_max as f32 * 100.0
                     )
                     .unwrap();
-                } else if cmnd.contains("mount.ext2") {
+                } else if cmnd.starts_with("mount.ext2") {
                     if let (Some(file), Some(mntpoint)) = (splat.next(), splat.next()) {
                         let mut file_node = vfs::Path::try_from(file.trim());
                         if !file.starts_with("/") {
@@ -573,7 +574,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                     } else {
                         writeln!(TERMINAL.lock(), "Not enough arguments!").unwrap();
                     }
-                } else if cmnd.contains("umount") {
+                } else if cmnd.starts_with("umount") {
                     if let Some(mntpoint) = splat.next() {
                         let mut mntpoint_node = vfs::Path::try_from(mntpoint.trim());
                         if !mntpoint.starts_with("/") {
@@ -597,7 +598,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                     } else {
                         writeln!(TERMINAL.lock(), "Not enough arguments!").unwrap();
                     }
-                } else if cmnd.contains("ls") {
+                } else if cmnd.starts_with("ls") {
                     for subnode in (*cur_dir.get_node().expect("Shell path should be valid at all times!").expect_folder())
                         .borrow()
                         .get_children()
@@ -608,7 +609,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         }
                     }
                     writeln!(TERMINAL.lock()).unwrap();
-                } else if cmnd.contains("hexdump") {
+                } else if cmnd.starts_with("hexdump") {
                     if let (Some(offset_str), Some(file_str)) = (splat.next(), splat.next()) {
                         if let Ok(offset) = offset_str.trim().parse::<usize>() {
                             let arg_path = if file_str.starts_with('/') {
@@ -654,48 +655,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                     }
 
                     writeln!(TERMINAL.lock()).unwrap();
-                } else if cmnd.contains("cat") {
-                    if let Some(file_str) = splat.next() {
-                        let arg_path = if file_str.starts_with('/') {
-                            vfs::Path::try_from(file_str)
-                        } else {
-                            let mut actual_dir = cur_dir.clone();
-                            actual_dir.push_str(file_str);
-                            Ok(actual_dir)
-                        };
-                        let node = arg_path.map(|path| path.get_node());
-                        let node = if let Ok(val) = node {
-                            val
-                        } else {
-                            writeln!(TERMINAL.lock(), "Invalid path!").unwrap();
-                            continue;
-                        };
-                        let node = if let Some(val) = node {
-                            val
-                        } else {
-                            writeln!(TERMINAL.lock(), "Path doesn't exist!").unwrap();
-                            continue;
-                        };
-                        if let Node::File(file) = node {
-                            writeln!(TERMINAL.lock(), "File size: {} bytes!", (*file).borrow().get_size()).unwrap();
-                            if let Some(data) = (*file).borrow().read(0, (*file).borrow().get_size() as usize) {
-                                for e in data.iter() {
-                                    write!(
-                                        TERMINAL.lock(),
-                                        "{}",
-                                        if e.is_ascii() && !e.is_ascii_control() { *e as char } else { ' ' }
-                                    )
-                                    .unwrap();
-                                }
-                            } else {
-                                write!(TERMINAL.lock(), "Couldn't read file!").unwrap();
-                            }
-                        } else {
-                            write!(TERMINAL.lock(), "Path should be a file!").unwrap();
-                        }
-                    }
-                    writeln!(TERMINAL.lock()).unwrap();
-                } else if cmnd.contains("touch") {
+                } else if cmnd.starts_with("touch") {
                     while let Some(name) = splat.next() {
                         let arg_path = if name.starts_with('/') {
                             vfs::Path::try_from(name)
@@ -725,7 +685,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             }
                         }
                     }
-                } else if cmnd.contains("cd") {
+                } else if cmnd.starts_with("cd") {
                     if let Some(name) = splat.next() {
                         let name = name.trim();
                         let old_dir = cur_dir.clone();
@@ -745,14 +705,14 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             cur_dir = old_dir;
                         }
                     }
-                } else if cmnd.contains("mkrootfsdir") {
+                } else if cmnd.starts_with("mkrootfsdir") {
                     while let Some(name) = splat.next() {
                         RootFSNode::new_folder(
                             cur_dir.get_rootfs_node().expect("Shell path should be valid at all times!"),
                             name,
                         );
                     }
-                } else if cmnd.contains("rmrootfsdir") {
+                } else if cmnd.starts_with("rmrootfsdir") {
                     while let Some(name) = splat.next() {
                         let cur_node = cur_dir.get_rootfs_node().expect("Shell path should be valid at all times!");
                         // Empty folder check
@@ -771,7 +731,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             writeln!(TERMINAL.lock(), "Couldn't delete folder: \"{}\"!", name).unwrap();
                         }
                     }
-                } else if cmnd.contains("rm") {
+                } else if cmnd.starts_with("rm") {
                     while let Some(name) = splat.next() {
                         let arg_path = if name.starts_with('/') {
                             vfs::Path::try_from(name)
@@ -822,9 +782,9 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             }
                         }
                     }
-                } else if cmnd.contains("elp") {
+                } else if cmnd.starts_with("elp") {
                     writeln!(TERMINAL.lock(), "NOPERS, no elp!").unwrap();
-                } else if cmnd.contains("exit") {
+                } else if cmnd.starts_with("exit") {
                     break 'big_loop;
                 } else {
                     let executable_path = if cmnd.starts_with('/') {
@@ -870,17 +830,18 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             writeln!(UART.lock(), "Number of parsed program headers in elf: {}", elf.program_headers.len())
                                 .unwrap();
                             for header in elf.program_headers {
-                                writeln!(UART.lock(), "Found program header in elf file, type: {:?}, in-file offset: {}, in-file size: {}, virtual offset: {}, virtual size: {}, flags: {:?}", header.segment_type, header.segment_file_offset, header.segment_file_size, header.segment_virtual_address, header.segment_virtual_size, header.flags).unwrap();
+                                writeln!(UART.lock(), "Found program header in elf file, type: {:?}, in-file offset: {}, in-file size: {}, virtual offset: {}, virtual size: {}, flags: 0b{:b}", header.segment_type, header.segment_file_offset, header.segment_file_size, header.segment_virtual_address, header.segment_virtual_size, header.flags).unwrap();
                             }
                         }
-                        let mut program = if let Some(p) = Program::from_elf(&contents) {
+                        let mut program = if let Some(p) = Program::from_elf(&contents, &bufs.split(' ').collect::<Vec<&str>>())
+                        {
                             p
                         } else {
                             writeln!(TERMINAL.lock(), "Failed to load elf file into program!").unwrap();
                             continue;
                         };
                         program.run();
-                        writeln!(UART.lock(), "CPU state after program ended: {:?}", program).unwrap();
+                        writeln!(UART.lock(), "State after program ended: {:?}", program).unwrap();
                     } else {
                         writeln!(TERMINAL.lock(), "Executable path is not a file!").unwrap();
                     }

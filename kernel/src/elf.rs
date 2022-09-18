@@ -237,17 +237,6 @@ pub mod elf_program_header {
         Note = 4,
     }
 
-    #[derive(PackedStruct, Debug)]
-    #[packed_struct(bit_numbering = "lsb0", size_bytes = "4")]
-    pub struct Flags {
-        #[packed_field(bits = "0", size_bits = "1")]
-        pub executable: bool,
-        #[packed_field(bits = "1", size_bits = "1")]
-        pub writeable: bool,
-        #[packed_field(bits = "2", size_bits = "1")]
-        pub readable: bool,
-    }
-
     #[derive(PackedStruct)]
     #[packed_struct(endian = "msb")]
     pub struct ProgramHeader32BitBig {
@@ -258,8 +247,7 @@ pub mod elf_program_header {
         unused: u32,
         segment_file_size: u32,
         segment_virtual_size: u32,
-        #[packed_field(size_bytes = "4")]
-        flags: Flags,
+        flags: u32,
     }
 
     #[derive(PackedStruct)]
@@ -272,8 +260,7 @@ pub mod elf_program_header {
         unused: u32,
         segment_file_size: u32,
         segment_virtual_size: u32,
-        #[packed_field(size_bytes = "4")]
-        flags: Flags,
+        flags: u32,
     }
 
     #[derive(PackedStruct)]
@@ -281,8 +268,7 @@ pub mod elf_program_header {
     pub struct ProgramHeader64BitBig {
         #[packed_field(size_bytes = "4", ty = "enum")]
         segment_type: EnumCatchAll<ProgramHeaderType>, // NOTE: We use EnumCatchALl because we don't want to crash when loading an unknown type program header because according to: https://wiki.osdev.org/ELF, "There are more values, but mostly contain architecture/environment specific information, which is probably not required for the majority of ELF files."
-        #[packed_field(size_bytes = "4")]
-        flags: Flags,
+        flags: u32,
         segment_file_offset: u64,
         segment_virtual_address: u64,
         unused: u64,
@@ -295,8 +281,7 @@ pub mod elf_program_header {
     pub struct ProgramHeader64BitLittle {
         #[packed_field(size_bytes = "4", ty = "enum")]
         segment_type: EnumCatchAll<ProgramHeaderType>, // NOTE: We use EnumCatchALl because we don't want to crash when loading an unknown type program header because according to: https://wiki.osdev.org/ELF, "There are more values, but mostly contain architecture/environment specific information, which is probably not required for the majority of ELF files."
-        #[packed_field(size_bytes = "4")]
-        flags: Flags,
+        flags: u32,
         segment_file_offset: u64,
         segment_virtual_address: u64,
         unused: u64,
@@ -306,7 +291,7 @@ pub mod elf_program_header {
 
     pub struct UniversalProgramHeader {
         pub segment_type: EnumCatchAll<ProgramHeaderType>, // NOTE: We use EnumCatchALl because we don't want to crash when loading an unknown type program header because according to: https://wiki.osdev.org/ELF, "There are more values, but mostly contain architecture/environment specific information, which is probably not required for the majority of ELF files."
-        pub flags: Flags,
+        pub flags: u32,
         pub segment_file_offset: u64,
         pub segment_virtual_address: u64,
         pub segment_file_size: u64,

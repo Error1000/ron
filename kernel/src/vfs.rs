@@ -69,7 +69,7 @@ impl Path {
         self.inner.split("/").last().expect("Path should be valid at all times!")
     }
 
-    pub fn del_last(&mut self) {
+    pub fn del_last(&mut self) -> &mut Self {
         loop {
             if let Some(c) = self.inner.pop() {
                 if c == '/' {
@@ -82,6 +82,7 @@ impl Path {
                 break;
             }
         }
+        self
     }
 
     pub fn push_str(&mut self, subnode: &str) {

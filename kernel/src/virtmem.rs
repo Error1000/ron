@@ -5,102 +5,99 @@ use crate::emulator::EmulatorMemory;
 
 #[derive(Debug)]
 
-struct VirtRange {
-    virtual_start: usize,
-    phys_start: usize,
-    len: usize,
+pub struct VirtRegion {
+    virtual_start: u64, // Note: virtual_start "points" to the beginning of the region, not one after or one before
+    pub backing_storage: Vec<u8>,
 }
 
-impl VirtRange {
-    fn try_map(&self, virt_addr: usize) -> Option<usize> {
-        if (self.virtual_start..=(self.virtual_start - 1 + self.len)).contains(&virt_addr) {
-            return Some(virt_addr - self.virtual_start + self.phys_start);
+impl VirtRegion {
+    pub fn try_map(&self, virt_addr: u64) -> Option<usize> {
+        if (self.virtual_start..=self.get_virtual_end_inclusive()).contains(&virt_addr) {
+            return Some((virt_addr - self.virtual_start) as usize);
         } else {
             return None;
         }
     }
 
-    fn virtually_overlaps_with(&self, other: &VirtRange) -> bool {
+    pub fn try_reverse_map(&self, offset_in_region: usize) -> Option<u64> {
+        if offset_in_region > self.len() {
+            return None;
+        } else {
+            return Some(offset_in_region as u64 + self.virtual_start);
+        }
+    }
+
+    pub fn virtually_overlaps_with(&self, other: &Self) -> bool {
         // If our start is after their end, then we don't overlap
-        // NOTE:
-        // self.virtual_start - other.len >= other.virtual_start
-        // is the same as
-        // self.virtual_start >= other.virtual_start + other.len
-        if self.virtual_start - other.len >= other.virtual_start {
+        // Note: since virtual_start is included in the range other.virtual_start + other.len points one past the end
+        //       which is why we subtract 1
+        // Note: Order here is important as adding first could lead to an overflow
+        if self.virtual_start > other.get_virtual_end_inclusive() {
             return false;
         }
 
-        // Our if our end is before their start, then we don't overlap
-        // NOTE:
-        // self.virtual_start < other.virtual_start - self.len
-        // is the same as
-        // self.virtual_start + self.len < other.virtual_start
-        if self.virtual_start < other.virtual_start - self.len {
+        // If our end is before their start, then we don't overlap
+        // Note: since virtual_start is included in the range self.virtual_start + self.len points one past the end
+        //       which is why we subtract 1
+        // Note: Order here is important as adding first could lead to an overflow
+        if self.get_virtual_end_inclusive() < other.virtual_start {
             return false;
         }
 
         // Otherwise return true
         return true;
     }
+
+    pub fn get_virtual_end_inclusive(&self) -> u64 {
+        self.virtual_start - 1 + (self.len() as u64)
+    }
+    pub fn len(&self) -> usize {
+        self.backing_storage.len()
+    }
 }
 
 pub trait VirtualMemory {
-    fn try_map(&self, virt_addr: usize) -> Option<usize>;
-    fn add_region(&mut self, phys_addr: usize, virt_addr: usize, data: &[u8]) -> Option<()>;
-    fn get_slice_mut(&mut self) -> &mut [u8];
-    fn get_slice(&self) -> &[u8];
+    fn try_map(&self, virt_addr: u64) -> Option<(&VirtRegion, usize)>;
+    fn try_map_mut(&mut self, virt_addr: u64) -> Option<(&mut VirtRegion, usize)>;
+
+    fn add_region(&mut self, virt_addr: u64, data: &[u8]) -> Option<()>;
 }
 
 #[derive(Debug)]
 pub struct LittleEndianVirtualMemory {
-    backing_storage: Vec<u8>,
-    map: Vec<VirtRange>,
+    map: Vec<VirtRegion>,
 }
 
 impl LittleEndianVirtualMemory {
     pub fn new() -> Self {
-        Self { backing_storage: Vec::new(), map: Vec::new() }
+        Self { map: Vec::new() }
+    }
+
+    pub fn get_number_of_regions(&self) -> usize {
+        self.map.len()
     }
 }
 
 impl VirtualMemory for LittleEndianVirtualMemory {
-    fn try_map(&self, virt_addr: usize) -> Option<usize> {
-        self.map.iter().find_map(|range| range.try_map(virt_addr))
+    fn try_map_mut(&mut self, virt_addr: u64) -> Option<(&mut VirtRegion, usize)> {
+        self.map.iter_mut().find_map(|range| range.try_map(virt_addr).map(|addr| (range, addr)))
     }
 
-    fn get_slice(&self) -> &[u8] {
-        self.backing_storage.as_slice()
+    fn try_map(&self, virt_addr: u64) -> Option<(&VirtRegion, usize)> {
+        self.map.iter().find_map(|range| range.try_map(virt_addr).map(|addr| (range, addr)))
     }
 
-    fn get_slice_mut(&mut self) -> &mut [u8] {
-        self.backing_storage.as_mut_slice()
-    }
+    fn add_region(&mut self, virt_addr: u64, data: &[u8]) -> Option<()> {
+        let new_range = VirtRegion { virtual_start: virt_addr, backing_storage: Vec::from(data) };
 
-    fn add_region(&mut self, phys_addr: usize, virt_addr: usize, data: &[u8]) -> Option<()> {
         // First check for overlap in the virtual space
-        // (Overlap in the physical space is fine, as lone as one virtual address only maps to one physical address it's fine)
-
-        let new_range = VirtRange { virtual_start: virt_addr, phys_start: phys_addr, len: data.len() };
+        // (Overlap in the physical space is fine, as long as one virtual address only maps to one physical address it's fine)
 
         if self.map.iter().any(|range| range.virtually_overlaps_with(&new_range)) {
             return None;
         }
 
-        // Then add the data to the backing storage
-
-        // Make sure we have enough space
-        if phys_addr + data.len() > self.backing_storage.len() {
-            self.backing_storage.resize(phys_addr + data.len(), 0);
-        }
-
-        // Copy the data
-        let mut indx = phys_addr;
-        for byte in data {
-            self.backing_storage[indx] = *byte;
-            indx += 1;
-        }
-
-        // Finally add the range to the map
+        // Then add the range to the map
         self.map.push(new_range);
 
         Some(())
@@ -112,97 +109,70 @@ where
     T: VirtualMemory,
 {
     fn read_u8_ne(&self, addr: u64) -> u8 {
-        let phys_addr = if let Some(val) = self.try_map(addr as usize) {
-            val
-        } else {
-            panic!("Virtual address: {} should be mapped!", addr)
-        };
-        self.get_slice()[phys_addr]
+        let region =
+            if let Some(val) = self.try_map(addr) { val } else { panic!("Virtual address: {} should be mapped!", addr) };
+        region.0.backing_storage[region.1]
     }
 
     fn write_u8_ne(&mut self, addr: u64, val: u8) {
-        let phys_addr = if let Some(val) = self.try_map(addr as usize) {
-            val
-        } else {
-            panic!("Virtual address: {} should be mapped!", addr)
-        };
-        self.get_slice_mut()[phys_addr] = val;
+        let region =
+            if let Some(val) = self.try_map_mut(addr) { val } else { panic!("Virtual address: {} should be mapped!", addr) };
+        region.0.backing_storage[region.1] = val;
     }
 
     // WARNING: Reading/writing more than 1 byte across a region boundry is not supported
     fn read_u16_ne(&self, addr: u64) -> u16 {
-        let phys_addr = if let Some(val) = self.try_map(addr as usize) {
-            val
-        } else {
-            panic!("Virtual address: {} should be mapped!", addr)
-        };
-        u16::from_le_bytes(self.get_slice()[phys_addr..phys_addr + core::mem::size_of::<u16>()].try_into().unwrap())
+        let region =
+            if let Some(val) = self.try_map(addr) { val } else { panic!("Virtual address: {} should be mapped!", addr) };
+        u16::from_le_bytes(region.0.backing_storage[region.1..region.1 + core::mem::size_of::<u16>()].try_into().unwrap())
     }
 
     fn write_u16_ne(&mut self, addr: u64, val: u16) {
-        let phys_addr = if let Some(val) = self.try_map(addr as usize) {
-            val
-        } else {
-            panic!("Virtual address: {} should be mapped!", addr)
-        };
+        let region =
+            if let Some(val) = self.try_map_mut(addr) { val } else { panic!("Virtual address: {} should be mapped!", addr) };
         let mut indx = 0;
         for byte in val.to_le_bytes() {
-            self.get_slice_mut()[phys_addr + indx] = byte;
+            region.0.backing_storage[region.1 + indx] = byte;
             indx += 1;
         }
     }
 
     fn read_u32_ne(&self, addr: u64) -> u32 {
-        let phys_addr = if let Some(val) = self.try_map(addr as usize) {
-            val
-        } else {
-            panic!("Virtual address: {} should be mapped!", addr)
-        };
-        u32::from_le_bytes(self.get_slice()[phys_addr..phys_addr + core::mem::size_of::<u32>()].try_into().unwrap())
+        let region =
+            if let Some(val) = self.try_map(addr) { val } else { panic!("Virtual address: {} should be mapped!", addr) };
+        u32::from_le_bytes(region.0.backing_storage[region.1..region.1 + core::mem::size_of::<u32>()].try_into().unwrap())
     }
 
     fn write_u32_ne(&mut self, addr: u64, val: u32) {
-        let phys_addr = if let Some(val) = self.try_map(addr as usize) {
-            val
-        } else {
-            panic!("Virtual address: {} should be mapped!", addr)
-        };
+        let region =
+            if let Some(val) = self.try_map_mut(addr) { val } else { panic!("Virtual address: {} should be mapped!", addr) };
         let mut indx = 0;
         for byte in val.to_le_bytes() {
-            self.get_slice_mut()[phys_addr + indx] = byte;
+            region.0.backing_storage[region.1 + indx] = byte;
             indx += 1;
         }
     }
 
     fn read_u64_ne(&self, addr: u64) -> u64 {
-        let phys_addr = if let Some(val) = self.try_map(addr as usize) {
-            val
-        } else {
-            panic!("Virtual address: {} should be mapped!", addr)
-        };
-        u64::from_le_bytes(self.get_slice()[phys_addr..phys_addr + core::mem::size_of::<u64>()].try_into().unwrap())
+        let region =
+            if let Some(val) = self.try_map(addr) { val } else { panic!("Virtual address: {} should be mapped!", addr) };
+        u64::from_le_bytes(region.0.backing_storage[region.1..region.1 + core::mem::size_of::<u64>()].try_into().unwrap())
     }
 
     fn write_u64_ne(&mut self, addr: u64, val: u64) {
-        let phys_addr = if let Some(val) = self.try_map(addr as usize) {
-            val
-        } else {
-            panic!("Virtual address: {} should be mapped!", addr)
-        };
+        let region =
+            if let Some(val) = self.try_map_mut(addr) { val } else { panic!("Virtual address: {} should be mapped!", addr) };
         let mut indx = 0;
         for byte in val.to_le_bytes() {
-            self.get_slice_mut()[phys_addr + indx] = byte;
+            region.0.backing_storage[region.1 + indx] = byte;
             indx += 1;
         }
     }
 
     fn read_u32_le(&self, addr: u64) -> u32 {
-        let phys_addr = if let Some(val) = self.try_map(addr as usize) {
-            val
-        } else {
-            panic!("Virtual address: {} should be mapped!", addr)
-        };
-        u32::from_le_bytes(self.get_slice()[phys_addr..phys_addr + core::mem::size_of::<u32>()].try_into().unwrap())
+        let region =
+            if let Some(val) = self.try_map(addr) { val } else { panic!("Virtual address: {} should be mapped!", addr) };
+        u32::from_le_bytes(region.0.backing_storage[region.1..region.1 + core::mem::size_of::<u32>()].try_into().unwrap())
     }
 }
 
@@ -289,7 +259,7 @@ impl<T> KernPointer<T> {
 }
 
 impl KernPointer<u8> {
-    // SAFTEY: Constructors assume address is in correct space
+    // SAFETY: Constructors assume address is in correct space
     pub unsafe fn from_mem(addr: *mut u8) -> Self {
         Self { inner: addr, is_port: false }
     }
@@ -352,21 +322,30 @@ impl UserPointer<u8> {
     pub unsafe fn from_mem(addr: u64) -> Self {
         Self { inner: addr, phantom_hold: PhantomData }
     }
+    pub fn try_as_ptr<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<*mut u8> {
+        let region = virtual_memory.try_map_mut(self.inner)?;
+        Some(unsafe { region.0.backing_storage.as_mut_ptr().add(region.1 * core::mem::size_of::<u8>()) })
+    }
 
     pub fn try_as_ref<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<&'mem mut u8> {
-        let offset = virtual_memory.try_map(self.inner as usize)?;
-        virtual_memory.get_slice_mut().get_mut(offset)
+        let region = virtual_memory.try_map_mut(self.inner)?;
+        region.0.backing_storage.get_mut(region.1)
     }
 }
 
 impl UserPointer<[u8]> {
-    // SAFTEY: Constructors assume address is in correct space
+    // SAFETY: Constructors assume address is in correct space
     pub unsafe fn from_mem(addr: u64) -> Self {
         Self { inner: addr, phantom_hold: PhantomData }
     }
 
+    pub fn try_as_ptr<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<*mut u8> {
+        let region = virtual_memory.try_map_mut(self.inner)?;
+        Some(unsafe { region.0.backing_storage.as_mut_ptr().add(region.1 * core::mem::size_of::<u8>()) })
+    }
+
     pub fn try_as_ref<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory, count: usize) -> Option<&'mem mut [u8]> {
-        let begin_offset = virtual_memory.try_map(self.inner as usize)?;
-        Some(&mut virtual_memory.get_slice_mut()[begin_offset..begin_offset + count])
+        let region = virtual_memory.try_map_mut(self.inner)?;
+        Some(&mut region.0.backing_storage[region.1..region.1 + count])
     }
 }

@@ -1,8 +1,16 @@
 #![no_std]
+#![feature(c_size_t)]
 
-// On architectures where syscall is not supported this is an unused import
-#[allow(unused_imports)]
-use core::arch::asm;
+use core::ptr::null_mut;
+
+pub mod cstr;
+pub mod mem;
+pub mod sys;
+
+use crate::{
+    cstr::strlen,
+    sys::{close, free, malloc, open, read, write, O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY},
+};
 
 #[cfg(not(feature = "nostartfiles"))]
 #[panic_handler]
@@ -13,225 +21,137 @@ fn panic(_: &::core::panic::PanicInfo) -> ! {
 #[cfg(not(feature = "nostartfiles"))]
 #[no_mangle]
 pub unsafe extern "C" fn _start() {
-    exit(main() as isize);
+    use crate::sys::{read_argc, read_argv, setup_general_pointer};
+    use sys::exit;
+
+    setup_general_pointer();
+
+    exit(main(read_argc(), read_argv()));
     loop {}
 }
 
 #[cfg(not(feature = "nostartfiles"))]
 extern "C" {
-    pub fn main() -> core::ffi::c_int;
+    pub fn main(argc: core::ffi::c_int, argv: *const *const core::ffi::c_char) -> core::ffi::c_int;
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
-    if n < core::mem::size_of::<usize>() {
-        for i in 0..n {
-            *dest.add(i) = *src.add(i);
-        }
-        return dest;
-    }
-
-    let dest_size = dest as *mut usize;
-    let src_size = src as *mut usize;
-    let n_size = n / core::mem::size_of::<usize>();
-
-    for i in 0..n_size {
-        *dest_size.add(i) = *src_size.add(i);
-    }
-
-    for i in n_size * core::mem::size_of::<usize>()..n {
-        *dest.add(i) = *src.add(i);
-    }
-
-    return dest;
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn memcmp(ptr1: *const u8, ptr2: *const u8, n: usize) -> i32 {
-    let ptr1_size = ptr1 as *mut usize;
-    let ptr2_size = ptr2 as *mut usize;
-    let n_size = n / core::mem::size_of::<usize>();
-    let mut ineq_i = None;
-
-    for i in 0..n_size {
-        if *ptr1_size.add(i) != *ptr2_size.add(i) {
-            for subi in i * core::mem::size_of::<usize>()..(i + 1) * core::mem::size_of::<usize>() {
-                if *ptr1.add(subi) != *ptr2.add(subi) {
-                    ineq_i = Some(subi);
-                    break;
-                }
-            }
-            break;
-        }
-    }
-
-    if ineq_i.is_none() {
-        for i in n_size * core::mem::size_of::<usize>()..n {
-            if *ptr1.add(i) != *ptr2.add(i) {
-                ineq_i = Some(i);
-                break;
-            }
-        }
-    }
-
-    if let Some(ineq_indx) = ineq_i {
-        return *ptr1.add(ineq_indx) as i32 - *ptr2.add(ineq_indx) as i32;
+pub unsafe extern "C" fn puts(str: *const u8) -> core::ffi::c_int {
+    let mut t = 0;
+    let res = write(sys::STDOUT_FILENO as core::ffi::c_int, str, strlen(str) as core::ffi::c_size_t);
+    if res < 0 {
+        return res as core::ffi::c_int;
     } else {
+        t += res;
+    }
+    let res = write(sys::STDOUT_FILENO as core::ffi::c_int, (&"\n").as_ptr(), 1);
+    if res < 0 {
+        return res as core::ffi::c_int;
+    } else {
+        t += res;
+    }
+    t as core::ffi::c_int
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn perror(str: *const u8) -> core::ffi::c_int {
+    let mut t = 0;
+    let res = write(sys::STDERR_FILENO as core::ffi::c_int, str, strlen(str) as core::ffi::c_size_t);
+    if res < 0 {
+        return res as core::ffi::c_int;
+    } else {
+        t += res;
+    }
+    let res = write(sys::STDERR_FILENO as core::ffi::c_int, (&"\n").as_ptr(), 1);
+    if res < 0 {
+        return res as core::ffi::c_int;
+    } else {
+        t += res;
+    }
+    t as core::ffi::c_int
+}
+
+#[repr(C)]
+pub struct FILE {
+    fileno: core::ffi::c_int,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn fopen(filename: *const u8, mode: *const u8) -> *mut FILE {
+    let mode = core::ffi::CStr::from_ptr(mode as *const i8);
+    let mode = if let Ok(val) = mode.to_str() {
+        val
+    } else {
+        return null_mut();
+    };
+
+    // Transform flags into unix open options and extra options on the FILE struct if necessary
+    // FIXME: Ensure that this is standards compliant
+    let flags = match (mode.chars().nth(0), mode.chars().nth(1) == Some('+')) {
+        (Some('r'), false) => O_RDONLY,
+        (Some('w'), false) => O_WRONLY | O_CREAT | O_TRUNC,
+        (Some('a'), false) => O_WRONLY | O_APPEND | O_CREAT,
+
+        (Some('r'), true) => O_RDWR,
+        (Some('w'), true) => O_RDWR | O_CREAT | O_TRUNC,
+        (Some('a'), true) => O_RDWR | O_APPEND | O_CREAT,
+        _ => return null_mut(),
+    };
+
+    let fd = open(filename, flags as core::ffi::c_int);
+    if fd < 0 {
+        return null_mut();
+    }
+
+    let file_ptr = malloc(core::mem::size_of::<FILE>()) as *mut FILE;
+    if file_ptr.is_null() {
+        return null_mut();
+    }
+    *file_ptr = FILE { fileno: fd };
+    return file_ptr;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn fclose(f: *mut FILE) -> core::ffi::c_int {
+    if close((*f).fileno) < 0 {
+        return -1;
+    }
+    free(f as *mut u8);
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn fwrite(
+    buf: *const u8,
+    size: core::ffi::c_size_t,
+    count: core::ffi::c_size_t,
+    f: *mut FILE,
+) -> core::ffi::c_size_t {
+    let bytes = size * count;
+    if bytes == 0 {
         return 0;
     }
+    let res = write((*f).fileno, buf, bytes);
+    if res < 0 {
+        return 0;
+    }
+    (res as core::ffi::c_size_t) / size
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn memset(dest: *mut u8, c: isize, n: usize) -> *mut u8 {
-    let c = c as u8;
-    if n < core::mem::size_of::<usize>() {
-        for i in 0..n {
-            *dest.add(i) = c;
-        }
-        return dest;
+pub unsafe extern "C" fn fread(
+    buf: *mut u8,
+    size: core::ffi::c_size_t,
+    count: core::ffi::c_size_t,
+    f: *mut FILE,
+) -> core::ffi::c_size_t {
+    let bytes = size * count;
+    if bytes == 0 {
+        return 0;
     }
-    let dest_size = dest as *mut usize;
-    let n_size = n / core::mem::size_of::<usize>();
-    // NOTE: Don't use from_ne_bytes as it causes a call to memset (don't know if directly or indirectly), causing recursion, leading to a stack overflow
-    // Endianness doesn't matter because we just need to repeat a byte
-    let mut c_size = 0usize;
-    for i in 0..core::mem::size_of::<usize>() {
-        c_size |= (c as usize) << (i * 8);
+    let res = read((*f).fileno, buf, bytes);
+    if res < 0 {
+        return 0;
     }
-
-    for i in 0..n_size {
-        *(dest_size.add(i)) = c_size;
-    }
-
-    for i in n_size * core::mem::size_of::<usize>()..n {
-        *(dest.add(i)) = c;
-    }
-
-    return dest;
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn bcmp(ptr1: *const u8, ptr2: *const u8, n: usize) -> i32 {
-    memcmp(ptr1, ptr2, n)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
-    if (dest as *const u8) == src {
-        return dest;
-    }
-
-    let src_range = src..src.add(n);
-    let has_overlap = src_range.contains(&(dest as *const u8)) || src_range.contains(&(dest.add(n) as *const u8));
-    if !has_overlap {
-        memcpy(dest, src, n);
-    } else if (dest as *const u8) < src {
-        for i in 0..n {
-            *dest.add(i) = *src.add(i);
-        }
-    } else if (dest as *const u8) > src {
-        for i in (0..n).rev() {
-            *dest.add(i) = *src.add(i);
-        }
-    }
-    dest
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn write(fd: usize, buf: *const u8, count: usize) -> i32 {
-    load_syscall_argument_1(fd);
-    load_syscall_argument_2(buf as usize);
-    load_syscall_argument_3(count);
-    syscall(SyscallNumber::Write);
-    read_syscall_return() as i32
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn exit(code: isize) {
-    load_syscall_argument_1(code as usize);
-    syscall(SyscallNumber::Exit);
-}
-
-#[repr(usize)]
-pub enum SyscallNumber {
-    Exit = 0,
-    Write = 1,
-    MaxValue,
-}
-
-impl TryFrom<usize> for SyscallNumber {
-    type Error = ();
-
-    fn try_from(value: usize) -> Result<Self, Self::Error> {
-        if value >= SyscallNumber::MaxValue as usize {
-            return Err(());
-        } else {
-            return Ok(unsafe { core::mem::transmute(value) });
-        }
-        // SAFETY: SyscallNumber is reper(usize), value is usize
-        // and we just checked that value is less than the max value of SyscallNumber
-    }
-}
-
-#[cfg(target_arch = "riscv64")]
-#[inline(always)]
-unsafe fn load_syscall_argument_1(value: usize) {
-    // NOTE: Uses linux abi
-    asm!("", in("a0") value);
-}
-
-#[cfg(target_arch = "riscv64")]
-#[inline(always)]
-unsafe fn load_syscall_argument_2(value: usize) {
-    // NOTE: Uses linux abi
-    asm!("", in("a1") value);
-}
-
-#[cfg(target_arch = "riscv64")]
-#[inline(always)]
-unsafe fn load_syscall_argument_3(value: usize) {
-    // NOTE: Uses linux abi
-    asm!("", in("a2") value);
-}
-
-#[cfg(target_arch = "riscv64")]
-#[inline(always)]
-unsafe fn read_syscall_return() -> usize {
-    // NOTE: Uses linux abi
-    let value: usize;
-    asm!("", out("a0") value);
-    value
-}
-
-#[cfg(target_arch = "riscv64")]
-#[inline(always)]
-unsafe fn syscall(number: SyscallNumber) {
-    // NOTE: Uses linux abi
-    asm!("", in("a7") number as usize);
-    asm!("ecall");
-}
-
-#[cfg(not(target_arch = "riscv64"))]
-unsafe fn syscall(_number: SyscallNumber) {
-    unimplemented!("No syscall function defined in c library for your architecture!");
-}
-
-#[cfg(not(target_arch = "riscv64"))]
-unsafe fn load_syscall_argument_1(_value: usize) {
-    unimplemented!("No syscall argument 1 loading function defined in c library for your architecture!");
-}
-
-#[cfg(not(target_arch = "riscv64"))]
-unsafe fn load_syscall_argument_2(_value: usize) {
-    unimplemented!("No syscall argument 2 loading function defined in c library for your architecture!");
-}
-
-#[cfg(not(target_arch = "riscv64"))]
-unsafe fn load_syscall_argument_3(_value: usize) {
-    unimplemented!("No syscall argument 3 loading function defined in c library for your architecture!");
-}
-
-#[cfg(not(target_arch = "riscv64"))]
-unsafe fn read_syscall_return() -> usize {
-    unimplemented!("No syscall return reading function defined in c library for your architecture!");
+    (res as core::ffi::c_size_t) / size
 }
