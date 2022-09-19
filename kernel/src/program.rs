@@ -135,7 +135,7 @@ impl Program {
         })
     }
 
-    pub fn run(&mut self) {
-        while self.emu.tick(&mut self.data).is_some() {}
+    pub fn tick(&mut self) -> Option<()> {
+        self.emu.tick(&mut self.data)
     }
 }

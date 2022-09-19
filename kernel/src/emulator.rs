@@ -787,7 +787,7 @@ where
     program_counter: u64,
     registers: [u64; 31],
     pub memory: MemType,
-    halted: bool,
+    pub halted: bool,
     syscall: fn(&mut Self, &mut ProgramData),
 }
 
@@ -824,10 +824,6 @@ where
         } else {
             self.registers[usize::from(reg_n - 1)]
         }
-    }
-
-    pub fn halt(&mut self) {
-        self.halted = true;
     }
 
     // Run one clock cycle

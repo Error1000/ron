@@ -1,11 +1,14 @@
 use crate::{
     hio::{KeyboardPacket, KeyboardPacketType},
+    primitives::{LazyInitialised, Mutex},
     virtmem::KernPointer,
     X86Default,
 };
 use packed_struct::prelude::*;
 
-#[derive(PackedStruct, Clone, Copy)]
+pub static KEYBOARD_INPUT: Mutex<LazyInitialised<PS2Device>> = Mutex::from(LazyInitialised::uninit());
+
+#[derive(PackedStruct, Clone, Copy, Debug)]
 #[packed_struct(bit_numbering = "lsb0", size_bytes = "2")]
 pub struct SpecialKeys {
     #[packed_field(bits = "0")]
@@ -66,6 +69,7 @@ struct StatusRegister {
 /// FIXME; We assume the PS/2 controller exists, is already initialised and no devices are plugged or unplugged ever, oh and also that all communication is 100% reliable
 /// Also assumes first ps/2 port is keyboard, and for now just disables the second one ( if it exists )
 // What could go wrong ¯\_(ツ)_/¯
+#[derive(Debug)]
 pub struct PS2Device {
     data: KernPointer<u8>,
     status_and_command: KernPointer<u8>,
@@ -95,16 +99,28 @@ pub const SCAN_CODE_SET_1: [char; 128] = [
 ];
 
 impl PS2Device {
-    pub unsafe fn read_byte(&mut self) -> u8 {
-        wait_for!(StatusRegister::unpack_from_slice(&[self.status_and_command.read()]).unwrap().is_output_buf_full);
-        self.data.read()
+    unsafe fn try_read_byte(&mut self) -> Option<u8> {
+        if !(StatusRegister::unpack_from_slice(&[self.status_and_command.read()]).unwrap().is_output_buf_full) {
+            return None;
+        } else {
+            return Some(self.data.read());
+        }
+    }
+
+    unsafe fn read_byte(&mut self) -> u8 {
+        let mut res = None;
+        wait_for!({
+            res = self.try_read_byte();
+            res.is_some()
+        });
+        return res.unwrap();
     }
 
     /// NOTE: Assumes scan code set 1
-    pub unsafe fn read_packet(&mut self) -> KeyboardPacket {
-        let mut b = self.read_byte();
+    pub unsafe fn try_read_packet(&mut self) -> Option<KeyboardPacket> {
+        let mut b = self.try_read_byte()?;
         let mut multibyte = false;
-        // Multibyte
+        // Multi-byte
         if b == 0xE0 {
             b = self.read_byte();
             multibyte = true;
@@ -150,12 +166,22 @@ impl PS2Device {
 
             _ => {}
         }
+
         let dc = SCAN_CODE_SET_1[(b & 0x7f) as usize];
-        KeyboardPacket {
+        Some(KeyboardPacket {
             scancode: b & 0x7F,
             char_codepoint: if dc == ' ' && (b & 0x7F) != 0x39 { None } else { Some(dc) },
             special_keys: if b & 0x80 == 0 { self.special_keys } else { old_special },
             typ: if b & 0x80 == 0 { KeyboardPacketType::KeyPressed } else { KeyboardPacketType::KeyReleased },
-        }
+        })
+    }
+
+    pub unsafe fn read_packet(&mut self) -> KeyboardPacket {
+        let mut res = None;
+        wait_for!({
+            res = self.try_read_packet();
+            res.is_some()
+        });
+        return res.unwrap();
     }
 }

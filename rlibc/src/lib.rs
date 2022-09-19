@@ -7,6 +7,8 @@ pub mod cstr;
 pub mod mem;
 pub mod sys;
 
+use sys::lseek;
+
 use crate::{
     cstr::strlen,
     sys::{close, free, malloc, open, read, write, O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY},
@@ -149,9 +151,19 @@ pub unsafe extern "C" fn fread(
     if bytes == 0 {
         return 0;
     }
+
     let res = read((*f).fileno, buf, bytes);
     if res < 0 {
         return 0;
     }
     (res as core::ffi::c_size_t) / size
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn fseek(f: *mut FILE, offset: core::ffi::c_long, origin: core::ffi::c_int) -> core::ffi::c_int {
+    if lseek(unsafe { &*f }.fileno, offset, origin) > 0 {
+        return 0;
+    } else {
+        return -1;
+    }
 }

@@ -658,7 +658,7 @@ impl Ext2RawInode {
             if bytes_used_in_last_block == 0 {
                 // Make sure the last block exists
                 self.grow_data_structure_by(1, e2fs)?; // In case the last block doesn't exist and it would overflow in a non-allocated part of the inode strucutre, a.k.a if the indirect blocks don't exist
-                self.alloc_data_block(self.get_last_allocated_data_block_number(e2fs).map(|last_block_n|last_block_n+1).unwrap_or(0)/* if no blocks allocated, then the last block is the first block, block 0, and it doesn't exist, so this is definetly needed */, e2fs)?;
+                self.alloc_data_block(self.get_last_allocated_data_block_number(e2fs).map(|last_block_n| last_block_n + 1).unwrap_or(0) /* if no blocks allocated, then the last block is the first block, block 0, and it doesn't exist, so this is definetly needed */, e2fs)?;
             }
             let bytes_available_in_last_block = e2fs.get_block_size() as usize - bytes_used_in_last_block;
 

@@ -1,8 +1,9 @@
 */target/
 /target/
 
+/disk/
+
 iso/boot/ron
-out.iso
 disk.img
 
 toolchain/.build

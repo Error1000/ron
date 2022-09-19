@@ -13,6 +13,10 @@ pub const O_APPEND: usize = 0b00100;
 pub const O_CREAT: usize = 0b01000;
 pub const O_TRUNC: usize = 0b10000;
 
+pub const SEEK_CUR: usize = 0;
+pub const SEEK_SET: usize = 1;
+pub const SEEK_END: usize = 2;
+
 #[no_mangle]
 pub unsafe extern "C" fn open(pathname: *const u8, flags: core::ffi::c_int) -> core::ffi::c_int {
     load_syscall_argument_1(pathname as usize);
@@ -47,6 +51,15 @@ pub unsafe extern "C" fn read(fd: core::ffi::c_int, buf: *mut u8, count: core::f
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn lseek(fd: core::ffi::c_int, offset: core::ffi::c_long, whence: core::ffi::c_int) -> core::ffi::c_long {
+    load_syscall_argument_1(fd as usize);
+    load_syscall_argument_2(offset as usize);
+    load_syscall_argument_3(whence as usize);
+    syscall(SyscallNumber::LSeek);
+    read_syscall_return() as core::ffi::c_long
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn malloc(size: core::ffi::c_size_t) -> *mut u8 {
     load_syscall_argument_1(size as usize);
     syscall(SyscallNumber::Malloc);
@@ -72,8 +85,9 @@ pub enum SyscallNumber {
     Write = 2,
     Open = 3,
     Close = 4,
-    Malloc = 5,
-    Free = 6,
+    LSeek = 5,
+    Malloc = 6,
+    Free = 7,
     MaxValue,
 }
 

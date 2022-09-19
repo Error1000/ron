@@ -12,15 +12,17 @@ typedef struct{
 } FILE;
 
 
-static FILE stdin_struct = {STDIN_FILENO};
-static FILE stdout_struct = {STDOUT_FILENO};
-static FILE stderr_struct = {STDERR_FILENO};
+FILE stdin_struct = {STDIN_FILENO};
+FILE stdout_struct = {STDOUT_FILENO};
+FILE stderr_struct = {STDERR_FILENO};
 
 #define stdin (&stdin_struct)
 #define stdout (&stdout_struct)
 #define stderr (&stderr_struct)
 
+
 extern FILE* fopen(const char* filename, const char* mode);
 extern int fclose(FILE* f);
 extern size_t fwrite(const void* buf, size_t size, size_t count, FILE* f);
 extern size_t fread(void* buf, size_t size, size_t count, FILE* f);
+extern int fseek(FILE* f, long offset, int origin);

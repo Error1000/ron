@@ -12,7 +12,6 @@ extern crate rlibc;
 use core::cell::RefCell;
 use core::cmp::min;
 use core::convert::{TryFrom, TryInto};
-use core::fmt::Debug;
 use core::fmt::Write;
 
 use alloc::borrow::ToOwned;
@@ -20,13 +19,15 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use ata::{ATABus, ATADevice, ATADeviceFile};
+use char_device::CharDevice;
 use primitives::{LazyInitialised, Mutex};
 use program::Program;
+use ps2_8042::KEYBOARD_INPUT;
+use terminal::{Terminal, TERMINAL};
 use vfs::{IFile, IFolder, Node, RootFSNode};
 use vga::{Color256, Unblanked};
 
 use crate::allocator::ALLOCATOR;
-use crate::char_device::CharDevice;
 use crate::framebuffer::{FrameBuffer, Pixel};
 use crate::hio::KeyboardPacketType;
 use crate::ps2_8042::SpecialKeys;
@@ -86,6 +87,7 @@ mod primitives;
 mod program;
 mod ps2_8042;
 mod syscall;
+mod terminal;
 mod uart_16550;
 mod vfs;
 mod vga;
@@ -106,126 +108,6 @@ pub const unsafe fn from_utf8_unchecked(v: &[u8]) -> &str {
     // SAFETY: the caller must guarantee that the bytes `v` are valid UTF-8.
     // Also relies on `&str` and `&[u8]` having the same layout.
     core::mem::transmute(v)
-}
-
-static TERMINAL: Mutex<LazyInitialised<Terminal<'static>>> = Mutex::from(LazyInitialised::uninit());
-struct Terminal<'a> {
-    fb: &'a mut dyn FrameBuffer,
-    cursor_pos: (usize, usize),
-    cursor_char: char,
-    color: Pixel,
-}
-impl Debug for Terminal<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Terminal")
-            .field("cursor_pos", &self.cursor_pos)
-            .field("cursor_char", &self.cursor_char)
-            .field("color", &self.color)
-            .finish()
-    }
-}
-
-impl<'a> Write for Terminal<'a> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        s.chars().for_each(|c| self.write_char(c));
-        Ok(())
-    }
-}
-
-impl<'a> Terminal<'a> {
-    fn new(fb: &'a mut dyn FrameBuffer, color: Pixel) -> Self {
-        Terminal { fb, cursor_pos: (0, 0), cursor_char: ' ', color }
-    }
-    fn clear(&mut self) {
-        for i in 0..self.fb.get_height() {
-            for j in 0..self.fb.get_width() {
-                self.fb.set_pixel(j, i, Pixel { r: 0, g: 0, b: 0 });
-            }
-        }
-        self.cursor_pos = (0, 0);
-    }
-    fn cursor_up(&mut self) {
-        if self.cursor_pos.1 == 0 {
-            return;
-        }
-        self.cursor_pos.1 -= 1;
-    }
-    fn cursor_down(&mut self) {
-        if self.cursor_pos.1 >= self.fb.get_rows() - 1 {
-            self.cursor_pos.1 = 0;
-        } else {
-            self.cursor_pos.1 += 1;
-        }
-    }
-    fn cursor_right(&mut self) {
-        if self.cursor_pos.0 >= self.fb.get_cols() - 1 {
-            self.cursor_pos.0 = 0;
-            self.cursor_down();
-            for x in 0..self.fb.get_cols() {
-                self.fb.write_char(x, self.cursor_pos.1, ' ', self.color);
-            }
-            return;
-        }
-        self.cursor_pos.0 += 1;
-    }
-    fn cursor_left(&mut self) {
-        if self.cursor_pos.0 == 0 {
-            return;
-        }
-        self.cursor_pos.0 -= 1;
-    }
-
-    pub fn visual_cursor_up(&mut self) {
-        self.erase_visual_cursor();
-        self.cursor_up();
-        self.update_visual_cursor();
-    }
-    pub fn visual_cursor_left(&mut self) {
-        self.erase_visual_cursor();
-        self.cursor_left();
-        self.update_visual_cursor();
-    }
-    pub fn visual_cursor_right(&mut self) {
-        self.erase_visual_cursor();
-        self.cursor_right();
-        self.update_visual_cursor();
-    }
-
-    pub fn visual_cursor_down(&mut self) {
-        self.erase_visual_cursor();
-        self.cursor_down();
-        self.update_visual_cursor();
-    }
-
-    fn update_visual_cursor(&mut self) {
-        self.fb.write_char(self.cursor_pos.0, self.cursor_pos.1, '_', self.color);
-    }
-
-    fn erase_visual_cursor(&mut self) {
-        self.fb.write_char(self.cursor_pos.0, self.cursor_pos.1, self.cursor_char, self.color);
-    }
-
-    fn write_char(&mut self, c: char) {
-        self.erase_visual_cursor(); // erase current cursor
-        match c {
-            '\n' => {
-                self.cursor_down();
-                for x in 0..self.fb.get_cols() {
-                    self.fb.write_char(x, self.cursor_pos.1, ' ', self.color);
-                }
-                self.cursor_pos.0 = 0;
-            }
-            '\r' => {
-                self.cursor_left(); // Go to char
-                self.erase_visual_cursor();
-            }
-            c => {
-                self.fb.write_char(self.cursor_pos.0, self.cursor_pos.1, c, self.color);
-                self.cursor_right();
-            }
-        }
-        self.update_visual_cursor();
-    }
 }
 
 // reg1 and reg2 are used for multiboot
@@ -399,7 +281,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         }
     }
 
-    let mut ps2 = unsafe { ps2_8042::PS2Device::x86_default() };
+    KEYBOARD_INPUT.lock().set(unsafe { ps2_8042::PS2Device::x86_default() });
 
     let mut cur_dir = vfs::Path::try_from("/").unwrap();
     write!(TERMINAL.lock(), "{} # ", cur_dir).unwrap();
@@ -410,32 +292,33 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     let mut buf_ind = 0; // Also length of buf, a.k.a portion of buf used
     'big_loop: loop {
         ignore_inc_x = false;
-        let b = unsafe { ps2.read_packet() };
+        let packet = unsafe { KEYBOARD_INPUT.lock().read_packet() };
 
-        if b.typ == KeyboardPacketType::KeyReleased && b.special_keys.esc {
+        if packet.typ == KeyboardPacketType::KeyReleased && packet.special_keys.esc {
             break;
         }
-        if b.typ == KeyboardPacketType::KeyReleased {
+
+        if packet.typ == KeyboardPacketType::KeyReleased {
             continue;
         }
 
-        if b.special_keys.up_arrow {
+        if packet.special_keys.up_arrow {
             TERMINAL.lock().visual_cursor_up();
-        } else if b.special_keys.down_arrow {
+        } else if packet.special_keys.down_arrow {
             TERMINAL.lock().visual_cursor_down();
-        } else if b.special_keys.right_arrow {
+        } else if packet.special_keys.right_arrow {
             TERMINAL.lock().visual_cursor_right();
-        } else if b.special_keys.left_arrow {
+        } else if packet.special_keys.left_arrow {
             TERMINAL.lock().visual_cursor_left();
         }
 
-        let mut c = match b.char_codepoint {
+        let mut c = match packet.char_codepoint {
             Some(v) => v,
             None => continue,
         };
 
-        if b.special_keys.any_shift() {
-            c = b.shift_codepoint().unwrap();
+        if packet.special_keys.any_shift() {
+            c = packet.shift_codepoint().unwrap();
         }
 
         TERMINAL.lock().write_char(c);
@@ -496,7 +379,11 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                 } else if cmnd.starts_with("whoareyou") {
                     writeln!(TERMINAL.lock(), "Ron").unwrap();
                 } else if cmnd.starts_with("help") {
-                    writeln!(TERMINAL.lock(), "puts whoareyou rmrootfsdir mkrootfsdir rm touch mount.ext2 umount free hexdump cat ls cd clear exit help").unwrap();
+                    writeln!(
+                        TERMINAL.lock(),
+                        "puts whoareyou rmrootfsdir mkrootfsdir rm touch mount.ext2 umount free hexdump ls cd clear exit help"
+                    )
+                    .unwrap();
                 } else if cmnd.starts_with("clear") {
                     TERMINAL.lock().clear();
                 } else if cmnd.starts_with("free") {
@@ -810,6 +697,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         continue;
                     };
                     if let Node::File(executable) = node {
+                        writeln!(TERMINAL.lock(), "Loading program, please wait ...").unwrap();
                         let contents = executable.borrow().read(0, executable.borrow().get_size() as usize);
                         let contents = if let Some(res) = contents {
                             res
@@ -817,6 +705,8 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             writeln!(TERMINAL.lock(), "Failed to read executable!").unwrap();
                             continue;
                         };
+
+                        writeln!(TERMINAL.lock(), "Parsing program, please wait ...").unwrap();
                         {
                             let elf = elf::ElfFile::from_bytes(&contents);
                             let elf = if let Some(res) = elf {
@@ -833,6 +723,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                                 writeln!(UART.lock(), "Found program header in elf file, type: {:?}, in-file offset: {}, in-file size: {}, virtual offset: {}, virtual size: {}, flags: 0b{:b}", header.segment_type, header.segment_file_offset, header.segment_file_size, header.segment_virtual_address, header.segment_virtual_size, header.flags).unwrap();
                             }
                         }
+
                         let mut program = if let Some(p) = Program::from_elf(&contents, &bufs.split(' ').collect::<Vec<&str>>())
                         {
                             p
@@ -840,7 +731,22 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             writeln!(TERMINAL.lock(), "Failed to load elf file into program!").unwrap();
                             continue;
                         };
-                        program.run();
+
+                        writeln!(TERMINAL.lock(), "Program loaded!").unwrap();
+                        loop {
+                            if let Some(packet) = unsafe { KEYBOARD_INPUT.lock().try_read_packet() } {
+                                if packet.special_keys.any_ctrl() && packet.char_codepoint == Some('c') {
+                                    write!(TERMINAL.lock(), "^C").unwrap();
+                                    // CTRL+C pressed, quitting
+                                    program.emu.halted = true;
+                                }
+                            }
+
+                            if program.tick().is_none() {
+                                break;
+                            }
+                        }
+
                         writeln!(UART.lock(), "State after program ended: {:?}", program).unwrap();
                     } else {
                         writeln!(TERMINAL.lock(), "Executable path is not a file!").unwrap();

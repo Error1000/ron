@@ -1,8 +1,8 @@
 // cat - read and output files
 
 #include <stdio.h>
+
 #define MAX_STRING_SIZE 1024
-#define MAX_LINE_SIZE 1000
 
 void output_file(FILE *in, FILE *out);
 

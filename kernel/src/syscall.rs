@@ -1,10 +1,16 @@
-use core::{convert::TryFrom, ptr::null_mut, slice};
+use core::{
+    convert::{TryFrom, TryInto},
+    ptr::null_mut,
+    slice,
+};
 
 use rlibc::sys::SyscallNumber;
 
 use crate::{
     emulator::Riscv64Cpu,
+    hio::KeyboardPacketType,
     program::{ProgramData, ProgramFileDescriptor},
+    ps2_8042::KEYBOARD_INPUT,
     vfs::{self, IFile},
     virtmem::{self, LittleEndianVirtualMemory, UserPointer, VirtualMemory},
     UART,
@@ -12,6 +18,7 @@ use crate::{
 
 type Emulator = Riscv64Cpu<LittleEndianVirtualMemory>;
 
+/* TODO: Add errno to program
 mod errno {
     pub const EIDK_FIGURE_IT_OUT_YOURSELF: isize = -1;
     pub const EACCESS: isize = -2;
@@ -19,7 +26,7 @@ mod errno {
     pub const EOUTSIDE_ACCESSIBLE_ADDRESS_SPACE: isize = -4;
     pub const EINVAL: isize = -5;
     pub const EISDIR: isize = -6;
-}
+}*/
 
 pub fn syscall_linux_abi_entry_point(emu: &mut Emulator, prog_data: &mut ProgramData) {
     // Source: man syscall
@@ -87,6 +94,8 @@ pub fn syscall_linux_abi_entry_point(emu: &mut Emulator, prog_data: &mut Program
 
         SyscallNumber::Free => free(emu, prog_data, argument_1()),
 
+        SyscallNumber::LSeek => {}
+
         SyscallNumber::MaxValue => (),
     }
 }
@@ -94,17 +103,15 @@ pub fn syscall_linux_abi_entry_point(emu: &mut Emulator, prog_data: &mut Program
 fn exit(emu: &mut Emulator, exit_number: usize) {
     use core::fmt::Write;
     writeln!(UART.lock(), "exit({}) called!", exit_number).unwrap();
-    emu.halt();
+    emu.halted = true;
 }
 
 fn write(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: UserPointer<[u8]>, count: usize) -> i32 {
-    let buf = if let Some(val) = user_buf.try_as_ref(&mut emu.memory, count) {
-        val
-    } else {
-        return errno::EOUTSIDE_ACCESSIBLE_ADDRESS_SPACE as i32;
-    };
+    let buf = if let Some(val) = user_buf.try_as_ref(&mut emu.memory, count) { val } else { return -1 };
 
     match fd {
+        rlibc::sys::STDIN_FILENO => return -1,
+
         rlibc::sys::STDOUT_FILENO | rlibc::sys::STDERR_FILENO => {
             use crate::TERMINAL;
             use core::fmt::Write;
@@ -126,7 +133,7 @@ fn write(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: U
             if let Some(Some(node_fd)) = prog_data.open_fds.get_mut(fd) {
                 // Check for write access
                 if node_fd.flags & rlibc::sys::O_WRONLY == 0 {
-                    return errno::EACCESS as i32;
+                    return -1;
                 }
 
                 if let vfs::Node::File(f) = node_fd.vfs_node.clone() {
@@ -151,30 +158,46 @@ fn write(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: U
                     node_fd.cursor += inc as u64;
                     return inc as i32;
                 } else {
-                    return errno::EISDIR as i32;
+                    return -1;
                 }
             } else {
-                return errno::EBADFD as i32;
+                return -1;
             }
         }
     }
 }
 
 fn read(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: UserPointer<[u8]>, count: usize) -> i32 {
-    let buf = if let Some(val) = user_buf.try_as_ref(&mut emu.memory, count) {
-        val
-    } else {
-        return errno::EOUTSIDE_ACCESSIBLE_ADDRESS_SPACE as i32;
-    };
+    let buf = if let Some(val) = user_buf.try_as_ref(&mut emu.memory, count) { val } else { return -1 };
 
     match fd {
-        0 | 1 | 2 => return errno::EBADFD as i32, // FIXME: Implement reading from STDIN
+        rlibc::sys::STDOUT_FILENO | rlibc::sys::STDERR_FILENO => return -1,
+        rlibc::sys::STDIN_FILENO => {
+            loop {
+                // We only allow applications to read one character from stdin at a time to stop the keyboard from being hogged by applications
+                let packet = unsafe { KEYBOARD_INPUT.lock().read_packet() };
+                if packet.typ == KeyboardPacketType::KeyReleased {
+                    continue;
+                }
+                if packet.special_keys.any_ctrl() && packet.char_codepoint == Some('c') {
+                    use crate::TERMINAL;
+                    use core::fmt::Write;
+                    write!(TERMINAL.lock(), "^C").unwrap();
+                    emu.halted = true;
+                }
+                let c = if packet.special_keys.any_shift() { packet.shift_codepoint() } else { packet.char_codepoint };
+                let c = if let Some(val) = c { val } else { continue };
+                buf[0] = if let Ok(val) = c.try_into() { val } else { continue };
+                return 1;
+            }
+        }
+
         fd => {
             let fd = fd - 3;
             if let Some(Some(node_fd)) = prog_data.open_fds.get_mut(fd) {
                 // Check for read access
                 if node_fd.flags & rlibc::sys::O_RDONLY == 0 {
-                    return errno::EACCESS as i32;
+                    return -1;
                 }
 
                 if let vfs::Node::File(f) = node_fd.vfs_node.clone() {
@@ -197,10 +220,10 @@ fn read(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: Us
                     node_fd.cursor += index;
                     return index as i32;
                 } else {
-                    return errno::EISDIR as i32;
+                    return -1;
                 }
             } else {
-                return errno::EBADFD as i32;
+                return -1;
             }
         }
     }
@@ -208,37 +231,17 @@ fn read(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: Us
 
 fn open(emu: &mut Emulator, prog_data: &mut ProgramData, pathname: virtmem::UserPointer<[u8]>, flags: usize) -> isize {
     let buf = {
-        let buf = if let Some(val) = pathname.try_as_ptr(&mut emu.memory) {
-            val
-        } else {
-            return errno::EOUTSIDE_ACCESSIBLE_ADDRESS_SPACE;
-        };
+        let buf = if let Some(val) = pathname.try_as_ptr(&mut emu.memory) { val } else { return -1 };
         let buf_len = unsafe { rlibc::cstr::strlen(buf) };
         unsafe { slice::from_raw_parts(buf, buf_len as usize) }
     };
 
-    let str_buf = if let Ok(val) = core::str::from_utf8(buf) {
-        val
-    } else {
-        return errno::EINVAL;
-    };
-    let path = if let Ok(val) = vfs::Path::try_from(str_buf) {
-        val
-    } else {
-        return errno::EINVAL;
-    };
+    let str_buf = if let Ok(val) = core::str::from_utf8(buf) { val } else { return -1 };
+    let path = if let Ok(val) = vfs::Path::try_from(str_buf) { val } else { return -1 };
 
     // Get directory containing file
-    let parent_node = if let Some(val) = path.clone().del_last().get_node() {
-        val
-    } else {
-        return errno::EINVAL;
-    };
-    let parent_node = if let vfs::Node::Folder(val) = parent_node {
-        val
-    } else {
-        return errno::EINVAL;
-    };
+    let parent_node = if let Some(val) = path.clone().del_last().get_node() { val } else { return -1 };
+    let parent_node = if let vfs::Node::Folder(val) = parent_node { val } else { return -1 };
 
     let node = {
         let search_result = (*parent_node).borrow_mut().get_children().into_iter().find(|child| child.0 == path.last());
@@ -268,7 +271,7 @@ fn open(emu: &mut Emulator, prog_data: &mut ProgramData, pathname: virtmem::User
                     return -1;
                 }
             } else {
-                return errno::EINVAL;
+                return -1;
             }
         }
     };
@@ -290,6 +293,42 @@ fn close(prog_data: &mut ProgramData, fd: usize) -> isize {
         return 0;
     } else {
         return -1;
+    }
+}
+
+fn lseek(prog_data: &mut ProgramData, fd: usize, offset: i64, whence: usize) -> i64 {
+    match fd {
+        rlibc::sys::STDIN_FILENO | rlibc::sys::STDOUT_FILENO | rlibc::sys::STDERR_FILENO => return -1,
+
+        _ => {
+            let fd = fd - 3;
+            if let Some(Some(node)) = prog_data.open_fds.get_mut(fd) {
+                match whence {
+                    rlibc::sys::SEEK_SET => {
+                        node.cursor = offset as u64;
+                        return node.cursor as i64;
+                    }
+
+                    rlibc::sys::SEEK_CUR => {
+                        node.cursor = ((node.cursor as i64) + offset) as u64;
+                        return node.cursor as i64;
+                    }
+
+                    rlibc::sys::SEEK_END => {
+                        if let vfs::Node::File(f) = &node.vfs_node {
+                            node.cursor = ((f.borrow().get_size() as i64) + offset) as u64;
+                            return node.cursor as i64;
+                        } else {
+                            return -1;
+                        }
+                    }
+
+                    _ => return -1,
+                }
+            } else {
+                return -1;
+            }
+        }
     }
 }
 
@@ -358,6 +397,7 @@ fn free(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64) {
     } else {
         return;
     };
+
     let alloc_ptr =
         unsafe { mapped_alloc.0.backing_storage.as_mut_ptr().add(mapped_alloc.1).sub(core::mem::size_of::<usize>()) };
 
