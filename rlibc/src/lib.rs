@@ -14,6 +14,24 @@ use crate::{
     sys::{close, free, malloc, open, read, write, O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY},
 };
 
+// TODO list:
+// strcat *(done)*
+// strncpy
+// strcpy *(done)*
+// strtok
+// strstr *(done)*
+// putchar
+// getc
+// getchar
+// realloc
+// isspace *(done)*
+// isdigit *(done)*
+
+// printf
+// fprintf
+
+
+
 #[cfg(not(feature = "nostartfiles"))]
 #[panic_handler]
 fn panic(_: &::core::panic::PanicInfo) -> ! {
@@ -38,7 +56,7 @@ extern "C" {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn puts(str: *const u8) -> core::ffi::c_int {
+pub unsafe extern "C" fn puts(str: *const core::ffi::c_char) -> core::ffi::c_int {
     let mut t = 0;
     let res = write(sys::STDOUT_FILENO as core::ffi::c_int, str, strlen(str) as core::ffi::c_size_t);
     if res < 0 {
@@ -46,7 +64,7 @@ pub unsafe extern "C" fn puts(str: *const u8) -> core::ffi::c_int {
     } else {
         t += res;
     }
-    let res = write(sys::STDOUT_FILENO as core::ffi::c_int, (&"\n").as_ptr(), 1);
+    let res = write(sys::STDOUT_FILENO as core::ffi::c_int, (&"\n").as_ptr() as *const core::ffi::c_char, 1);
     if res < 0 {
         return res as core::ffi::c_int;
     } else {
@@ -56,7 +74,7 @@ pub unsafe extern "C" fn puts(str: *const u8) -> core::ffi::c_int {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn perror(str: *const u8) -> core::ffi::c_int {
+pub unsafe extern "C" fn perror(str: *const core::ffi::c_char) -> core::ffi::c_int {
     let mut t = 0;
     let res = write(sys::STDERR_FILENO as core::ffi::c_int, str, strlen(str) as core::ffi::c_size_t);
     if res < 0 {
@@ -64,7 +82,7 @@ pub unsafe extern "C" fn perror(str: *const u8) -> core::ffi::c_int {
     } else {
         t += res;
     }
-    let res = write(sys::STDERR_FILENO as core::ffi::c_int, (&"\n").as_ptr(), 1);
+    let res = write(sys::STDERR_FILENO as core::ffi::c_int, (&"\n").as_ptr() as *const core::ffi::c_char, 1);
     if res < 0 {
         return res as core::ffi::c_int;
     } else {
@@ -79,7 +97,7 @@ pub struct FILE {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fopen(filename: *const u8, mode: *const u8) -> *mut FILE {
+pub unsafe extern "C" fn fopen(filename: *const core::ffi::c_char, mode: *const core::ffi::c_char) -> *mut FILE {
     let mode = core::ffi::CStr::from_ptr(mode as *const i8);
     let mode = if let Ok(val) = mode.to_str() {
         val
@@ -118,13 +136,13 @@ pub unsafe extern "C" fn fclose(f: *mut FILE) -> core::ffi::c_int {
     if close((*f).fileno) < 0 {
         return -1;
     }
-    free(f as *mut u8);
+    free(f as *mut _);
     0
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn fwrite(
-    buf: *const u8,
+    buf: *const core::ffi::c_char,
     size: core::ffi::c_size_t,
     count: core::ffi::c_size_t,
     f: *mut FILE,
@@ -142,7 +160,7 @@ pub unsafe extern "C" fn fwrite(
 
 #[no_mangle]
 pub unsafe extern "C" fn fread(
-    buf: *mut u8,
+    buf: *mut core::ffi::c_char,
     size: core::ffi::c_size_t,
     count: core::ffi::c_size_t,
     f: *mut FILE,

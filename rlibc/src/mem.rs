@@ -1,5 +1,5 @@
 #[no_mangle]
-pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: core::ffi::c_size_t) -> *mut u8 {
+pub unsafe extern "C" fn memcpy(dest: *mut core::ffi::c_char, src: *const core::ffi::c_char, n: core::ffi::c_size_t) -> *mut core::ffi::c_char {
     if n < core::mem::size_of::<usize>() {
         for i in 0..n {
             *dest.add(i) = *src.add(i);
@@ -23,7 +23,7 @@ pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: core::ffi::c_s
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn memcmp(ptr1: *const u8, ptr2: *const u8, n: core::ffi::c_size_t) -> core::ffi::c_int {
+pub unsafe extern "C" fn memcmp(ptr1: *const core::ffi::c_char, ptr2: *const core::ffi::c_char, n: core::ffi::c_size_t) -> core::ffi::c_int {
     let ptr1_size = ptr1 as *mut usize;
     let ptr2_size = ptr2 as *mut usize;
     let n_size = n / core::mem::size_of::<usize>();
@@ -58,8 +58,8 @@ pub unsafe extern "C" fn memcmp(ptr1: *const u8, ptr2: *const u8, n: core::ffi::
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn memset(dest: *mut u8, c: core::ffi::c_int, n: core::ffi::c_size_t) -> *mut u8 {
-    let c = c as u8;
+pub unsafe extern "C" fn memset(dest: *mut core::ffi::c_char, c: core::ffi::c_int, n: core::ffi::c_size_t) -> *mut core::ffi::c_char {
+    let c = c as core::ffi::c_char;
     if n < core::mem::size_of::<usize>() {
         for i in 0..n {
             *dest.add(i) = c;
@@ -87,25 +87,25 @@ pub unsafe extern "C" fn memset(dest: *mut u8, c: core::ffi::c_int, n: core::ffi
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn bcmp(ptr1: *const u8, ptr2: *const u8, n: core::ffi::c_size_t) -> core::ffi::c_int {
+pub unsafe extern "C" fn bcmp(ptr1: *const core::ffi::c_char, ptr2: *const core::ffi::c_char, n: core::ffi::c_size_t) -> core::ffi::c_int {
     memcmp(ptr1, ptr2, n)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, n: core::ffi::c_size_t) -> *mut u8 {
-    if (dest as *const u8) == src {
+pub unsafe extern "C" fn memmove(dest: *mut core::ffi::c_char, src: *const core::ffi::c_char, n: core::ffi::c_size_t) -> *mut core::ffi::c_char {
+    if (dest as *const core::ffi::c_char) == src {
         return dest;
     }
 
     let src_range = src..src.add(n);
-    let has_overlap = src_range.contains(&(dest as *const u8)) || src_range.contains(&(dest.add(n) as *const u8));
+    let has_overlap = src_range.contains(&(dest as *const core::ffi::c_char)) || src_range.contains(&(dest.add(n) as *const core::ffi::c_char));
     if !has_overlap {
         memcpy(dest, src, n);
-    } else if (dest as *const u8) < src {
+    } else if (dest as *const core::ffi::c_char) < src {
         for i in 0..n {
             *dest.add(i) = *src.add(i);
         }
-    } else if (dest as *const u8) > src {
+    } else if (dest as *const core::ffi::c_char) > src {
         for i in (0..n).rev() {
             *dest.add(i) = *src.add(i);
         }

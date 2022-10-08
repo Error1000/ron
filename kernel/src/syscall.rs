@@ -11,7 +11,7 @@ use crate::{
     hio::KeyboardPacketType,
     program::{ProgramData, ProgramFileDescriptor},
     ps2_8042::KEYBOARD_INPUT,
-    vfs::{self, IFile},
+    vfs,
     virtmem::{self, LittleEndianVirtualMemory, UserPointer, VirtualMemory},
     UART,
 };
@@ -232,12 +232,12 @@ fn read(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: Us
 fn open(emu: &mut Emulator, prog_data: &mut ProgramData, pathname: virtmem::UserPointer<[u8]>, flags: usize) -> isize {
     let buf = {
         let buf = if let Some(val) = pathname.try_as_ptr(&mut emu.memory) { val } else { return -1 };
-        let buf_len = unsafe { rlibc::cstr::strlen(buf) };
+        let buf_len = unsafe { rlibc::cstr::strlen(buf as *const core::ffi::c_char) };
         unsafe { slice::from_raw_parts(buf, buf_len as usize) }
     };
 
-    let str_buf = if let Ok(val) = core::str::from_utf8(buf) { val } else { return -1 };
-    let path = if let Ok(val) = vfs::Path::try_from(str_buf) { val } else { return -1 };
+    let path = if let Ok(val) = core::str::from_utf8(buf) { val } else { return -1 };
+    let path = if let Ok(val) = vfs::Path::try_from(path) { val } else { return -1 };
 
     // Get directory containing file
     let parent_node = if let Some(val) = path.clone().del_last().get_node() { val } else { return -1 };

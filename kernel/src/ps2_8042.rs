@@ -108,7 +108,7 @@ impl PS2Device {
     }
 
     unsafe fn read_byte(&mut self) -> u8 {
-        let mut res = None;
+        let mut res;
         wait_for!({
             res = self.try_read_byte();
             res.is_some()
@@ -177,7 +177,7 @@ impl PS2Device {
     }
 
     pub unsafe fn read_packet(&mut self) -> KeyboardPacket {
-        let mut res = None;
+        let mut res;
         wait_for!({
             res = self.try_read_packet();
             res.is_some()

@@ -1,3 +1,4 @@
+# Configure library to be used by Rust ( in the system or in the outside it (a.k.a in kernel) )
 [package]
 name = "rlibc"
 version = "0.1.0"

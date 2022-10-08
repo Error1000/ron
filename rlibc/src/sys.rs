@@ -18,7 +18,7 @@ pub const SEEK_SET: usize = 1;
 pub const SEEK_END: usize = 2;
 
 #[no_mangle]
-pub unsafe extern "C" fn open(pathname: *const u8, flags: core::ffi::c_int) -> core::ffi::c_int {
+pub unsafe extern "C" fn open(pathname: *const core::ffi::c_char, flags: core::ffi::c_int) -> core::ffi::c_int {
     load_syscall_argument_1(pathname as usize);
     load_syscall_argument_2(flags as usize);
     syscall(SyscallNumber::Open);
@@ -33,7 +33,7 @@ pub unsafe extern "C" fn close(fd: core::ffi::c_int) -> core::ffi::c_int {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn write(fd: core::ffi::c_int, buf: *const u8, count: core::ffi::c_size_t) -> core::ffi::c_ssize_t {
+pub unsafe extern "C" fn write(fd: core::ffi::c_int, buf: *const core::ffi::c_char, count: core::ffi::c_size_t) -> core::ffi::c_ssize_t {
     load_syscall_argument_1(fd as usize);
     load_syscall_argument_2(buf as usize);
     load_syscall_argument_3(count as usize);
@@ -42,7 +42,7 @@ pub unsafe extern "C" fn write(fd: core::ffi::c_int, buf: *const u8, count: core
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn read(fd: core::ffi::c_int, buf: *mut u8, count: core::ffi::c_size_t) -> core::ffi::c_ssize_t {
+pub unsafe extern "C" fn read(fd: core::ffi::c_int, buf: *mut core::ffi::c_char, count: core::ffi::c_size_t) -> core::ffi::c_ssize_t {
     load_syscall_argument_1(fd as usize);
     load_syscall_argument_2(buf as usize);
     load_syscall_argument_3(count as usize);
@@ -60,14 +60,14 @@ pub unsafe extern "C" fn lseek(fd: core::ffi::c_int, offset: core::ffi::c_long, 
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn malloc(size: core::ffi::c_size_t) -> *mut u8 {
+pub unsafe extern "C" fn malloc(size: core::ffi::c_size_t) -> *mut core::ffi::c_char {
     load_syscall_argument_1(size as usize);
     syscall(SyscallNumber::Malloc);
-    read_syscall_return() as *mut u8
+    read_syscall_return() as *mut core::ffi::c_char
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn free(ptr: *mut u8) {
+pub unsafe extern "C" fn free(ptr: *mut core::ffi::c_char) {
     load_syscall_argument_1(ptr as usize);
     syscall(SyscallNumber::Free)
 }
