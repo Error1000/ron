@@ -1,5 +1,6 @@
 use crate::{primitives::Mutex, UART};
 use core::fmt::Debug;
+use core::ptr::null;
 use core::{
     alloc::GlobalAlloc,
     ptr::{self, null_mut},
@@ -8,6 +9,7 @@ use core::{
 #[global_allocator]
 pub static ALLOCATOR: Mutex<BasicAlloc> = Mutex::from(BasicAlloc::new());
 
+// This is a bump allocator that doesn't leak as much memory as a normal bump allocator
 pub struct BasicAlloc {
     base: *mut u8,
     len: usize,
@@ -175,6 +177,20 @@ impl BasicAlloc {
             }
         }
     }
+
+    pub fn realloc(&mut self, ptr: *mut u8, layout: core::alloc::Layout, new_size: usize) -> *mut u8 {
+        let new_layout = core::alloc::Layout::from_size_align(new_size, layout.align());
+        let new_layout = if let Ok(val) = new_layout { val } else { return null_mut(); };
+
+        let new_ptr = unsafe { self.alloc(new_layout) };
+        if !new_ptr.is_null() { // If we could allocate a new block
+            unsafe {
+                rlibc::mem::memcpy(new_ptr as *mut i8, ptr as *mut i8, core::cmp::min(layout.size(), new_size));
+                self.dealloc(ptr, layout);
+            }
+        }
+        new_ptr
+    }
 }
 
 unsafe impl GlobalAlloc for Mutex<BasicAlloc> {
@@ -186,5 +202,10 @@ unsafe impl GlobalAlloc for Mutex<BasicAlloc> {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
         let mut s = self.lock();
         s.dealloc(ptr, layout)
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: core::alloc::Layout, new_size: usize) -> *mut u8 {
+        let mut s = self.lock();
+        s.realloc(ptr, layout, new_size)
     }
 }

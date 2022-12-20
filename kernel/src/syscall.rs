@@ -94,7 +94,15 @@ pub fn syscall_linux_abi_entry_point(emu: &mut Emulator, prog_data: &mut Program
 
         SyscallNumber::Free => free(emu, prog_data, argument_1()),
 
-        SyscallNumber::LSeek => {}
+        SyscallNumber::LSeek => {
+            let val = lseek(prog_data, argument_1() as usize, argument_2() as i64, argument_3() as usize);
+            return_value(val as u64, emu)
+        }
+
+        SyscallNumber::Realloc => {
+            let val = realloc(emu, prog_data, argument_1(), argument_2() as usize);
+            return_value(val as u64, emu)
+        }
 
         SyscallNumber::MaxValue => (),
     }
@@ -173,12 +181,14 @@ fn read(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: Us
     match fd {
         rlibc::sys::STDOUT_FILENO | rlibc::sys::STDERR_FILENO => return -1,
         rlibc::sys::STDIN_FILENO => {
+            // FIXME: Allow character echoing in the console
             loop {
                 // We only allow applications to read one character from stdin at a time to stop the keyboard from being hogged by applications
                 let packet = unsafe { KEYBOARD_INPUT.lock().read_packet() };
                 if packet.typ == KeyboardPacketType::KeyReleased {
                     continue;
                 }
+                // FIXME: This shouldn't be here
                 if packet.special_keys.any_ctrl() && packet.char_codepoint == Some('c') {
                     use crate::TERMINAL;
                     use core::fmt::Write;
@@ -333,21 +343,21 @@ fn lseek(prog_data: &mut ProgramData, fd: usize, offset: i64, whence: usize) -> 
 }
 
 fn malloc(emu: &mut Emulator, prog_data: &mut ProgramData, size: usize) -> u64 {
-    let null_ptr: u64 = null_mut::<u8>() as u64;
+    let userspace_null_ptr: u64 = null_mut::<u8>() as u64;
 
     // We also allocate size_of::<usize>() bytes more than we are requested to, to store the size of the allocation
     let allocation_info = core::alloc::Layout::from_size_align(size + core::mem::size_of::<usize>(), 8);
     let allocation_info = if let Ok(val) = allocation_info {
         val
     } else {
-        return null_ptr;
+        return userspace_null_ptr;
     };
 
     let heap = emu.memory.try_map_mut(prog_data.heap_virtual_start_addr);
     let heap = if let Some(val) = heap {
         val
     } else {
-        return null_ptr;
+        return userspace_null_ptr;
     };
     let heap = heap.0;
     let mut heap_increment = 2;
@@ -370,13 +380,13 @@ fn malloc(emu: &mut Emulator, prog_data: &mut ProgramData, size: usize) -> u64 {
             // But we still need to "reverse map" the returned pointer to user space
             let offset_in_heap = unsafe { (res as *mut u8).sub(heap.backing_storage.as_mut_ptr() as usize) };
 
-            return heap.try_reverse_map(offset_in_heap as usize).unwrap_or(null_ptr);
+            return heap.try_reverse_map(offset_in_heap as usize).unwrap_or(userspace_null_ptr);
         } else {
             // Well maybe we just need to grow the heap
 
             // Make sure we don't surpass virtual size limits
             if (heap.len() + heap_increment) as u64 >= prog_data.max_virtual_heap_size {
-                return null_ptr;
+                return userspace_null_ptr;
             }
 
             // The best approach would be to increase by one byte each time, which would never over-allocate, but would take a lot of computation
@@ -424,4 +434,45 @@ fn free(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64) {
 
     // Deallocate
     prog_data.program_alloc.dealloc(alloc_ptr, allocation_info);
+}
+
+
+fn realloc(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64, new_size: usize) -> u64 {
+    let userspace_null_ptr: u64 = null_mut::<u8>() as u64;
+
+    // Translate pointer from user space
+    let mapped_alloc = emu.memory.try_map_mut(virtual_ptr);
+    let mapped_alloc = if let Some(val) = mapped_alloc {
+        val
+    } else {
+        return userspace_null_ptr;
+    };
+
+    // Get actual physical ptr
+    let alloc_ptr =
+    unsafe { mapped_alloc.0.backing_storage.as_mut_ptr().add(mapped_alloc.1).sub(core::mem::size_of::<usize>()) };
+
+    // Make sure allocator is in sync with the actual location of the heap
+    // This is because the actual location may change as the mapping changes/grows
+    let heap = emu.memory.try_map_mut(prog_data.heap_virtual_start_addr);
+    let heap = if let Some(val) = heap {
+        val
+    } else {
+        return userspace_null_ptr;
+    };
+    let heap = heap.0;
+    unsafe { prog_data.program_alloc.update_base(heap.backing_storage.as_mut_ptr()) };
+
+    // Get allocation info
+    let alloc_size = unsafe { *(alloc_ptr as *mut usize) }; // Get size from before the allocation, since allocations made by malloc contain the size before the allocation
+
+    let allocation_info = core::alloc::Layout::from_size_align(alloc_size + core::mem::size_of::<usize>(), 8);
+    let allocation_info = if let Ok(val) = allocation_info {
+        val
+    } else {
+        return userspace_null_ptr;
+    };
+
+    // Reallocate
+    prog_data.program_alloc.realloc(alloc_ptr, allocation_info, new_size) as u64
 }

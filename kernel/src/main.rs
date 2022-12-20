@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(bench_black_box)]
 #![feature(abi_efiapi)]
 #![feature(default_alloc_error_handler)]
 #![feature(lang_items)]

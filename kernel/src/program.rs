@@ -108,6 +108,8 @@ impl Program {
 
             // Allocate space for arg
             let arg_ptr = allocator.alloc(core::alloc::Layout::from_size_align(arg.len() + 1, 1).ok()?);
+            
+            // Copy the argument to user-land
             unsafe { memcpy(arg_ptr as *mut _, arg.as_ptr() as *const _, arg.len()) };
             unsafe { *arg_ptr.add(arg.len()) = 0 }; // c strings are null terminated
 

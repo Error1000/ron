@@ -5,4 +5,5 @@
 
 extern void  exit(unsigned int code);
 extern void* malloc(size_t size);
+extern void* realloc(void* ptr, size_t new_size);
 extern void  free(void* ptr);

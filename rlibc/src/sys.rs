@@ -73,9 +73,18 @@ pub unsafe extern "C" fn free(ptr: *mut core::ffi::c_char) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn exit(code: core::ffi::c_int) {
+pub unsafe extern "C" fn realloc(ptr: *mut core::ffi::c_char, new_size: core::ffi::c_size_t) -> *mut core::ffi::c_char {
+    load_syscall_argument_1(ptr as usize);
+    load_syscall_argument_3(new_size as usize);
+    syscall(SyscallNumber::Realloc);
+    read_syscall_return() as *mut core::ffi::c_char
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn exit(code: core::ffi::c_int) -> ! {
     load_syscall_argument_1(code as usize);
     syscall(SyscallNumber::Exit);
+    loop {} // Make sure no code executes and guarantees are upheld
 }
 
 #[repr(usize)]
@@ -88,6 +97,7 @@ pub enum SyscallNumber {
     LSeek = 5,
     Malloc = 6,
     Free = 7,
+    Realloc = 8,
     MaxValue,
 }
 

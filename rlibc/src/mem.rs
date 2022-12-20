@@ -1,5 +1,11 @@
+use core::ptr::null_mut;
+
 #[no_mangle]
 pub unsafe extern "C" fn memcpy(dest: *mut core::ffi::c_char, src: *const core::ffi::c_char, n: core::ffi::c_size_t) -> *mut core::ffi::c_char {
+    if (dest as *const core::ffi::c_char) == src {
+        return dest;
+    }
+    
     if n < core::mem::size_of::<usize>() {
         for i in 0..n {
             *dest.add(i) = *src.add(i);
@@ -24,6 +30,7 @@ pub unsafe extern "C" fn memcpy(dest: *mut core::ffi::c_char, src: *const core::
 
 #[no_mangle]
 pub unsafe extern "C" fn memcmp(ptr1: *const core::ffi::c_char, ptr2: *const core::ffi::c_char, n: core::ffi::c_size_t) -> core::ffi::c_int {
+    if ptr1 == ptr2 { return 0; }
     let ptr1_size = ptr1 as *mut usize;
     let ptr2_size = ptr2 as *mut usize;
     let n_size = n / core::mem::size_of::<usize>();
@@ -93,12 +100,12 @@ pub unsafe extern "C" fn bcmp(ptr1: *const core::ffi::c_char, ptr2: *const core:
 
 #[no_mangle]
 pub unsafe extern "C" fn memmove(dest: *mut core::ffi::c_char, src: *const core::ffi::c_char, n: core::ffi::c_size_t) -> *mut core::ffi::c_char {
-    if (dest as *const core::ffi::c_char) == src {
+    if (dest as *const core::ffi::c_char) == src || n == 0 {
         return dest;
     }
 
-    let src_range = src..src.add(n);
-    let has_overlap = src_range.contains(&(dest as *const core::ffi::c_char)) || src_range.contains(&(dest.add(n) as *const core::ffi::c_char));
+    let src_range = src..=src.add(n-1);
+    let has_overlap = src_range.contains(&(dest as *const core::ffi::c_char)) || src_range.contains(&(dest.add(n-1) as *const core::ffi::c_char));
     if !has_overlap {
         memcpy(dest, src, n);
     } else if (dest as *const core::ffi::c_char) < src {
@@ -111,4 +118,19 @@ pub unsafe extern "C" fn memmove(dest: *mut core::ffi::c_char, src: *const core:
         }
     }
     dest
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn memchr(ptr: *const core::ffi::c_uchar, ch: core::ffi::c_int, count: core::ffi::c_size_t) -> *mut core::ffi::c_void {
+    // Finds the first occurrence of (unsigned char)ch in the initial count bytes (each interpreted as unsigned char) of the object pointed to by ptr.
+    // The behavior is undefined if access occurs beyond the end of the array searched. The behavior is undefined if ptr is a null pointer.
+    // Return value: Pointer to the location of the byte, or a null pointer if no such byte is found
+    // Source: https://en.cppreference.com/w/c/string/byte/memchr
+    let ch: core::ffi::c_uchar = ch as core::ffi::c_uchar;
+    for i in 0..count {
+        if *ptr.add(i) == ch {
+            return ptr.add(i) as *mut core::ffi::c_void;
+        } 
+    }
+    return null_mut();
 }
