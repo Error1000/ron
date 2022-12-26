@@ -439,6 +439,7 @@ mod specifier_parsing {
                         return Err(initial);
                     } else { 
                         // Some other character (probably h) followed by l?, so hl?, no. it must be a apart of something else, don't return, and assume that the length is just the first character
+                        // FIXME: Better logging
                     }
                 }
                 
@@ -448,6 +449,7 @@ mod specifier_parsing {
                         return Err(initial);
                     } else {
                         // Some other character (probably l) followed by b?, so lh?, no. it must be a apart of something else, don't return, and assume that the length is just the first character
+                        // FIXME: Better logging
                     }
                 }
 
@@ -480,7 +482,7 @@ mod specifier_parsing {
                     initial.parsing_width = true;
                     return Err(initial); // We parsed this character, return
                 }
-                _ => {} // Try something else so don't return
+                _ => {} // TThe character was not part of the width, try something else, don't return
             }
         }
 
@@ -597,7 +599,7 @@ pub unsafe extern "C" fn vfprintf(f: *mut FILE, format_str: *const core::ffi::c_
 
     
             match specification.specifier {
-                ConversionSpecifier::SignedDecimalInteger | ConversionSpecifier::SignedInteger => {
+                ConversionSpecifier::SignedDecimalInteger | ConversionSpecifier::SignedInteger => { // 'd' or 'i'
                     let mut n = args.arg::<core::ffi::c_int>();
                     let is_negative = n < 0;
                     n = n.abs(); // We will always parse the number as if it is positive and then put the sign afterwards
@@ -619,7 +621,7 @@ pub unsafe extern "C" fn vfprintf(f: *mut FILE, format_str: *const core::ffi::c_
                     }
                 },
 
-                ConversionSpecifier::UnsignedDecimalInteger => {
+                ConversionSpecifier::UnsignedDecimalInteger => { // 'u'
                     let n = args.arg::<core::ffi::c_uint>();
                     // 3.32192809488736234 = log2(10)
                     let mut output_str = [b'?'; ((core::mem::size_of::<core::ffi::c_uint>()*8) as f64/3.32192809488736234f64) as usize + 1];
@@ -634,7 +636,7 @@ pub unsafe extern "C" fn vfprintf(f: *mut FILE, format_str: *const core::ffi::c_
                     }
                 },
 
-                ConversionSpecifier::UnsignedOctalInteger => {
+                ConversionSpecifier::UnsignedOctalInteger => { // 'o'
                     let n = args.arg::<core::ffi::c_uint>();
                     // 3 = log2(8)
                     let mut output_str = [b'?'; ((core::mem::size_of::<core::ffi::c_uint>()*8)/3) as usize + 1];
@@ -649,7 +651,7 @@ pub unsafe extern "C" fn vfprintf(f: *mut FILE, format_str: *const core::ffi::c_
                     }
                 },
 
-                ConversionSpecifier::UnsignedHexIntegerLowerCase => {
+                ConversionSpecifier::UnsignedHexIntegerLowerCase => { // 'x'
                     let n = args.arg::<core::ffi::c_uint>();
                     // 4 = log2(16)
                     let mut output_str = [b'?'; ((core::mem::size_of::<core::ffi::c_uint>()*8)/4) as usize + 1];
@@ -664,7 +666,7 @@ pub unsafe extern "C" fn vfprintf(f: *mut FILE, format_str: *const core::ffi::c_
                     }
                 },
 
-                ConversionSpecifier::UnsignedHexIntegerUpperCase => {
+                ConversionSpecifier::UnsignedHexIntegerUpperCase => { // 'X'
                     let n = args.arg::<core::ffi::c_uint>();
                     // 4 = log2(16)
                     let mut output_str = [b'?'; ((core::mem::size_of::<core::ffi::c_uint>()*8)/4) as usize + 1 /* ceil */];
@@ -679,7 +681,7 @@ pub unsafe extern "C" fn vfprintf(f: *mut FILE, format_str: *const core::ffi::c_
                     }
                 },
 
-                ConversionSpecifier::Character => {
+                ConversionSpecifier::Character => { // 'c'
                     let character_arg = args.arg::<core::ffi::c_char>();
                     let bytes_written = write((*f).fileno, &character_arg, 1);
                     if bytes_written < 1 {
@@ -689,7 +691,7 @@ pub unsafe extern "C" fn vfprintf(f: *mut FILE, format_str: *const core::ffi::c_
                     }        
                 },
 
-                ConversionSpecifier::String => {
+                ConversionSpecifier::String => { // 's'
                     let string_arg = args.arg::<*mut core::ffi::c_char>();
                     let string_arg_len = strlen(string_arg);
                     let bytes_written = write((*f).fileno, string_arg, string_arg_len as usize);
@@ -700,11 +702,11 @@ pub unsafe extern "C" fn vfprintf(f: *mut FILE, format_str: *const core::ffi::c_
                     } 
                 },
 
-                ConversionSpecifier::Pointer => {
-                    let n = args.arg::<core::ffi::c_size_t>();
+                ConversionSpecifier::Pointer => { // 'p'
+                    let n = args.arg::<*const core::ffi::c_void>();
                     // 4 = log2(16)
                     let mut output_str = [b'?'; ((core::mem::size_of::<core::ffi::c_size_t>()*8)/4) as usize + 1 + 2 /* for the 0x */];
-                    let mut ind = number_to_string_in_radix(&mut output_str, n, 16, Casing::Lower);
+                    let mut ind = number_to_string_in_radix(&mut output_str, n as usize, 16, Casing::Lower);
                     output_str[ind] = b'x';
                     ind -= 1;
                     output_str[ind] = b'0';
@@ -719,7 +721,7 @@ pub unsafe extern "C" fn vfprintf(f: *mut FILE, format_str: *const core::ffi::c_
                     }
                 },
 
-                ConversionSpecifier::Escape => {
+                ConversionSpecifier::Escape => { // '%'
                     let bytes_written = write((*f).fileno, "%".as_ptr() as *const core::ffi::c_char, 1);
                     if bytes_written < 1 {
                         return -1;
@@ -728,8 +730,19 @@ pub unsafe extern "C" fn vfprintf(f: *mut FILE, format_str: *const core::ffi::c_
                     }
                 },
 
-                ConversionSpecifier::Meta => unimplemented!("Implement printf specification 'n'!"),
-                _ => unimplemented!("Implement printf specification!"),
+                ConversionSpecifier::Meta => { // 'n'
+                    *args.arg::<*mut core::ffi::c_int>() = characters_transmitted;
+                }
+
+                ConversionSpecifier::DecimalFloatLowerCase => unimplemented!("Implement printf specification 'f'!"),
+                ConversionSpecifier::DeicmalFloatUpperCase => unimplemented!("Implement printf specification 'F'!"),
+                ConversionSpecifier::ScientificNotationLowerCase => unimplemented!("Implement printf specification 'e'!"),
+                ConversionSpecifier::ScientificNotationUpperCase => unimplemented!("Implement printf specification 'E'!"),
+                ConversionSpecifier::ShortestFloatLowerCase => unimplemented!("Implement printf specification 'g'!"),
+                ConversionSpecifier::ShortestFloatUpperCase => unimplemented!("Implement printf specification 'G'!"),
+                ConversionSpecifier::HexFloatLowerCase => unimplemented!("Implement printf specification 'a'!"),
+                ConversionSpecifier::HexFloatUpperCase => unimplemented!("Implement printf specification 'A'!"),
+                ConversionSpecifier::Unparsed => panic!("Impossible printf state, conversion specifer is still unparsed even though the parsing finished!"),
             }
             // We did the actual formatting, so reset the parsed specification
             parsed_specification = None;
@@ -757,7 +770,8 @@ pub unsafe extern "C" fn vfscanf(f: *mut FILE, format_str: *const core::ffi::c_c
     // Source: https://en.cppreference.com/w/c/io/vfscanf
 
     let mut stream_char: u8 = 0;
-    if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); }
+    let mut characters_read: usize = 0;
+    if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
 
     for i in 0..format_str_len {
         let mut should_advance_stream = true;
@@ -765,9 +779,9 @@ pub unsafe extern "C" fn vfscanf(f: *mut FILE, format_str: *const core::ffi::c_c
 
         if !parsing_conversion_specification {
             if isspace(format_char as core::ffi::c_int) != 0 { // Whitespace characters
-                // Read until stream_char is no longer whitespace, but we still need to process that char that is not whitespace so mark an overread
+                // Read until stream_char is no longer whitespace, but we still need to process the char that is not whitespace so mark an over-read
                 while isspace(stream_char as core::ffi::c_int) != 0 {
-                    if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); }
+                    if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
                 }
 
                 should_advance_stream = false; // We over-read
@@ -776,11 +790,11 @@ pub unsafe extern "C" fn vfscanf(f: *mut FILE, format_str: *const core::ffi::c_c
                     return arguments_assigned.unwrap_or(EOF);
                 }
             } else if format_char == b'%' {
+                should_advance_stream = false;  // Don't consume char from stream while parsing specification
                 parsing_conversion_specification = true;
                 // Set up specification under construction
                 // TODO: The rest of the code should always leave the specification under construction in the default state by this point anyways
                 specification_under_construction = UnfinishedScanfConversionSpecification::default();
-                should_advance_stream = false;  // Don't consume char from stream while parsing specification 
             }   
         }else{
             should_advance_stream = false; // Don't consume char from stream while parsing specification
@@ -797,34 +811,304 @@ pub unsafe extern "C" fn vfscanf(f: *mut FILE, format_str: *const core::ffi::c_c
         // Once the last character is parsed, the execution of the parsed specification starts immediately, 
         // while i is still on the last character of the specification ( not after it )
         if let Some(specification) = parsed_specification {
+            #[derive(PartialEq)]
+            enum ParsedSign {
+                POSITIVE,
+                NEGATIVE
+            }
+
+            #[derive(PartialEq)]
+            enum ParsedBase {
+                BASE10,
+                BASE8,
+                BASE16
+            }
+
+            fn char_to_digit(c: u8) -> Option<u8> {
+                Some(match c {
+                    b'0' => 0, 
+                    b'1' => 1,
+                    b'2' => 2, 
+                    b'3' => 3, 
+                    b'4' => 4, 
+                    b'5' => 5, 
+                    b'6' => 6, 
+                    b'7' => 7, 
+                    b'8' => 8, 
+                    b'9' => 9, 
+                    b'a' | b'A' => 10,
+                    b'b' | b'B' => 11,
+                    b'c' | b'C' => 12,
+                    b'd' | b'D' => 13,
+                    b'e' | b'E' => 14,
+                    b'f' | b'F' => 15,
+                    _ => return None
+                })
+            }
+
             match specification.specifier {
-                ConversionSpecifier::SignedDecimalInteger => {
-                    let n = args.arg::<*mut core::ffi::c_int>();
-                    // Read a number with optional + or -
-                    #[derive(PartialEq)]
-                    enum ParsedSign {
-                        POSITIVE,
-                        NEGATIVE
+                ConversionSpecifier::Escape => { // '%'
+                    if stream_char != b'%' {
+                        return arguments_assigned.unwrap_or(0);
                     }
+                }
+
+                ConversionSpecifier::Character => { // 'c'
+                    // FIXME: Maybe don't allow the oportunity to write to null, but to be fair right now the only alternative that i can think of is duplicating the entire logic which also seems iffy
+                    let c = if !specification.assignment_suppression { args.arg::<*mut core::ffi::c_char>() } else { core::ptr::null_mut() };
+                    if let ScanfConversionWidth::Number(len) = specification.width {
+                        if !specification.assignment_suppression { *c = stream_char as i8; }
+                        for i in 1..len {
+                            if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                            if !specification.assignment_suppression { *(c.add(i)) = stream_char as i8; }
+                        }
+                    }else {
+                        if !specification.assignment_suppression { *c = stream_char as i8; }
+                    }
+
+                    arguments_assigned = if let Some(val) = arguments_assigned { Some(val+1) } else { Some(1) };
+                }
+
+                ConversionSpecifier::String => { // 's'
+                    // FIXME: Maybe don't allow the oportunity to write to null, but to be fair right now the only alternative that i can think of is duplicating the entire logic which also seems iffy
+                    let s = if !specification.assignment_suppression{ args.arg::<*mut core::ffi::c_char>() } else { core::ptr::null_mut() };
+                    let mut s_pos = 0;
+                    if let ScanfConversionWidth::Number(len) = specification.width {
+                        if !specification.assignment_suppression { *(s.add(s_pos)) = stream_char as i8; }
+                        s_pos += 1;
+
+                        let mut found_space = false;
+                        for _ in 1..len {
+                            if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                            if isspace(stream_char.into()) == 0 { 
+                                if !specification.assignment_suppression { *(s.add(s_pos)) = stream_char as i8; }
+                                s_pos += 1; 
+                            } else { 
+                                found_space = true; 
+                                break; 
+                            }
+                        }
+
+                        if found_space {
+                            // If we found a space then we over-read
+                            should_advance_stream = false;
+                        }
+                    }else{
+                        while isspace(stream_char.into()) == 0 {
+                            if !specification.assignment_suppression { *(s.add(s_pos)) = stream_char as i8; }
+                            s_pos += 1;
+                            if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                        }
+                        should_advance_stream = false; // We always read until we find a space so we always over-read
+                    }
+
+                    if !specification.assignment_suppression { *(s.add(s_pos)) = b'\0' as i8; }
+                    arguments_assigned = if let Some(val) = arguments_assigned { Some(val+1) } else { Some(1) };
+                }
+
+                ConversionSpecifier::SignedDecimalInteger | ConversionSpecifier::UnsignedDecimalInteger => { // 'd' / 'u'
+                    // Read a number with optional + or -
 
                     let mut number_sign = ParsedSign::POSITIVE;
                     if stream_char == b'+' || stream_char == b'-' {
                         if stream_char == b'+' { number_sign = ParsedSign::POSITIVE; } else if stream_char == b'-' { number_sign = ParsedSign::NEGATIVE; }
-                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); }
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
                     }
 
-                    let mut parsed_n = 0;
+                    let mut parsed_n = None;
 
                     while stream_char == b'0' || stream_char == b'1' || stream_char == b'2' || stream_char == b'3' || stream_char == b'4' || stream_char == b'5' || stream_char == b'6' || stream_char == b'7' || stream_char == b'8' || stream_char == b'9' {
-                        parsed_n = parsed_n*10 + (stream_char-b'0') as i32;
-                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); }
+                        if let Some(val) = parsed_n {
+                            parsed_n = Some(val*10 + char_to_digit(stream_char).unwrap() as i32);
+                        } else {
+                            parsed_n = Some(char_to_digit(stream_char).unwrap() as i32);
+                        }
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
                     }
-                    if number_sign == ParsedSign::NEGATIVE { parsed_n = -parsed_n;}
-                    should_advance_stream = false; // We over-read
-                    *n = parsed_n;
+
+                    if number_sign == ParsedSign::NEGATIVE { parsed_n = parsed_n.map(|val| -val);}
+                    should_advance_stream = false; // We read until stream_char is no loner a digit, but we still need to parse the non-digit we over-read
+                    if let Some(val) = parsed_n { if !specification.assignment_suppression { *args.arg::<*mut core::ffi::c_int>() = val; } } else { return arguments_assigned.unwrap_or(0); }
                     arguments_assigned = if let Some(val) = arguments_assigned { Some(val+1) } else { Some(1) };
                 }
-                _ => unimplemented!("Implement scanf specification!")
+
+                ConversionSpecifier::SignedInteger => { // 'i'
+                    // Read a number with optional + or - and possible base marking ("0x"/"0")
+
+                    let mut number_sign = ParsedSign::POSITIVE;
+                    if stream_char == b'+' || stream_char == b'-' {
+                        if stream_char == b'+' { number_sign = ParsedSign::POSITIVE; } else if stream_char == b'-' { number_sign = ParsedSign::NEGATIVE; }
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                    }
+                        
+                    let mut number_base = ParsedBase::BASE10;
+                    if stream_char == b'0' {
+                        number_base = ParsedBase::BASE8;
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                        if stream_char == b'x' || stream_char == b'X' {
+                            number_base = ParsedBase::BASE16;
+                            if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                        }else{
+                            // Nothing as it could still be base8 so don't assume matching failure just yet
+                        }
+                    }
+                        
+                    let mut parsed_n = None;
+                    match number_base {
+                        ParsedBase::BASE10 => 
+                            while stream_char == b'0' || stream_char == b'1' || stream_char == b'2' || stream_char == b'3' || stream_char == b'4' || stream_char == b'5' || stream_char == b'6' || stream_char == b'7' || stream_char == b'8' || stream_char == b'9' {
+                                if let Some(val) = parsed_n {
+                                    parsed_n = Some(val*10 + char_to_digit(stream_char).unwrap() as i32);
+                                }else{
+                                    parsed_n = Some(char_to_digit(stream_char).unwrap() as i32);
+                                }
+                                if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                            }
+
+                        ParsedBase::BASE8 =>
+                            while stream_char == b'0' || stream_char == b'1' || stream_char == b'2' || stream_char == b'3' || stream_char == b'4' || stream_char == b'5' || stream_char == b'6' || stream_char == b'7' {
+                                if let Some(val) = parsed_n {
+                                    parsed_n = Some(val*8 + char_to_digit(stream_char).unwrap() as i32);
+                                }else{
+                                    parsed_n = Some(char_to_digit(stream_char).unwrap() as i32);
+                                }                                    
+                                if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                            }
+
+                        ParsedBase::BASE16 => 
+                            while stream_char == b'0' || stream_char == b'1' || stream_char == b'2' || stream_char == b'3' || stream_char == b'4' || stream_char == b'5' || stream_char == b'6' || stream_char == b'7' || stream_char == b'8' || stream_char == b'9' 
+                                || (stream_char == b'a' || stream_char == b'A') || (stream_char == b'b' || stream_char == b'B') || (stream_char == b'c' || stream_char == b'C') || (stream_char == b'd' || stream_char == b'D') || (stream_char == b'e' || stream_char == b'E') || (stream_char == b'F' || stream_char == b'F') {
+                                if let Some(val) = parsed_n {
+                                    parsed_n = Some(val*16 + char_to_digit(stream_char).unwrap() as i32);
+                                }else{
+                                    parsed_n = Some(char_to_digit(stream_char).unwrap() as i32);
+                                }
+                                if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                            }
+                    }
+                        
+                    if number_sign == ParsedSign::NEGATIVE { parsed_n = parsed_n.map(|val| -val); }
+                    should_advance_stream = false; // We read until stream_char is no loner a digit, but we still need to parse the non-digit we over-read
+                    if let Some(val) = parsed_n { if !specification.assignment_suppression { *args.arg::<*mut core::ffi::c_int>() = val; } } else { return arguments_assigned.unwrap_or(0); }
+                    arguments_assigned = if let Some(val) = arguments_assigned { Some(val+1) } else { Some(1) };
+                }
+
+
+                ConversionSpecifier::UnsignedOctalInteger => { // 'o'
+                    // Read a number with optional + or - and possible base marking ("0")
+
+                    let mut number_sign = ParsedSign::POSITIVE;
+                    if stream_char == b'+' || stream_char == b'-' {
+                        if stream_char == b'+' { number_sign = ParsedSign::POSITIVE; } else if stream_char == b'-' { number_sign = ParsedSign::NEGATIVE; }
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                    }
+                    
+                    if stream_char == b'0' {
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                    }
+                    
+                    let mut parsed_n = None;
+
+                    while stream_char == b'0' || stream_char == b'1' || stream_char == b'2' || stream_char == b'3' || stream_char == b'4' || stream_char == b'5' || stream_char == b'6' || stream_char == b'7' {
+                        if let Some(val) = parsed_n {
+                            parsed_n = Some(val*8 + char_to_digit(stream_char).unwrap() as i32);
+                        }else{
+                            parsed_n = Some(char_to_digit(stream_char).unwrap() as i32);
+                        }                                    
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                    }
+
+                    if number_sign == ParsedSign::NEGATIVE { parsed_n = parsed_n.map(|val| -val); }
+                    should_advance_stream = false; // We read until stream_char is no loner a digit, but we still need to parse the non-digit we over-read
+                    if let Some(val) = parsed_n { if !specification.assignment_suppression { *args.arg::<*mut core::ffi::c_int>() = val; } } else { return arguments_assigned.unwrap_or(0); }
+                    arguments_assigned = if let Some(val) = arguments_assigned { Some(val+1) } else { Some(1) };
+                }
+
+
+                ConversionSpecifier::Pointer => { // 'p'
+                    // Read a number with base marking ("0x")
+
+                    if stream_char == b'0' {
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                        if stream_char == b'x' || stream_char == b'X' {
+                            if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                        }else{
+                            return arguments_assigned.unwrap_or(0); // We can't parse octal when told to parse hex
+                        }
+                    }else{
+                        return arguments_assigned.unwrap_or(0); // We can't parse octal when told to parse hex
+                    }
+                
+                    let mut parsed_n = None;
+
+                    while stream_char == b'0' || stream_char == b'1' || stream_char == b'2' || stream_char == b'3' || stream_char == b'4' || stream_char == b'5' || stream_char == b'6' || stream_char == b'7' || stream_char == b'8' || stream_char == b'9' 
+                    || (stream_char == b'a' || stream_char == b'A') || (stream_char == b'b' || stream_char == b'B') || (stream_char == b'c' || stream_char == b'C') || (stream_char == b'd' || stream_char == b'D') || (stream_char == b'e' || stream_char == b'E') || (stream_char == b'F' || stream_char == b'F') {
+                        if let Some(val) = parsed_n {
+                            parsed_n = Some(val*16 + char_to_digit(stream_char).unwrap() as usize);
+                        }else{
+                            parsed_n = Some(char_to_digit(stream_char).unwrap() as usize);
+                        }
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                    }
+
+                    should_advance_stream = false; // We read until stream_char is no loner a digit, but we still need to parse the non-digit we over-read
+                    if let Some(val) = parsed_n { if !specification.assignment_suppression { *args.arg::<*mut *mut core::ffi::c_void>() = val as *mut core::ffi::c_void; } } else { return arguments_assigned.unwrap_or(0); }
+                    arguments_assigned = if let Some(val) = arguments_assigned { Some(val+1) } else { Some(1) };
+                }
+
+
+                ConversionSpecifier::UnsignedHexIntegerLowerCase | ConversionSpecifier::UnsignedHexIntegerUpperCase => { // 'x' / 'X'
+                    // Read a number with optional + or - and possible base marking ("0x")
+
+                    let mut number_sign = ParsedSign::POSITIVE;
+                    if stream_char == b'+' || stream_char == b'-' {
+                        if stream_char == b'+' { number_sign = ParsedSign::POSITIVE; } else if stream_char == b'-' { number_sign = ParsedSign::NEGATIVE; }
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                    }
+            
+                    if stream_char == b'0' {
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                        if stream_char == b'x' || stream_char == b'X' {
+                            if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                        }else{
+                            return arguments_assigned.unwrap_or(0); // We can't parse octal when told to parse hex
+                        }
+                    }
+            
+                    let mut parsed_n = None;
+
+                    while stream_char == b'0' || stream_char == b'1' || stream_char == b'2' || stream_char == b'3' || stream_char == b'4' || stream_char == b'5' || stream_char == b'6' || stream_char == b'7' || stream_char == b'8' || stream_char == b'9' 
+                    || (stream_char == b'a' || stream_char == b'A') || (stream_char == b'b' || stream_char == b'B') || (stream_char == b'c' || stream_char == b'C') || (stream_char == b'd' || stream_char == b'D') || (stream_char == b'e' || stream_char == b'E') || (stream_char == b'F' || stream_char == b'F') {
+                        if let Some(val) = parsed_n {
+                            parsed_n = Some(val*16 + char_to_digit(stream_char).unwrap() as i32);
+                        }else{
+                            parsed_n = Some(char_to_digit(stream_char).unwrap() as i32);
+                        }
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                    }
+
+                    if number_sign == ParsedSign::NEGATIVE { parsed_n = parsed_n.map(|val| -val); }
+                    should_advance_stream = false; // We read until stream_char is no loner a digit, but we still need to parse the non-digit we over-read
+                    if let Some(val) = parsed_n { if !specification.assignment_suppression { *args.arg::<*mut core::ffi::c_int>() = val; } } else { return arguments_assigned.unwrap_or(0); }
+                    arguments_assigned = if let Some(val) = arguments_assigned { Some(val+1) } else { Some(1) };
+                }
+
+                ConversionSpecifier::Meta => { // 'n'
+                    if !specification.assignment_suppression {
+                        *args.arg::<*mut core::ffi::c_uint>() = characters_read as u32; 
+                    }
+                    should_advance_stream = false; // Meta doesn't consume anything
+                }
+
+                ConversionSpecifier::DecimalFloatLowerCase => unimplemented!("Implement scanf specification 'f'!"),
+                ConversionSpecifier::DeicmalFloatUpperCase => unimplemented!("Implement scanf specification 'F'!"),
+                ConversionSpecifier::ScientificNotationLowerCase => unimplemented!("Implement scanf specification 'e'!"),
+                ConversionSpecifier::ScientificNotationUpperCase => unimplemented!("Implement scanf specification 'E'!"),
+                ConversionSpecifier::ShortestFloatLowerCase => unimplemented!("Implement scanf specification 'g'!"),
+                ConversionSpecifier::ShortestFloatUpperCase => unimplemented!("Implement scanf specification 'G'!"),
+                ConversionSpecifier::HexFloatLowerCase => unimplemented!("Implement scanf specification 'a'!"),
+                ConversionSpecifier::HexFloatUpperCase => unimplemented!("Implement scanf specification 'A'!"),
+                ConversionSpecifier::Unparsed => panic!("Impossible scanf state, conversion specifer is still unparsed even though the parsing finished!"),
             }
             // We did the actual formatting, so reset the parsed specification
             parsed_specification = None;
