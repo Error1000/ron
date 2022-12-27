@@ -2,14 +2,16 @@ use core::{
     convert::{TryFrom, TryInto},
     ptr::null_mut,
     slice,
+    str::from_utf8_unchecked,
 };
 
+use rlibc::cstr::strlen;
 use rlibc::sys::SyscallNumber;
 
 use crate::{
     emulator::Riscv64Cpu,
     hio::KeyboardPacketType,
-    program::{ProgramData, ProgramFileDescriptor},
+    program::{FdMapping, ProgramData, ProgramNode},
     ps2_8042::KEYBOARD_INPUT,
     vfs,
     virtmem::{self, LittleEndianVirtualMemory, UserPointer, VirtualMemory},
@@ -104,6 +106,32 @@ pub fn syscall_linux_abi_entry_point(emu: &mut Emulator, prog_data: &mut Program
             return_value(val as u64, emu)
         }
 
+        SyscallNumber::Getcwd => {
+            let val =
+                getcwd(emu, prog_data, unsafe { virtmem::UserPointer::<[u8]>::from_mem(argument_1()) }, argument_2() as usize);
+            return_value(val as u64, emu)
+        }
+
+        SyscallNumber::Getenv => {
+            let val = getenv(emu, prog_data, unsafe { virtmem::UserPointer::<[u8]>::from_mem(argument_1()) });
+            return_value(val as u64, emu)
+        }
+
+        SyscallNumber::Fchdir => {
+            let val = fchdir(prog_data, argument_1() as usize);
+            return_value(val as u64, emu)
+        }
+
+        SyscallNumber::Dup => {
+            let val = dup(prog_data, argument_1() as usize);
+            return_value(val as u64, emu)
+        }
+
+        SyscallNumber::Dup2 => {
+            let val = dup2(prog_data, argument_1() as usize, argument_2() as usize);
+            return_value(val as u64, emu)
+        }
+
         SyscallNumber::MaxValue => (),
     }
 }
@@ -116,11 +144,50 @@ fn exit(emu: &mut Emulator, exit_number: usize) {
 
 fn write(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: UserPointer<[u8]>, count: usize) -> i32 {
     let buf = if let Some(val) = user_buf.try_as_ref(&mut emu.memory, count) { val } else { return -1 };
+    let node_mapping = if let Some(Some(val)) = prog_data.fd_mapping.get(fd).copied() { val } else { return -1 };
 
-    match fd {
-        rlibc::sys::STDIN_FILENO => return -1,
+    match node_mapping {
+        FdMapping::Index(node_index) => {
+            // If the node_index exists then so does the node
+            let node = prog_data.open_nodes[node_index].as_mut().unwrap();
 
-        rlibc::sys::STDOUT_FILENO | rlibc::sys::STDERR_FILENO => {
+            // Check for write access
+            if node.flags & rlibc::sys::O_WRONLY == 0 {
+                return -1;
+            }
+
+            if let vfs::Node::File(f) = node.vfs_node.clone() {
+                if node.flags & rlibc::sys::O_APPEND != 0 {
+                    // Before each write, the file offset is positioned at the end of the file
+                    // Source: man open
+                    node.cursor = (*f).borrow().get_size();
+                }
+
+                // Make sure file is big enough
+                if node.cursor + buf.len() as u64 > (*f).borrow().get_size() {
+                    if (*f).borrow_mut().resize(node.cursor + buf.len() as u64).is_none() {
+                        return -1;
+                    }
+                }
+
+                let inc = if let Some(amnt) = (*f).borrow_mut().write(node.cursor, buf) {
+                    amnt
+                } else {
+                    return -1;
+                };
+
+                node.cursor += inc as u64;
+
+                return inc as i32;
+            } else {
+                // Can't write to directory
+                return -1;
+            }
+        }
+
+        FdMapping::Stdin => return -1, // Can't write to stdin
+
+        FdMapping::Stdout | crate::program::FdMapping::Stderr => {
             use crate::TERMINAL;
             use core::fmt::Write;
             let str_buf = if let Ok(val) = core::str::from_utf8(buf) {
@@ -135,52 +202,48 @@ fn write(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: U
             }
             return count as i32;
         }
-
-        fd => {
-            let fd = fd - 3; /* 0, 1, and 2 fds a special */
-            if let Some(Some(node_fd)) = prog_data.open_fds.get_mut(fd) {
-                // Check for write access
-                if node_fd.flags & rlibc::sys::O_WRONLY == 0 {
-                    return -1;
-                }
-
-                if let vfs::Node::File(f) = node_fd.vfs_node.clone() {
-                    if node_fd.flags & rlibc::sys::O_APPEND != 0 {
-                        // Before each write, the file offset is positioned at the end of the file
-                        // Source: man open
-                        node_fd.cursor = (*f).borrow().get_size();
-                    }
-
-                    // Make sure file is big enough
-                    if node_fd.cursor + buf.len() as u64 > (*f).borrow().get_size() {
-                        if (*f).borrow_mut().resize(node_fd.cursor + buf.len() as u64).is_none() {
-                            return -1;
-                        }
-                    }
-
-                    let inc = if let Some(amnt) = (*f).borrow_mut().write(node_fd.cursor, buf) {
-                        amnt
-                    } else {
-                        return -1;
-                    };
-                    node_fd.cursor += inc as u64;
-                    return inc as i32;
-                } else {
-                    return -1;
-                }
-            } else {
-                return -1;
-            }
-        }
     }
 }
 
 fn read(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: UserPointer<[u8]>, count: usize) -> i32 {
     let buf = if let Some(val) = user_buf.try_as_ref(&mut emu.memory, count) { val } else { return -1 };
+    let node_mapping = if let Some(Some(val)) = prog_data.fd_mapping.get(fd).copied() { val } else { return -1 };
 
-    match fd {
-        rlibc::sys::STDOUT_FILENO | rlibc::sys::STDERR_FILENO => return -1,
-        rlibc::sys::STDIN_FILENO => {
+    match node_mapping {
+        FdMapping::Index(node_index) => {
+            // If the node_index exists then so does the node
+            let node = prog_data.open_nodes[node_index].as_mut().unwrap();
+
+            // Check for read access
+            if node.flags & rlibc::sys::O_RDONLY == 0 {
+                return -1;
+            }
+
+            if let vfs::Node::File(f) = node.vfs_node.clone() {
+                let mut index: u64 = 0;
+                while index < buf.len() as u64 {
+                    // Make sure we don't pass file boundaries
+                    if node.cursor + index > (*f).borrow().get_size() {
+                        break;
+                    }
+
+                    // TODO: Try to read more than 1 byte at a time
+                    buf[index as usize] = if let Some(val) = (*f).borrow().read(node.cursor + index, 1) {
+                        val[0]
+                    } else {
+                        break;
+                    };
+                    index += 1;
+                }
+
+                node.cursor += index;
+                return index as i32;
+            } else {
+                return -1; // Can't read directory
+            }
+        }
+
+        FdMapping::Stdin => {
             // FIXME: Allow character echoing in the console
             loop {
                 // We only allow applications to read one character from stdin at a time to stop the keyboard from being hogged by applications
@@ -202,40 +265,7 @@ fn read(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: Us
             }
         }
 
-        fd => {
-            let fd = fd - 3;
-            if let Some(Some(node_fd)) = prog_data.open_fds.get_mut(fd) {
-                // Check for read access
-                if node_fd.flags & rlibc::sys::O_RDONLY == 0 {
-                    return -1;
-                }
-
-                if let vfs::Node::File(f) = node_fd.vfs_node.clone() {
-                    let mut index: u64 = 0;
-                    while index < buf.len() as u64 {
-                        // Make sure we don't pass file boundaries
-                        if node_fd.cursor + index > (*f).borrow().get_size() {
-                            break;
-                        }
-
-                        // TODO: Try to read more than 1 byte at a time
-                        buf[index as usize] = if let Some(val) = (*f).borrow().read(node_fd.cursor + index, 1) {
-                            val[0]
-                        } else {
-                            break;
-                        };
-                        index += 1;
-                    }
-
-                    node_fd.cursor += index;
-                    return index as i32;
-                } else {
-                    return -1;
-                }
-            } else {
-                return -1;
-            }
-        }
+        FdMapping::Stdout | FdMapping::Stderr => return -1, // Can't read stdout or stderr
     }
 }
 
@@ -286,59 +316,77 @@ fn open(emu: &mut Emulator, prog_data: &mut ProgramData, pathname: virtmem::User
         }
     };
 
-    prog_data.open_fds.push(Some(ProgramFileDescriptor { vfs_node: node, cursor: 0, flags }));
-    (prog_data.open_fds.len() as isize - 1) + 3 /* 0, 1, and 2 fds a special */
+    // TODO: Consider changing it so it actually uses the lowest fd number, instead of using a fd number that is known to be free
+    prog_data.open_nodes.push(Some(ProgramNode { vfs_node: node, cursor: 0, flags, path, reference_count: 1 }));
+    let node_index = prog_data.open_nodes.len() - 1;
+    prog_data.fd_mapping.push(Some(FdMapping::Index(node_index)));
+
+    // -1 because we just added a new one
+    prog_data.fd_mapping.len() as isize - 1
 }
 
 // source: man close
 fn close(prog_data: &mut ProgramData, fd: usize) -> isize {
-    let fd = fd - 3; /* 0, 1, and 2 fds a special */
-    if let Some(node) = prog_data.open_fds.get_mut(fd) {
-        *node = None;
-        // Drain None's if possible
-        // Note: We cannot use retain or drain_filter because we need to keep the index of fds that are Some, which removing all None using retain or drain_filter will not do, for ex. on the vector: Some None Some
-        while prog_data.open_fds.last().map(|elem| elem.is_none()).unwrap_or(false) {
-            prog_data.open_fds.pop();
+    let node_mapping = if let Some(Some(val)) = prog_data.fd_mapping.get(fd).copied() { val } else { return -1 };
+    match node_mapping {
+        FdMapping::Index(node_index) => {
+            // NOTE: If the node_index exists then so must the node so it's fine to unwrap
+            let node = prog_data.open_nodes[node_index].as_mut().unwrap();
+            if node.reference_count > 1 {
+                node.reference_count -= 1;
+            } else {
+                prog_data.open_nodes[node_index] = None;
+            }
         }
-        return 0;
-    } else {
-        return -1;
+        FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr => {} // No need to close stdin, stdout or stderr since they are not actual nodes
     }
+
+    prog_data.fd_mapping[fd] = None;
+
+    // Drain None's if possible
+    // Note: We cannot use retain or drain_filter because we need to keep the index of fds that are Some, which removing all None using retain or drain_filter will not do, for ex. on the vector: Some None Some
+    while prog_data.fd_mapping.last().map(|elem| elem.is_none()).unwrap_or(false) {
+        prog_data.fd_mapping.pop();
+    }
+
+    while prog_data.open_nodes.last().map(|elem| elem.is_none()).unwrap_or(false) {
+        prog_data.open_nodes.pop();
+    }
+
+    return 0;
 }
 
 fn lseek(prog_data: &mut ProgramData, fd: usize, offset: i64, whence: usize) -> i64 {
-    match fd {
-        rlibc::sys::STDIN_FILENO | rlibc::sys::STDOUT_FILENO | rlibc::sys::STDERR_FILENO => return -1,
+    let node_mapping = if let Some(Some(val)) = prog_data.fd_mapping.get(fd).copied() { val } else { return -1 };
 
-        _ => {
-            let fd = fd - 3;
-            if let Some(Some(node)) = prog_data.open_fds.get_mut(fd) {
-                match whence {
-                    rlibc::sys::SEEK_SET => {
-                        node.cursor = offset as u64;
-                        return node.cursor as i64;
-                    }
-
-                    rlibc::sys::SEEK_CUR => {
-                        node.cursor = ((node.cursor as i64) + offset) as u64;
-                        return node.cursor as i64;
-                    }
-
-                    rlibc::sys::SEEK_END => {
-                        if let vfs::Node::File(f) = &node.vfs_node {
-                            node.cursor = ((f.borrow().get_size() as i64) + offset) as u64;
-                            return node.cursor as i64;
-                        } else {
-                            return -1;
-                        }
-                    }
-
-                    _ => return -1,
+    match node_mapping {
+        FdMapping::Index(node_index) => {
+            let node = prog_data.open_nodes[node_index].as_mut().unwrap();
+            match whence {
+                rlibc::sys::SEEK_SET => {
+                    node.cursor = offset as u64;
+                    return node.cursor as i64;
                 }
-            } else {
-                return -1;
+
+                rlibc::sys::SEEK_CUR => {
+                    node.cursor = ((node.cursor as i64) + offset) as u64;
+                    return node.cursor as i64;
+                }
+
+                rlibc::sys::SEEK_END => {
+                    if let vfs::Node::File(f) = &node.vfs_node {
+                        node.cursor = ((f.borrow().get_size() as i64) + offset) as u64;
+                        return node.cursor as i64;
+                    } else {
+                        return -1;
+                    }
+                }
+
+                _ => return -1,
             }
         }
+
+        FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr => return -1,
     }
 }
 
@@ -436,7 +484,6 @@ fn free(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64) {
     prog_data.program_alloc.dealloc(alloc_ptr, allocation_info);
 }
 
-
 fn realloc(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64, new_size: usize) -> u64 {
     let userspace_null_ptr: u64 = null_mut::<u8>() as u64;
 
@@ -450,7 +497,7 @@ fn realloc(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64, ne
 
     // Get actual physical ptr
     let alloc_ptr =
-    unsafe { mapped_alloc.0.backing_storage.as_mut_ptr().add(mapped_alloc.1).sub(core::mem::size_of::<usize>()) };
+        unsafe { mapped_alloc.0.backing_storage.as_mut_ptr().add(mapped_alloc.1).sub(core::mem::size_of::<usize>()) };
 
     // Make sure allocator is in sync with the actual location of the heap
     // This is because the actual location may change as the mapping changes/grows
@@ -475,4 +522,133 @@ fn realloc(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64, ne
 
     // Reallocate
     prog_data.program_alloc.realloc(alloc_ptr, allocation_info, new_size) as u64
+}
+
+fn getcwd(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: virtmem::UserPointer<[u8]>, buf_size: usize) -> u64 {
+    // On failure, these functions return NULL
+    // Source: man getcwd
+
+    let userspace_null_ptr: u64 = null_mut::<u8>() as u64;
+
+    // If the length of the absolute pathname of the current working
+    // directory, including the terminating null byte, exceeds size
+    // bytes, NULL is returned
+    // Source: man getcwd
+    if prog_data.cwd.len() + 1 > buf_size {
+        return userspace_null_ptr;
+    }
+
+    let buf = if let Some(val) = virtual_ptr.try_as_ref(&mut emu.memory, buf_size) {
+        val
+    } else {
+        return userspace_null_ptr;
+    };
+
+    for (i, c) in prog_data.cwd.chars().enumerate() {
+        buf[i] = c as u8;
+    }
+
+    buf[buf.len() - 1] = b'\0';
+    return virtual_ptr.get_inner();
+}
+
+fn fchdir(prog_data: &mut ProgramData, fd: usize) -> isize {
+    prog_data.cwd = if let Some(Some(node_mapping)) = prog_data.fd_mapping.get(fd).copied() {
+        match node_mapping {
+            FdMapping::Index(node_index) => {
+                let node = prog_data.open_nodes[node_index].as_mut().unwrap();
+                node.path.clone()
+            }
+            FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr => return -1,
+        }
+    } else {
+        return -1;
+    };
+
+    return 0;
+}
+
+fn getenv(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: virtmem::UserPointer<[u8]>) -> u64 {
+    let userspace_null_ptr: u64 = null_mut::<u8>() as u64;
+
+    // The getenv() function returns a pointer to the value in the
+    // environment, or NULL if there is no match.
+    // Source: man getenv
+    let key_ptr = if let Some(val) = virtual_ptr.try_as_ptr(&mut emu.memory) {
+        val
+    } else {
+        return userspace_null_ptr;
+    };
+
+    let key = unsafe {
+        from_utf8_unchecked(
+            if let Some(val) = virtual_ptr.try_as_ref(&mut emu.memory, strlen(key_ptr as *const core::ffi::c_char) as usize) {
+                val
+            } else {
+                return userspace_null_ptr;
+            },
+        )
+    };
+
+    // Lookup the environment variable
+    let res = prog_data.env.get(key);
+    let res = if let Some(val) = res {
+        val
+    } else {
+        return userspace_null_ptr;
+    };
+
+    return *res;
+}
+
+fn dup(prog_data: &mut ProgramData, oldfd: usize) -> isize {
+    let node_mapping = if let Some(Some(val)) = prog_data.fd_mapping.get_mut(oldfd).copied() {
+        val
+    } else {
+        return -1;
+    };
+
+    match node_mapping {
+        FdMapping::Index(node_index) => {
+            // NOTE: If the node_index exists then the node must exist
+            let node = prog_data.open_nodes[node_index].as_mut().unwrap();
+            node.reference_count += 1;
+        }
+
+        FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr => {} // No need to update ref count of stdin, stdout or stderr since they are handled specially anyways
+    }
+
+    prog_data.fd_mapping.push(Some(node_mapping));
+    // -1 because we just added the new one
+    prog_data.fd_mapping.len() as isize - 1
+}
+
+fn dup2(prog_data: &mut ProgramData, oldfd: usize, newfd: usize) -> isize {
+    use core::fmt::Write;
+    writeln!(UART.lock(), "dup2({}, {}) called!", oldfd, newfd);
+
+    let node_mapping = if let Some(Some(val)) = prog_data.fd_mapping.get_mut(oldfd).copied() {
+        val
+    } else {
+        return -1;
+    };
+
+    close(prog_data, newfd);
+
+    match node_mapping {
+        FdMapping::Index(node_index) => {
+            // NOTE: If the node_index exists then the node must exist
+            let node = prog_data.open_nodes[node_index].as_mut().unwrap();
+            node.reference_count += 1;
+        }
+
+        FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr => {} // No need to update ref count of stdin, stdout or stderr since they are handled specially anyways
+    }
+
+    if newfd > prog_data.fd_mapping.len() {
+        prog_data.fd_mapping.resize(newfd+1, None);
+    }
+
+    prog_data.fd_mapping[newfd] = Some(node_mapping);
+    newfd as isize
 }

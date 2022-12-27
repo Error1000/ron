@@ -11,6 +11,7 @@ pub struct VirtRegion {
 }
 
 impl VirtRegion {
+    // Returns: Offset into region memory
     pub fn try_map(&self, virt_addr: u64) -> Option<usize> {
         if (self.virtual_start..=self.get_virtual_end_inclusive()).contains(&virt_addr) {
             return Some((virt_addr - self.virtual_start) as usize);
@@ -19,6 +20,7 @@ impl VirtRegion {
         }
     }
 
+    // Returns: Virtual address
     pub fn try_reverse_map(&self, offset_in_region: usize) -> Option<u64> {
         if offset_in_region > self.len() {
             return None;
@@ -29,17 +31,11 @@ impl VirtRegion {
 
     pub fn virtually_overlaps_with(&self, other: &Self) -> bool {
         // If our start is after their end, then we don't overlap
-        // Note: since virtual_start is included in the range other.virtual_start + other.len points one past the end
-        //       which is why we subtract 1
-        // Note: Order here is important as adding first could lead to an overflow
         if self.virtual_start > other.get_virtual_end_inclusive() {
             return false;
         }
 
         // If our end is before their start, then we don't overlap
-        // Note: since virtual_start is included in the range self.virtual_start + self.len points one past the end
-        //       which is why we subtract 1
-        // Note: Order here is important as adding first could lead to an overflow
         if self.get_virtual_end_inclusive() < other.virtual_start {
             return false;
         }
@@ -49,8 +45,10 @@ impl VirtRegion {
     }
 
     pub fn get_virtual_end_inclusive(&self) -> u64 {
+        // If len is 1 then the end is the start, so in other words we need to offset by -1
         self.virtual_start - 1 + (self.len() as u64)
     }
+
     pub fn len(&self) -> usize {
         self.backing_storage.len()
     }
@@ -79,12 +77,14 @@ impl LittleEndianVirtualMemory {
 }
 
 impl VirtualMemory for LittleEndianVirtualMemory {
+    // Returns: A tuple containing a mutable reference to the region and the offset into it at which you will find the data at the virtual address
     fn try_map_mut(&mut self, virt_addr: u64) -> Option<(&mut VirtRegion, usize)> {
-        self.map.iter_mut().find_map(|range| range.try_map(virt_addr).map(|addr| (range, addr)))
+        self.map.iter_mut().find_map(|range| range.try_map(virt_addr).map(|offset| (range, offset)))
     }
 
+    // Returns: A tuple containing a reference to the region and the offset into it at which you will find the data at the virtual address
     fn try_map(&self, virt_addr: u64) -> Option<(&VirtRegion, usize)> {
-        self.map.iter().find_map(|range| range.try_map(virt_addr).map(|addr| (range, addr)))
+        self.map.iter().find_map(|range| range.try_map(virt_addr).map(|offset| (range, offset)))
     }
 
     fn add_region(&mut self, virt_addr: u64, data: &[u8]) -> Option<()> {
@@ -251,10 +251,22 @@ unsafe fn port_inh(addr: u16) -> u16 {
     unimplemented!("The port_inh function is either not avilable on your architecture or your architecture is not supported.");
 }
 
-impl<T> KernPointer<T> {
+impl<T> KernPointer<T>
+where
+    T: Sized,
+{
     pub unsafe fn offset(&self, o: isize) -> Self {
         // FIXME: Does offsetting a port "address" work the same way as offestting a real memory address?
         Self { inner: self.inner.offset(o), is_port: self.is_port }
+    }
+}
+
+impl<T> UserPointer<T>
+where
+    T: ?Sized,
+{
+    pub fn get_inner(&self) -> u64 {
+        self.inner as u64
     }
 }
 
@@ -322,6 +334,7 @@ impl UserPointer<u8> {
     pub unsafe fn from_mem(addr: u64) -> Self {
         Self { inner: addr, phantom_hold: PhantomData }
     }
+
     pub fn try_as_ptr<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<*mut u8> {
         let region = virtual_memory.try_map_mut(self.inner)?;
         Some(unsafe { region.0.backing_storage.as_mut_ptr().add(region.1 * core::mem::size_of::<u8>()) })

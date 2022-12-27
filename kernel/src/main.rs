@@ -14,6 +14,7 @@ use core::convert::{TryFrom, TryInto};
 use core::fmt::Write;
 
 use alloc::borrow::ToOwned;
+use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -723,13 +724,16 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             }
                         }
 
-                        let mut program = if let Some(p) = Program::from_elf(&contents, &bufs.split(' ').collect::<Vec<&str>>())
-                        {
-                            p
-                        } else {
-                            writeln!(TERMINAL.lock(), "Failed to load elf file into program!").unwrap();
-                            continue;
-                        };
+                        let mut program_env = BTreeMap::new();
+                        program_env.insert("HOME", "/");
+
+                        let mut program =
+                            if let Some(p) = Program::from_elf(&contents, &bufs.split(' ').collect::<Vec<&str>>(), cur_dir.clone(), &program_env) {
+                                p
+                            } else {
+                                writeln!(TERMINAL.lock(), "Failed to load elf file into program!").unwrap();
+                                continue;
+                            };
 
                         writeln!(TERMINAL.lock(), "Program loaded!").unwrap();
                         loop {

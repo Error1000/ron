@@ -86,7 +86,7 @@ impl Path {
     }
 
     pub fn push_str(&mut self, subnode: &str) {
-        if !self.inner.ends_with("/") {
+        if !self.inner.ends_with('/') {
             self.inner.push('/');
         }
         self.inner.push_str(subnode);
@@ -105,7 +105,7 @@ impl Path {
             }
             .trim();
             if to_find == "" {
-                continue;
+                continue; // Account for // in paths
             }
 
             let children = (*cur_node.clone().expect_folder()).borrow().get_children();
@@ -123,23 +123,39 @@ impl Path {
     }
 
     pub fn get_rootfs_node(&self) -> Option<Rc<RefCell<RootFSNode>>> {
-        let mut to_search: Vec<Rc<RefCell<RootFSNode>>> = Vec::new();
-        to_search.push(VFS_ROOT.lock().clone());
+        let mut cur_node = VFS_ROOT.lock().clone();
         let mut cur_path = Path::root();
-        while to_search.len() != 0 {
-            if let Some(cur) = to_search.pop() {
-                cur_path.push_str(&(*cur).borrow().path.last());
-                if cur_path == *self {
-                    return Some(cur);
-                } else {
-                    for c in &(*cur).borrow().children {
-                        to_search.push(c.clone());
-                    }
-                    cur_path.del_last();
+        let mut nodes = self.inner.split('/');
+        'path_traversal_loop: while cur_path != *self {
+            let to_find = nodes.next();
+            let to_find = if let Some(val) = to_find {
+                val
+            } else {
+                break;
+            }
+            .trim();
+            
+            if to_find == "" {
+                continue; // Account for // in paths
+            }
+
+            for child in &cur_node.clone().borrow().children {
+                if child.borrow().path.last() == to_find {
+                    cur_node = child.clone();
+                    cur_path.push_str(to_find);
+                    continue 'path_traversal_loop;
                 }
             }
+            return None;
         }
-        None
+
+        Some(cur_node)
+    }
+}
+
+impl Debug for Path {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.inner)
     }
 }
 
@@ -167,13 +183,19 @@ impl TryFrom<&str> for Path {
     type Error = ();
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
+        if value == "/" {
+            return Ok(Self::root());
+        }
+
         if !value.starts_with("/") {
             return Err(());
         }
-        if !value.contains("/") {
-            return Err(());
+
+        if value.ends_with('/'){
+            Ok(Path {inner: String::from(&value[..value.len()-1])})
+        }else{
+            Ok(Path { inner: String::from(value) })
         }
-        Ok(Path { inner: String::from(value) })
     }
 }
 
@@ -201,9 +223,8 @@ pub struct RootFSNode {
 
 impl Debug for RootFSNode {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let fmted = self.path.fmt(f);
         f.debug_struct("RootFSNode")
-            .field("path", &fmted)
+            .field("path", &self.path)
             .field("parent", &self.parent)
             .field("children", &self.children)
             .finish()

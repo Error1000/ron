@@ -81,6 +81,52 @@ pub unsafe extern "C" fn realloc(ptr: *mut core::ffi::c_char, new_size: core::ff
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn getcwd(buf: *mut core::ffi::c_char, size: core::ffi::c_size_t) -> *mut core::ffi::c_char {
+    load_syscall_argument_1(buf as usize);
+    load_syscall_argument_2(size as usize);
+    syscall(SyscallNumber::Getcwd);
+    read_syscall_return() as *mut core::ffi::c_char
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn getenv(name: *const core::ffi::c_char) -> *const core::ffi::c_char {
+    load_syscall_argument_1(name as usize);
+    syscall(SyscallNumber::Getenv);
+    read_syscall_return() as *const core::ffi::c_char
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn fchdir(fd: core::ffi::c_int) -> core::ffi::c_int {
+    load_syscall_argument_1(fd as usize);
+    syscall(SyscallNumber::Fchdir);
+    read_syscall_return() as core::ffi::c_int
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn dup(oldfd: core::ffi::c_int) -> core::ffi::c_int {
+    load_syscall_argument_1(oldfd as usize);
+    syscall(SyscallNumber::Dup);
+    read_syscall_return() as core::ffi::c_int
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn dup2(oldfd: core::ffi::c_int, newfd: core::ffi::c_int) -> core::ffi::c_int {
+    load_syscall_argument_1(oldfd as usize);
+    load_syscall_argument_2(newfd as usize);
+    syscall(SyscallNumber::Dup2);
+    read_syscall_return() as core::ffi::c_int
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn chdir(path: *const core::ffi::c_char) -> core::ffi::c_int {
+    let fd = open(path, O_RDONLY as i32);
+    if fd < 0 { return -1; }
+    if fchdir(fd) < 0 { return -1; }
+    close(fd);
+    return 0;
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn exit(code: core::ffi::c_int) -> ! {
     load_syscall_argument_1(code as usize);
     syscall(SyscallNumber::Exit);
@@ -98,6 +144,11 @@ pub enum SyscallNumber {
     Malloc = 6,
     Free = 7,
     Realloc = 8,
+    Getcwd = 9,
+    Getenv = 10,
+    Fchdir = 11,
+    Dup = 12,
+    Dup2 = 13,
     MaxValue,
 }
 

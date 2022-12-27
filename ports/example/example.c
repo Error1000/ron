@@ -9,12 +9,22 @@ void adhoc_print_number(unsigned int n){
 	if(n == 0){ fwrite("0", 1, 1, stdout); return; }
 	unsigned int rev;
 	unsigned int len = 0;
-	for(rev = 0; n != 0; n /= 10){ rev = rev*10 + n%10; len++; }
+	for(rev = 1; n != 0; n /= 10){ rev = rev*10 + n%10; len++; }
 	for(char c = '?'; len-- != 0; rev /= 10){ c = (rev%10)+'0'; fwrite(&c, 1, 1, stdout); }
 }
 
 int main(int argc, char** argv) {
 	if(argc != 1) return 420;
+	int fdout = dup(1);
+	close(1);
+	dup2(fdout, 1);
+	close(fdout);
+	char cwds[100];
+	chdir("/lost+found");
+	getcwd(cwds, 100);
+	printf("CWD is: %s\n", cwds);
+	printf("HOME env variable is: \"%s\"\n", getenv("HOME"));
+
 	int fd = open("/file.txt", O_RDWR | O_CREAT | O_APPEND);
 	char* str_already_there = malloc(15);
 	if(str_already_there == NULL){ puts("Malloc failed!"); return -1; }
@@ -72,9 +82,7 @@ int main(int argc, char** argv) {
 	puts("scanf test: ");
 	int scanf_n;
 	scanf("%d", &scanf_n);
-	fputs("Scanf read: ", stdout);
-	adhoc_print_number(scanf_n);
-	puts("");
+	printf("Scanf read: %d\n", scanf_n);
 	puts("");
 
 	puts("write to file, test: ");

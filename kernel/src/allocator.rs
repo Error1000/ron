@@ -1,6 +1,5 @@
 use crate::{primitives::Mutex, UART};
 use core::fmt::Debug;
-use core::ptr::null;
 use core::{
     alloc::GlobalAlloc,
     ptr::{self, null_mut},
@@ -180,10 +179,15 @@ impl BasicAlloc {
 
     pub fn realloc(&mut self, ptr: *mut u8, layout: core::alloc::Layout, new_size: usize) -> *mut u8 {
         let new_layout = core::alloc::Layout::from_size_align(new_size, layout.align());
-        let new_layout = if let Ok(val) = new_layout { val } else { return null_mut(); };
+        let new_layout = if let Ok(val) = new_layout {
+            val
+        } else {
+            return null_mut();
+        };
 
-        let new_ptr = unsafe { self.alloc(new_layout) };
-        if !new_ptr.is_null() { // If we could allocate a new block
+        let new_ptr = self.alloc(new_layout);
+        if !new_ptr.is_null() {
+            // If we could allocate a new block
             unsafe {
                 rlibc::mem::memcpy(new_ptr as *mut i8, ptr as *mut i8, core::cmp::min(layout.size(), new_size));
                 self.dealloc(ptr, layout);
