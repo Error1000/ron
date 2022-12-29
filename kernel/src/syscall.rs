@@ -2,9 +2,10 @@ use core::{
     convert::{TryFrom, TryInto},
     ptr::null_mut,
     slice,
-    str::from_utf8_unchecked,
+    str::from_utf8_unchecked
 };
 
+use alloc::vec::Vec;
 use rlibc::cstr::strlen;
 use rlibc::sys::SyscallNumber;
 
@@ -15,10 +16,10 @@ use crate::{
     ps2_8042::KEYBOARD_INPUT,
     vfs,
     virtmem::{self, LittleEndianVirtualMemory, UserPointer, VirtualMemory},
-    UART,
+    UART, allocator::{ProgramBasicAlloc, self},
 };
 
-type Emulator = Riscv64Cpu<LittleEndianVirtualMemory>;
+type Emulator = Riscv64Cpu<LittleEndianVirtualMemory<&'static ProgramBasicAlloc>>;
 
 /* TODO: Add errno to program
 mod errno {
@@ -401,53 +402,28 @@ fn malloc(emu: &mut Emulator, prog_data: &mut ProgramData, size: usize) -> u64 {
         return userspace_null_ptr;
     };
 
-    let heap = emu.memory.try_map_mut(prog_data.heap_virtual_start_addr);
-    let heap = if let Some(val) = heap {
-        val
-    } else {
-        return userspace_null_ptr;
-    };
-    let heap = heap.0;
-    let mut heap_increment = 2;
+    // Try to allocate physical space
+    let mut physical_allocation = Vec::new_in(&allocator::PROGRAM_ALLOCATOR);
+    physical_allocation.clear();
+    physical_allocation.resize(allocation_info.size(), 0u8);
 
-    loop {
-        // Make sure allocator is in sync with the actual location of the heap
-        // This is because the actual location may change as the mapping changes/grows
-        unsafe { prog_data.program_alloc.update_base(heap.backing_storage.as_mut_ptr()) };
-
-        // Try to allocate
-        let res = prog_data.program_alloc.alloc(allocation_info);
-        if res != null_mut() {
-            // Yay, we did it! :)
-
-            unsafe {
-                *(res as *mut usize) = size;
-            }
-            let res = unsafe { res.add(core::mem::size_of::<usize>()) };
-
-            // But we still need to "reverse map" the returned pointer to user space
-            let offset_in_heap = unsafe { (res as *mut u8).sub(heap.backing_storage.as_mut_ptr() as usize) };
-
-            return heap.try_reverse_map(offset_in_heap as usize).unwrap_or(userspace_null_ptr);
-        } else {
-            // Well maybe we just need to grow the heap
-
-            // Make sure we don't surpass virtual size limits
-            if (heap.len() + heap_increment) as u64 >= prog_data.max_virtual_heap_size {
-                return userspace_null_ptr;
-            }
-
-            // The best approach would be to increase by one byte each time, which would never over-allocate, but would take a lot of computation
-            // A faster approach is to double the amount that we increase the heap by each time, starting at 2 bytes, this could over-allocate but is not really likely to
-            heap.backing_storage.resize(heap.len() + heap_increment, 0);
-            // Let allocator know that it's buffer just increased in size
-            prog_data.program_alloc.grow_heap_space(heap_increment);
-            heap_increment *= 2;
-        }
+    // Add size of allocation to beginning for usage by the free syscall
+    for (index, byte) in allocation_info.size().to_le_bytes().iter().enumerate() {
+        physical_allocation[index] = *byte;
     }
+
+    // Allocate virtual space
+    let virtual_allocation_ptr = prog_data.virtual_allocator.alloc(allocation_info) as u64;
+    if virtual_allocation_ptr == userspace_null_ptr { return userspace_null_ptr; }
+
+    // Create mapping
+    emu.memory.add_region(virtual_allocation_ptr, physical_allocation);
+
+    return virtual_allocation_ptr+core::mem::size_of::<usize>() as u64;
 }
 
 fn free(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64) {
+
     // Translate pointer from user space
     let mapped_alloc = emu.memory.try_map_mut(virtual_ptr);
     let mapped_alloc = if let Some(val) = mapped_alloc {
@@ -456,32 +432,18 @@ fn free(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64) {
         return;
     };
 
-    let alloc_ptr =
-        unsafe { mapped_alloc.0.backing_storage.as_mut_ptr().add(mapped_alloc.1).sub(core::mem::size_of::<usize>()) };
-
-    // Make sure allocator is in sync with the actual location of the heap
-    // This is because the actual location may change as the mapping changes/grows
-    let heap = emu.memory.try_map_mut(prog_data.heap_virtual_start_addr);
-    let heap = if let Some(val) = heap {
-        val
-    } else {
-        return;
-    };
-    let heap = heap.0;
-    unsafe { prog_data.program_alloc.update_base(heap.backing_storage.as_mut_ptr()) };
-
-    // Get allocation info
-    let alloc_size = unsafe { *(alloc_ptr as *mut usize) }; // Get size from before the allocation, since allocations made by malloc contain the size before the allocation
-
-    let allocation_info = core::alloc::Layout::from_size_align(alloc_size + core::mem::size_of::<usize>(), 8);
+    let size = usize::from_le_bytes(mapped_alloc.0.backing_storage[0..core::mem::size_of::<usize>()].try_into().unwrap());
+    let allocation_info = core::alloc::Layout::from_size_align(size, 8);
     let allocation_info = if let Ok(val) = allocation_info {
         val
-    } else {
+    }else{
         return;
     };
 
-    // Deallocate
-    prog_data.program_alloc.dealloc(alloc_ptr, allocation_info);
+    let alloc_region_index = mapped_alloc.1.region_index;
+    emu.memory.remove_region(alloc_region_index);
+
+    prog_data.virtual_allocator.dealloc((virtual_ptr-core::mem::size_of::<usize>() as u64) as *mut u8, allocation_info);
 }
 
 fn realloc(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64, new_size: usize) -> u64 {
@@ -495,33 +457,18 @@ fn realloc(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64, ne
         return userspace_null_ptr;
     };
 
-    // Get actual physical ptr
-    let alloc_ptr =
-        unsafe { mapped_alloc.0.backing_storage.as_mut_ptr().add(mapped_alloc.1).sub(core::mem::size_of::<usize>()) };
-
-    // Make sure allocator is in sync with the actual location of the heap
-    // This is because the actual location may change as the mapping changes/grows
-    let heap = emu.memory.try_map_mut(prog_data.heap_virtual_start_addr);
-    let heap = if let Some(val) = heap {
+    let data: Vec<u8, &'static ProgramBasicAlloc> = mapped_alloc.0.backing_storage.clone();
+    free(emu, prog_data, virtual_ptr);
+    let new_virtual_ptr = malloc(emu, prog_data, new_size);
+    // Translate pointer from user space
+    let new_mapped_alloc = emu.memory.try_map_mut(new_virtual_ptr);
+    let new_mapped_alloc = if let Some(val) = new_mapped_alloc {
         val
     } else {
         return userspace_null_ptr;
     };
-    let heap = heap.0;
-    unsafe { prog_data.program_alloc.update_base(heap.backing_storage.as_mut_ptr()) };
-
-    // Get allocation info
-    let alloc_size = unsafe { *(alloc_ptr as *mut usize) }; // Get size from before the allocation, since allocations made by malloc contain the size before the allocation
-
-    let allocation_info = core::alloc::Layout::from_size_align(alloc_size + core::mem::size_of::<usize>(), 8);
-    let allocation_info = if let Ok(val) = allocation_info {
-        val
-    } else {
-        return userspace_null_ptr;
-    };
-
-    // Reallocate
-    prog_data.program_alloc.realloc(alloc_ptr, allocation_info, new_size) as u64
+    new_mapped_alloc.0.backing_storage = data;
+    return new_virtual_ptr;
 }
 
 fn getcwd(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: virtmem::UserPointer<[u8]>, buf_size: usize) -> u64 {

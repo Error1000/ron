@@ -3,6 +3,7 @@
 #![feature(abi_efiapi)]
 #![feature(default_alloc_error_handler)]
 #![feature(lang_items)]
+#![feature(allocator_api)]
 #![allow(dead_code)]
 
 extern crate alloc;
@@ -144,7 +145,8 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     }
     // FIXME: Don't hardcode the starting location of the heap
     // Stack size: 2mb, executable size (as of 17 sep 2022): ~6mb, so starting the heap at 8mb should be a safe bet.
-    allocator::ALLOCATOR.lock().init((8 * 1024 * 1024) as *mut u8, 4 * 1024 * 1024);
+    allocator::ALLOCATOR.lock().init((8 * 1024 * 1024) as *mut u8, 8 * 1024 * 1024);
+    allocator::PROGRAM_ALLOCATOR.0.lock().init((16 * 1024 * 1024) as *mut u8, 240 * 1024 * 1024);
 
     vfs::VFS_ROOT.lock().set(Rc::new(RefCell::new(RootFSNode::new_root())));
 

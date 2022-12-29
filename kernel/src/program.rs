@@ -1,13 +1,12 @@
 use alloc::string::String;
 use alloc::vec;
-use alloc::{borrow::ToOwned, vec::Vec, collections::BTreeMap};
-use core::{fmt::Debug, ptr::null};
+use alloc::{ vec::Vec, collections::BTreeMap};
+use core::fmt::Debug;
 use packed_struct::EnumCatchAll;
-use rlibc::mem::memcpy;
 
-use crate::virtmem::VirtRegion;
+use crate::allocator::{ProgramBasicAlloc, BasicAlloc};
 use crate::{
-    allocator::{self, BasicAlloc},
+    allocator,
     elf::{elf_header, elf_program_header, ElfFile},
     emulator::Riscv64Cpu,
     syscall, vfs,
@@ -47,94 +46,91 @@ pub struct ProgramData {
     pub fd_mapping: Vec<Option<FdMapping>>, // Maps fds to node indices
     pub cwd: vfs::Path,
     pub env: BTreeMap<String, u64>,
-    pub heap_virtual_start_addr: u64,
-    pub max_virtual_heap_size: u64,
-    pub program_alloc: allocator::BasicAlloc,
+    pub virtual_allocator: BasicAlloc
 }
 
 impl ProgramData {
     fn new(
-        heap_virtual_start_addr: u64,
-        max_virtual_heap_size: u64,
-        alloc: allocator::BasicAlloc,
         cwd: vfs::Path,
         env: BTreeMap<String, u64>,
+        virtual_allocator: BasicAlloc
     ) -> Self {
-        ProgramData { open_nodes: Vec::new(), fd_mapping: vec![Some(FdMapping::Stdin), Some(FdMapping::Stdout), Some(FdMapping::Stderr)], cwd, env, heap_virtual_start_addr, max_virtual_heap_size, program_alloc: alloc }
+        ProgramData { open_nodes: Vec::new(), fd_mapping: vec![Some(FdMapping::Stdin), Some(FdMapping::Stdout), Some(FdMapping::Stderr)], cwd, env, virtual_allocator }
     }
 }
 
 #[derive(Debug)]
 pub struct Program {
-    pub emu: Riscv64Cpu<LittleEndianVirtualMemory>,
+    pub emu: Riscv64Cpu<LittleEndianVirtualMemory<&'static ProgramBasicAlloc>>,
     pub data: ProgramData,
 }
 
 impl Program {
 
-    fn calculate_initial_heap_size(args: &[&str], env: &BTreeMap<&str, &str>) -> usize {
-        // Calculate total args size
-        let mut total_size = core::mem::size_of::<u64>() * args.len(); // For array
-
-        // For each element in array
-        for e in args {
-            total_size += e.len() + 1;
-        }
-
-        // For each variable value in the env
-        for env_variable_value in env.values(){
-            total_size += env_variable_value.len()+1;
-        }
-
-        // NOTE: 1024, here, is a magic number with no meaning or testing to ensure it is the optimal value
-        return total_size+1024; // Extra room for growth
-    }
-
-
-    fn load_args_into_memory(args: &[&str], allocator: &mut BasicAlloc, heap_region: &mut VirtRegion) -> Option<*mut u64> {
+    fn load_args_into_memory(args: &[&str], virt_mem: &mut impl VirtualMemory<A = &'static ProgramBasicAlloc>, virtual_allocator: &mut BasicAlloc) -> Option<u64> {
         // Note: We load the arguments on the heap not on the stack
         // Allocate space for arguments pointer array
-        let args_ptr_array = allocator
-            .alloc(core::alloc::Layout::from_size_align(core::mem::size_of::<u64>() * args.len(), 1).ok()?)
-            as *mut u64;
+        let mut args_ptrs = Vec::<u8, &'static allocator::ProgramBasicAlloc>::new_in(&allocator::PROGRAM_ALLOCATOR);
+        args_ptrs.clear();
+        args_ptrs.resize(args.len()*core::mem::size_of::<u64>(), 0);
+
+        let args_ptrs_array_virtual_ptr = virtual_allocator.alloc(core::alloc::Layout::from_size_align(args_ptrs.len()*core::mem::size_of::<u64>(), 1).ok()?) as u64;
+        // It's a virtual pointer to an array of pointers to the arguments
+        // A.k.a it's the value of argv
+        if args_ptrs_array_virtual_ptr == 0 { return None; }
 
         for (index, arg) in args.iter().enumerate() {
-            // Allocate space for arg
-            let arg_ptr = allocator.alloc(core::alloc::Layout::from_size_align(arg.len() + 1, 1).ok()?);
+            // Allocate space for arg and copy it in there
 
-            // Copy the argument to user-land
-            unsafe { memcpy(arg_ptr as *mut _, arg.as_ptr() as *const _, arg.len()) };
-            unsafe { *arg_ptr.add(arg.len()) = b'\0' }; // c strings are null terminated
+            let mut allocated_arg = Vec::<u8, &'static ProgramBasicAlloc>::new_in(&allocator::PROGRAM_ALLOCATOR);
+            allocated_arg.clear();
+            allocated_arg.resize(arg.len()+1, 0u8);
+            for (indx, c) in arg.chars().enumerate() {
+                allocated_arg[indx] = c as u8;
+            }
 
-            // We need to "reverse map" the arg pointer to get the virtual address to place in the array
-            let virtual_arg_ptr = {
-                let offset_in_heap = unsafe { (arg_ptr as *mut u8).sub(heap_region.backing_storage.as_mut_ptr() as usize) };
-                heap_region.try_reverse_map(offset_in_heap as usize).unwrap_or(null::<u8>() as u64)
-            };
+            {
+                let end_indx = allocated_arg.len()-1;
+                allocated_arg[end_indx] = b'\0';
+            }
 
-            // NOTE: count is in units of T!
-            unsafe { *args_ptr_array.add(index) = virtual_arg_ptr };
+            let virtual_arg_ptr = virtual_allocator.alloc(core::alloc::Layout::from_size_align(allocated_arg.len()*core::mem::size_of::<u8>(), 1).ok()?) as u64;
+            if virtual_arg_ptr == 0 { return None; }
+
+            virt_mem.add_region(virtual_arg_ptr, allocated_arg)?;
+            for (byte_index, byte) in virtual_arg_ptr.to_le_bytes().iter().enumerate() {
+                args_ptrs[index*core::mem::size_of::<u64>() + byte_index] = *byte;
+            }
         }
 
-        return Some(args_ptr_array);
+        virt_mem.add_region(args_ptrs_array_virtual_ptr, args_ptrs)?;
+
+        Some(args_ptrs_array_virtual_ptr)
     }
 
-    fn load_env_into_memory(env: &BTreeMap<&str, &str>, allocator: &mut BasicAlloc, heap_region: &mut VirtRegion) -> Option<BTreeMap<String, u64>> {
+    fn load_env_into_memory(env: &BTreeMap<&str, &str>, virt_mem: &mut impl VirtualMemory<A = &'static ProgramBasicAlloc>, virtual_allocator: &mut BasicAlloc) -> Option<BTreeMap<String, u64>> {
         let mut map = BTreeMap::new();
         for (key, value) in env.iter() {
             // Allocate space for variable value
-            let env_ptr = allocator.alloc(core::alloc::Layout::from_size_align(value.len() + 1, 1).ok()?);
+            let mut allocated_env_value = Vec::<u8, &'static ProgramBasicAlloc>::new_in(&allocator::PROGRAM_ALLOCATOR);
+            allocated_env_value.clear();
+            allocated_env_value.resize(value.len()+1, 0u8);
 
             // Copy the environment variable to user-land
-            unsafe { memcpy(env_ptr as *mut _, value.as_ptr() as * const _, value.len())};
-            unsafe { *env_ptr.add(value.len()) = b'\0'; } // c strings are null terminated
+            for (indx, c) in value.chars().enumerate() {
+                allocated_env_value[indx] = c as u8;
+            }
 
-            // We need to "reverse map" the env pointer to get the virtual address to place in the returned map
-            let virtual_env_ptr = {
-                let offset_in_heap = unsafe { (env_ptr as *mut u8).sub(heap_region.backing_storage.as_mut_ptr() as usize)};
-                heap_region.try_reverse_map(offset_in_heap as usize).unwrap_or(null::<u8>() as u64)
-            };
-            map.insert(String::from(*key), virtual_env_ptr);
+            {
+                let end_indx =  allocated_env_value.len()-1;
+                allocated_env_value[end_indx] = b'\0';
+            }
+
+            let virtual_env_value_ptr = virtual_allocator.alloc(core::alloc::Layout::from_size_align(allocated_env_value.len()*core::mem::size_of::<u8>(), 1).ok()?) as u64;
+            if virtual_env_value_ptr == 0 { return None; }
+
+            virt_mem.add_region(virtual_env_value_ptr, allocated_env_value)?;
+            map.insert(String::from(*key), virtual_env_value_ptr);
         }
         Some(map)
     }
@@ -154,66 +150,70 @@ impl Program {
 
         let mut virt_mem = LittleEndianVirtualMemory::new();
 
-        let mut lower_virt_addr = 0; // Used to keep track of first virtual address that is free, so we can put the heap there
+        let mut lower_virt_addr = 0; // Used to keep track of first virtual address that is free, so we can put the virtual allocator(heap) there
         // Map elf into virtual memory
         for header in elf.program_headers {
             if header.segment_type == EnumCatchAll::from(elf_program_header::ProgramHeaderType::Load) {
-                let mut segment_data = elf_data
-                    [header.segment_file_offset as usize..(header.segment_file_offset + header.segment_file_size) as usize]
-                    .to_owned();
-                segment_data.resize(header.segment_virtual_size as usize, 0);
+                let segment = {
+                    let segment_data = &elf_data
+                        [header.segment_file_offset as usize..(header.segment_file_offset + header.segment_file_size) as usize];
+                    
+                    let mut segment = Vec::new_in(&allocator::PROGRAM_ALLOCATOR);
+                    segment.clear();
+                    segment.extend(segment_data);
+                    // Some segments have a bigger virtual size than physical, however, for simplicity, our system requires that virtual an physical segments be the same size 
+                    // Having different sizes would require 2 different size variables in the VirtRegion struct. 
+                    segment.resize(header.segment_virtual_size as usize, 0); 
+                    segment
+                };
 
-                if header.segment_virtual_address + segment_data.len() as u64 > lower_virt_addr {
-                    lower_virt_addr = header.segment_virtual_address + segment_data.len() as u64;
+                if header.segment_virtual_address + segment.len() as u64 > lower_virt_addr {
+                    lower_virt_addr = header.segment_virtual_address + segment.len() as u64;
                 }
                 
-                virt_mem.add_region(header.segment_virtual_address, &segment_data)?;
+                virt_mem.add_region(header.segment_virtual_address, segment)?;
             }
         }
 
         const PROGRAM_STACK_SIZE: u64 = 8 * 1024;
+        let mut program_stack = Vec::new_in(&allocator::PROGRAM_ALLOCATOR);
+        program_stack.clear();
+        program_stack.resize(PROGRAM_STACK_SIZE as usize, 0u8);
+
         // Add 8kb of stack space at the end of the virtual address space
         virt_mem.add_region(
-            u64::MAX - (PROGRAM_STACK_SIZE) + 1,     /* the address itself is included in the region */
-            &vec![0u8; PROGRAM_STACK_SIZE as usize], // NOTE: We don't use [] because that would allocate 1MB on the stack, then move it to the heap, which might overflow the stack
+            u64::MAX - (PROGRAM_STACK_SIZE) + 1,     /* +1 because the address itself is included in the region */
+            program_stack, // NOTE: We don't use [] because that would allocate 1MB on the stack, then move it to the heap, which might overflow the stack
         )?;
 
-        // Add Heap Region
-        virt_mem.add_region(
-            lower_virt_addr,                                /* the address itself is included in the region */
-            &vec![0u8; Self::calculate_initial_heap_size(args, env)], // Note: Can't be zero-sized otherwise mapping won't work
-        )?;
-        
-        let heap_region = virt_mem.try_map_mut(lower_virt_addr)?.0;
-        
-        let mut allocator = BasicAlloc::from(heap_region.backing_storage.as_mut_ptr(), heap_region.len());
 
-        let args_ptr_array = Self::load_args_into_memory(args, &mut allocator, heap_region)?;
-        let prog_env = Self::load_env_into_memory(env, &mut allocator, heap_region)?;
+        // Create virtual allocator for the heap, this manages the locations of allocations on the heap in the virtual space
+        // Or just generally the location of segments in virtual space, this can't be done for some segments like the elf regions and the stack
+        // however elf regions and the stack are currently the only ones where that is a problem so we just do those and then we 
+        // mark the virtual address at the end of the elf regions and the begging of the stack and use the virtual space inbetween for
+        // all other regions that don't need a specific virtual location
+
+        // NOTE: this allocator does not have a real pointer, a.k.a the allocator must never dereference any pointers
+        // This means that for the current allocator ( BasicAlloc ) we can't use realloc
+        let mut virtual_allocator = BasicAlloc::from(lower_virt_addr as *mut u8, (u64::MAX - (PROGRAM_STACK_SIZE + lower_virt_addr)) as usize, false);
+
+
+        let args_ptrs_array_virtual_ptr = Self::load_args_into_memory(args, &mut virt_mem, &mut virtual_allocator)?;
+        let prog_env = Self::load_env_into_memory(env, &mut virt_mem, &mut virtual_allocator)?;
 
         let mut emu = Riscv64Cpu::from(virt_mem, elf.header.program_entry, syscall::syscall_linux_abi_entry_point);
         
         // Setup argc and argv
         emu.write_reg(10, args.len() as u64); // argc
-
-        let virtual_args_ptr_array = {
-            // We still need to "reverse map" the args ptr array pointer
-            let heap_region = emu.memory.try_map_mut(lower_virt_addr)?.0;
-            let offset_in_heap = unsafe { (args_ptr_array as *mut u8).sub(heap_region.backing_storage.as_mut_ptr() as usize) };
-            heap_region.try_reverse_map(offset_in_heap as usize).unwrap_or(null::<u8>() as u64)
-        };
-
-        emu.write_reg(11, virtual_args_ptr_array as u64); // argv
+        emu.write_reg(11, args_ptrs_array_virtual_ptr as u64); // argv
         
 
         Some(Program {
             emu,
             data: ProgramData::new(
-                lower_virt_addr,
-                u64::MAX - (PROGRAM_STACK_SIZE + lower_virt_addr),
-                allocator,
                 cwd,
                 prog_env,
+                virtual_allocator
             ),
         })
     }

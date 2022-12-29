@@ -1,12 +1,18 @@
 use crate::{primitives::Mutex, UART};
+use core::alloc::Allocator;
 use core::fmt::Debug;
+use core::ptr::NonNull;
 use core::{
     alloc::GlobalAlloc,
     ptr::{self, null_mut},
 };
 
 #[global_allocator]
-pub static ALLOCATOR: Mutex<BasicAlloc> = Mutex::from(BasicAlloc::new());
+pub static ALLOCATOR: Mutex<BasicAlloc> = Mutex::from(BasicAlloc::new(false));
+
+pub static PROGRAM_ALLOCATOR: ProgramBasicAlloc = ProgramBasicAlloc(Mutex::from(BasicAlloc::new(false)));
+
+pub struct ProgramBasicAlloc(pub Mutex<BasicAlloc>);
 
 // This is a bump allocator that doesn't leak as much memory as a normal bump allocator
 pub struct BasicAlloc {
@@ -14,6 +20,7 @@ pub struct BasicAlloc {
     len: usize,
     alloc_count: usize,
     next: usize,
+    is_virtual: bool, // Tells the allocator that the pointers are not real, they are virtual and should not be dereferenced
     stashed_deallocations: [(*mut u8, core::alloc::Layout); 1024],
 }
 
@@ -30,22 +37,24 @@ impl Debug for BasicAlloc {
 }
 
 impl BasicAlloc {
-    const fn new() -> Self {
+    const fn new(is_virtual: bool) -> Self {
         Self {
             base: ptr::null_mut(),
             len: 0,
             alloc_count: 0,
             next: 0,
+            is_virtual,
             stashed_deallocations: [(null_mut(), core::alloc::Layout::new::<u8>()); 1024],
         }
     }
 
-    pub fn from(base: *mut u8, len: usize) -> Self {
+    pub fn from(base: *mut u8, len: usize, is_virtual: bool) -> Self {
         Self {
             base,
             len,
             alloc_count: 0,
             next: 0,
+            is_virtual,
             stashed_deallocations: [(null_mut(), core::alloc::Layout::new::<u8>()); 1024],
         }
     }
@@ -57,10 +66,6 @@ impl BasicAlloc {
         self.base = base;
         self.len = len;
         return Some(());
-    }
-
-    pub unsafe fn update_base(&mut self, new_base: *mut u8) {
-        self.base = new_base;
     }
 
     pub fn grow_heap_space(&mut self, len: usize) {
@@ -177,7 +182,8 @@ impl BasicAlloc {
         }
     }
 
-    pub fn realloc(&mut self, ptr: *mut u8, layout: core::alloc::Layout, new_size: usize) -> *mut u8 {
+
+    pub unsafe fn realloc(&mut self, ptr: *mut u8, layout: core::alloc::Layout, new_size: usize) -> *mut u8 {
         let new_layout = core::alloc::Layout::from_size_align(new_size, layout.align());
         let new_layout = if let Ok(val) = new_layout {
             val
@@ -185,13 +191,14 @@ impl BasicAlloc {
             return null_mut();
         };
 
+        // TODO: Ability to reuse old allocation when shrinking
         let new_ptr = self.alloc(new_layout);
         if !new_ptr.is_null() {
             // If we could allocate a new block
-            unsafe {
-                rlibc::mem::memcpy(new_ptr as *mut i8, ptr as *mut i8, core::cmp::min(layout.size(), new_size));
+                if !self.is_virtual{
+                    rlibc::mem::memcpy(new_ptr as *mut i8, ptr as *mut i8, core::cmp::min(layout.size(), new_size));
+                }
                 self.dealloc(ptr, layout);
-            }
         }
         new_ptr
     }
@@ -211,5 +218,19 @@ unsafe impl GlobalAlloc for Mutex<BasicAlloc> {
     unsafe fn realloc(&self, ptr: *mut u8, layout: core::alloc::Layout, new_size: usize) -> *mut u8 {
         let mut s = self.lock();
         s.realloc(ptr, layout, new_size)
+    }
+}
+
+unsafe impl Allocator for &ProgramBasicAlloc {
+    fn allocate(&self, layout: core::alloc::Layout) -> Result<NonNull<[u8]>, core::alloc::AllocError> {
+        let mut s = self.0.lock();
+
+        NonNull::<[u8]>::new(unsafe { core::slice::from_raw_parts(s.alloc(layout), layout.size()) } as *const [u8] as *mut [u8])
+            .ok_or(core::alloc::AllocError)
+    }
+
+    unsafe fn deallocate(&self, ptr: ptr::NonNull<u8>, layout: core::alloc::Layout) {
+        let mut s = self.0.lock();
+        s.dealloc(ptr.as_ptr(), layout)
     }
 }
