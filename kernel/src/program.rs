@@ -34,6 +34,23 @@ impl Debug for ProgramNode {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ProgramNode").field("cursor", &self.cursor).field("flags", &self.flags).field("path", &self.path).field("reference_count", &self.reference_count).finish()
     }
+
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct WaitInformation {
+    pub cpid: usize,
+    pub exit_code: usize
+}
+
+#[derive(Debug, Clone)]
+pub enum ProgramState {
+    RUNNING,
+    RUNNING_NEW_CHILD_JUST_FORKED,
+    WAITING_FOR_CHILD_PROCESS(Option<usize>),
+    FINISHED_WAITING_FOR_CHILD_PROCESS(Option<WaitInformation>), // Used to allow to scheduler to inform the program that the child changed state
+    TERMINATED_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT(usize), // equivalent to ZOMBIE
+    TERMINATED_WAITING_TO_BE_DEALLOCATED(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -48,9 +65,10 @@ pub struct ProgramData {
     pub cwd: vfs::Path,
     pub env: BTreeMap<String, u64>,
     pub virtual_allocator: BasicAlloc,
-    pub just_forked: bool,
+    pub state: ProgramState,
     pub pid: Option<usize>, // Programs can technically be run without a set pid
     pub parent_pid: Option<usize>,
+    pub exit_code: Option<usize>
 }
 
 impl ProgramData {
@@ -59,7 +77,7 @@ impl ProgramData {
         env: BTreeMap<String, u64>,
         virtual_allocator: BasicAlloc
     ) -> Self {
-        ProgramData { open_nodes: Vec::new(), fd_mapping: vec![Some(FdMapping::Stdin), Some(FdMapping::Stdout), Some(FdMapping::Stderr)], cwd, env, virtual_allocator, just_forked: false, pid: None, parent_pid: None}
+        ProgramData { open_nodes: Vec::new(), fd_mapping: vec![Some(FdMapping::Stdin), Some(FdMapping::Stdout), Some(FdMapping::Stderr)], cwd, env, virtual_allocator, state: ProgramState::RUNNING, pid: None, parent_pid: None, exit_code: None}
     }
 }
 

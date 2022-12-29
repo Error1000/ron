@@ -781,6 +781,12 @@ where
 
 // FIXME: Currently some illegal instructions don't halt the cpu, instead having the effect of a nop
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum SyscallCpuAction {
+    NONE,
+    REPEAT_SYSCALL
+}
+
 #[derive(Clone)]
 pub struct Riscv64Cpu<MemType>
 where
@@ -790,7 +796,7 @@ where
     registers: [u64; 31],
     pub memory: MemType,
     pub halted: bool,
-    syscall: fn(&mut Self, &mut ProgramData),
+    syscall: fn(&mut Self, &mut ProgramData) -> SyscallCpuAction,
 }
 
 impl<MemType> Debug for Riscv64Cpu<MemType>
@@ -810,7 +816,7 @@ impl<MemType> Riscv64Cpu<MemType>
 where
     MemType: EmulatorMemory,
 {
-    pub fn from(mem: MemType, start_address: u64, syscall: fn(&mut Self, &mut ProgramData)) -> Riscv64Cpu<MemType> {
+    pub fn from(mem: MemType, start_address: u64, syscall: fn(&mut Self, &mut ProgramData) -> SyscallCpuAction) -> Riscv64Cpu<MemType> {
         Riscv64Cpu { program_counter: start_address, registers: [0u64; 31], memory: mem, halted: false, syscall }
     }
 
@@ -1404,10 +1410,11 @@ where
         // Reference: Issue #92, https://github.com/hashmismatch/packed_struct.rs/issues/92
         // So therefore i am instead using big endian for parsing instructions
         let opcode: RiscvOpcode = RiscvOpcode::from_primitive((instruction & 0b111_1111) as u8)?;
+        let mut syscall_action = SyscallCpuAction::NONE;
         match opcode.get_type() {
             RiscvInstType::RType => self.execute_rtype_inst(RiscvRTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?),
             RiscvInstType::IType => {
-                self.execute_itype_inst(RiscvITypeInstruction::unpack(&instruction.to_be_bytes()).ok()?, inst_size, prog)
+                syscall_action = self.execute_itype_inst(RiscvITypeInstruction::unpack(&instruction.to_be_bytes()).ok()?, inst_size, prog);
             }
             RiscvInstType::SType => self.execute_stype_inst(RiscvSTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?),
             RiscvInstType::BType => {
@@ -1419,7 +1426,10 @@ where
             }
         }
 
-        self.program_counter += inst_size;
+        if syscall_action != SyscallCpuAction::REPEAT_SYSCALL {
+            self.program_counter += inst_size;
+        }
+
         Some(())
     }
 
@@ -1645,7 +1655,7 @@ where
         }
     }
 
-    fn execute_itype_inst(&mut self, inst: RiscvITypeInstruction, inst_size: u64, prog_data: &mut ProgramData) {
+    fn execute_itype_inst(&mut self, inst: RiscvITypeInstruction, inst_size: u64, prog_data: &mut ProgramData) -> SyscallCpuAction {
         match (inst.opcode, inst.funct3) {
             (RiscvOpcode::OPIMM, 0b000) => {
                 // ADDI
@@ -1825,11 +1835,13 @@ where
             (RiscvOpcode::SYSTEM, _) => {
                 if inst.parse_imm() == 0 {
                     // ECALL
-                    (self.syscall)(self, prog_data)
+                    return (self.syscall)(self, prog_data);
                 }
             }
             _ => (),
         }
+
+        SyscallCpuAction::NONE
     }
 
     fn execute_stype_inst(&mut self, inst: RiscvSTypeInstruction) {

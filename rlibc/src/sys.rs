@@ -156,6 +156,7 @@ pub enum SyscallNumber {
     Dup = 12,
     Dup2 = 13,
     Fork = 14,
+    Waitpid = 15,
     MaxValue,
 }
 

@@ -357,12 +357,29 @@ impl UserPointer<u8> {
 
     pub fn try_as_ptr<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<*mut u8> {
         let region = virtual_memory.try_map_mut(self.inner)?;
-        Some(unsafe { region.0.backing_storage.as_mut_ptr().add(region.1.offset_in_region * core::mem::size_of::<u8>()) })
+        Some(unsafe { region.0.backing_storage.as_mut_ptr().add(region.1.offset_in_region) })
     }
 
     pub fn try_as_ref<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<&'mem mut u8> {
         let region = virtual_memory.try_map_mut(self.inner)?;
         region.0.backing_storage.get_mut(region.1.offset_in_region)
+    }
+}
+
+impl UserPointer<usize> {
+    // SAFTEY: Constructors assume address is in correct space
+    pub unsafe fn from_mem(addr: u64) -> Self {
+        Self { inner: addr, phantom_hold: PhantomData }
+    }
+
+    pub fn try_as_ptr<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<*mut usize> {
+        let region = virtual_memory.try_map_mut(self.inner)?;
+        Some(unsafe { region.0.backing_storage.as_mut_ptr().add(region.1.offset_in_region)  as *mut usize})
+    }
+
+    pub fn try_as_ref<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<usize> {
+        let region = virtual_memory.try_map_mut(self.inner)?;
+        Some(usize::from_le_bytes(region.0.backing_storage.get_mut(region.1.offset_in_region..region.1.offset_in_region+core::mem::size_of::<usize>())?.try_into().unwrap()))
     }
 }
 

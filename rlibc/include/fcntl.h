@@ -1,3 +1,4 @@
+#pragma once
 #define O_RDONLY 0b00001
 #define O_WRONLY 0b00010
 #define O_RDWR   (O_RDONLY | O_WRONLY)

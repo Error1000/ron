@@ -11,11 +11,11 @@ use rlibc::sys::SyscallNumber;
 
 use crate::{
     hio::KeyboardPacketType,
-    program::{FdMapping, ProgramData, ProgramNode, Emulator, Program},
+    program::{FdMapping, ProgramData, ProgramNode, Emulator, Program, ProgramState},
     ps2_8042::KEYBOARD_INPUT,
     vfs,
     virtmem::{self, UserPointer, VirtualMemory},
-    UART, allocator::{ProgramBasicAlloc, self}, scheduler,
+    UART, allocator::{ProgramBasicAlloc, self}, scheduler, emulator::SyscallCpuAction,
 };
 
 /* TODO: Add errno to program
@@ -28,7 +28,7 @@ mod errno {
     pub const EISDIR: isize = -6;
 }*/
 
-pub fn syscall_linux_abi_entry_point(emu: &mut Emulator, prog_data: &mut ProgramData) {
+pub fn syscall_linux_abi_entry_point(emu: &mut Emulator, prog_data: &mut ProgramData) -> SyscallCpuAction {
     // Source: man syscall
     let syscall_number = emu.read_reg(17 /* a7 */);
     let syscall_number = if let Ok(val) = SyscallNumber::try_from(syscall_number as usize) {
@@ -36,7 +36,7 @@ pub fn syscall_linux_abi_entry_point(emu: &mut Emulator, prog_data: &mut Program
     } else {
         use core::fmt::Write;
         let _ = writeln!(UART.lock(), "Syscall number {}, is not implemented, ignoring!", syscall_number);
-        return;
+        return SyscallCpuAction::NONE;
     };
 
     // a0-a5
@@ -50,7 +50,7 @@ pub fn syscall_linux_abi_entry_point(emu: &mut Emulator, prog_data: &mut Program
     let return_value = |val, emu: &mut Emulator| emu.write_reg(10, val);
 
     match syscall_number {
-        SyscallNumber::Exit => exit(emu, argument_1() as usize),
+        SyscallNumber::Exit => exit(emu, prog_data, argument_1() as usize),
 
         // SAFETY: Argument 2 comes from the program itself so it is in its address space
         SyscallNumber::Read => {
@@ -61,7 +61,7 @@ pub fn syscall_linux_abi_entry_point(emu: &mut Emulator, prog_data: &mut Program
                 unsafe { UserPointer::<[u8]>::from_mem(argument_2()) },
                 argument_3() as usize,
             );
-            return_value(val as i64 as u64, emu)
+            return_value(val as i64 as u64, emu);
         }
 
         // SAFETY: Argument 2 comes from the program itself so it is in its address space
@@ -73,79 +73,89 @@ pub fn syscall_linux_abi_entry_point(emu: &mut Emulator, prog_data: &mut Program
                 unsafe { virtmem::UserPointer::<[u8]>::from_mem(argument_2()) },
                 argument_3() as usize,
             );
-            return_value(val as i64 as u64, emu)
+            return_value(val as i64 as u64, emu);
         }
 
         // SAFETY: Argument 1 comes from the program itself so it is in its address space
         SyscallNumber::Open => {
             let val =
                 open(emu, prog_data, unsafe { virtmem::UserPointer::<[u8]>::from_mem(argument_1()) }, argument_2() as usize);
-            return_value(val as u64, emu)
+            return_value(val as u64, emu);
         }
 
         SyscallNumber::Close => {
             let val = close(prog_data, argument_1() as usize);
-            return_value(val as u64, emu)
+            return_value(val as u64, emu);
         }
 
         SyscallNumber::Malloc => {
             let val = malloc(emu, prog_data, argument_1() as usize);
-            return_value(val as u64, emu)
+            return_value(val as u64, emu);
         }
 
         SyscallNumber::Free => free(emu, prog_data, argument_1()),
 
         SyscallNumber::LSeek => {
             let val = lseek(prog_data, argument_1() as usize, argument_2() as i64, argument_3() as usize);
-            return_value(val as u64, emu)
+            return_value(val as u64, emu);
         }
 
         SyscallNumber::Realloc => {
             let val = realloc(emu, prog_data, argument_1(), argument_2() as usize);
-            return_value(val as u64, emu)
+            return_value(val as u64, emu);
         }
 
         // SAFETY: Argument 1 comes from the program itself so it is in its address space
         SyscallNumber::Getcwd => {
             let val =
                 getcwd(emu, prog_data, unsafe { virtmem::UserPointer::<[u8]>::from_mem(argument_1()) }, argument_2() as usize);
-            return_value(val as u64, emu)
+            return_value(val as u64, emu);
         }
 
         // SAFETY: Argument 1 comes from the program itself so it is in its address space
         SyscallNumber::Getenv => {
             let val = getenv(emu, prog_data, unsafe { virtmem::UserPointer::<[u8]>::from_mem(argument_1()) });
-            return_value(val as u64, emu)
+            return_value(val as u64, emu);
         }
 
         SyscallNumber::Fchdir => {
             let val = fchdir(prog_data, argument_1() as usize);
-            return_value(val as u64, emu)
+            return_value(val as u64, emu);
         }
 
         SyscallNumber::Dup => {
             let val = dup(prog_data, argument_1() as usize);
-            return_value(val as u64, emu)
+            return_value(val as u64, emu);
         }
 
         SyscallNumber::Dup2 => {
             let val = dup2(prog_data, argument_1() as usize, argument_2() as usize);
-            return_value(val as u64, emu)
+            return_value(val as u64, emu);
         }
 
         SyscallNumber::Fork => {
             let val = fork(emu, prog_data);
-            return_value(val as u64, emu)
+            return_value(val as u64, emu);
+        }
+
+        SyscallNumber::Waitpid => {
+            let val = waitpid(emu, prog_data, argument_1() as isize, unsafe{virtmem::UserPointer::<usize>::from_mem(argument_2())}, argument_3() as usize );
+            if let Some(val) = val{
+                return_value(val as u64, emu);
+            }else{
+                return SyscallCpuAction::REPEAT_SYSCALL;
+            }
         }
 
         SyscallNumber::MaxValue => (),
     }
+
+    return SyscallCpuAction::NONE;
 }
 
-fn exit(emu: &mut Emulator, exit_number: usize) {
-    use core::fmt::Write;
-    writeln!(UART.lock(), "exit({}) called!", exit_number).unwrap();
+fn exit(emu: &mut Emulator, prog_data: &mut ProgramData, exit_number: usize) {
     emu.halted = true;
+    prog_data.exit_code = Some(exit_number);
 }
 
 fn write(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: UserPointer<[u8]>, count: usize) -> i32 {
@@ -603,17 +613,61 @@ fn dup2(prog_data: &mut ProgramData, oldfd: usize, newfd: usize) -> isize {
 }
 
 fn fork(emu: &mut Emulator, prog_data: &mut ProgramData) -> usize {
-    if prog_data.just_forked { // We are the child and we are executing the fork again because we got cloned before our parent could get past the syscall instruction
-        prog_data.just_forked = false;
-        0
-    }else{ // We are the parent
-        let mut child = Program::new(emu.clone(), prog_data.clone());
-        // Since our tick hasn't ended we haven't advanced past the syscall instruction
-        // so the clone we just made is still on the same instruction as us, which is syscall fork
-        // So when we tick it, it will also call fork, to prevent it from cloning itself again, we use the just_forked flag
-        // to inform it that it is a new child and that it's call to fork should return 0
-        child.data.parent_pid = prog_data.pid;
-        child.data.just_forked = true;
-        scheduler::new_task(child)
+    match prog_data.state {
+        ProgramState::RUNNING_NEW_CHILD_JUST_FORKED => {
+            // We are the child and we are executing the fork again because we got cloned before our parent could get past the syscall instruction
+            prog_data.state = ProgramState::RUNNING;
+            0
+        }
+
+        _ => {
+            // We are the parent
+            let mut child = Program::new(emu.clone(), prog_data.clone());
+            // Since our tick hasn't ended we haven't advanced past the syscall instruction
+            // so the clone we just made is still on the same instruction as us, which is syscall fork
+            // So when we tick it, it will also call fork, to prevent it from cloning itself again, we use the just_forked flag
+            // to inform it that it is a new child and that it's call to fork should return 0
+            child.data.parent_pid = prog_data.pid;
+            child.data.state = ProgramState::RUNNING_NEW_CHILD_JUST_FORKED;
+            scheduler::new_task(child)
+        }
+    } 
+}
+
+fn waitpid(emu: &mut Emulator, prog_data: &mut ProgramData, pid: isize, wstatus: UserPointer<usize>, options: usize) -> Option<isize> {
+    // RETURN VALUE
+    // waitpid(): on success, returns the process ID of the child whose
+    // state has changed; if WNOHANG was specified and one or more
+    // child(ren) specified by pid exist, but have not yet changed
+    // state, then 0 is returned.  On failure, -1 is returned.
+    // source: man waitpid
+
+    // NOTE: options (like WUNTRACED) are irrelevant right now since we don't support STOPPING and RESUMING
+    // FIXME: Support waiting for stopping and resuming once we have signals
+
+    if let ProgramState::FINISHED_WAITING_FOR_CHILD_PROCESS(info) = prog_data.state {
+        match info {
+            Some(info) => {
+                let wstatus_ptr = wstatus.try_as_ptr(&mut emu.memory);
+                let wstatus_ptr = if let Some(val) = wstatus_ptr {
+                    val
+                }else{
+                    return Some(-1); // wstatus is pointing to an address that is not mapped
+                };
+                unsafe{ *wstatus_ptr = 0b1_00000000 | info.exit_code & 0b11111111; }
+                return Some(info.cpid as isize);
+            }
+            None => return Some(-1) // The child pid that we were waiting for is invalid
+        }
     }
+
+    if pid == -1 { // Wait for any child process
+        prog_data.state = ProgramState::WAITING_FOR_CHILD_PROCESS(None);
+        return None; // Tell he cpu to repeat syscall so once the scheduler tells us that the child received an update we can return
+    } else if pid > 0 {
+        prog_data.state = ProgramState::WAITING_FOR_CHILD_PROCESS(Some(pid as usize));
+        return None;// Tell he cpu to repeat syscall so once the scheduler tells us that the child received an update we can return
+    }
+
+    return Some(-1);
 }
