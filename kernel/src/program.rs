@@ -13,6 +13,7 @@ use crate::{
     virtmem::{LittleEndianVirtualMemory, VirtualMemory},
 };
 
+#[derive(Clone)]
 pub struct ProgramNode {
     pub vfs_node: vfs::Node,
     pub cursor: u64, /* Note cursor points at the byte to write to next, not before or after it */
@@ -35,7 +36,7 @@ impl Debug for ProgramNode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProgramData {
     // The Options are used to maintain the indices of the elements
     // In open_nodes this is needed because indices into it are stored in fd_mapping, and i don't want to update
@@ -46,7 +47,10 @@ pub struct ProgramData {
     pub fd_mapping: Vec<Option<FdMapping>>, // Maps fds to node indices
     pub cwd: vfs::Path,
     pub env: BTreeMap<String, u64>,
-    pub virtual_allocator: BasicAlloc
+    pub virtual_allocator: BasicAlloc,
+    pub just_forked: bool,
+    pub pid: Option<usize>, // Programs can technically be run without a set pid
+    pub parent_pid: Option<usize>,
 }
 
 impl ProgramData {
@@ -55,17 +59,23 @@ impl ProgramData {
         env: BTreeMap<String, u64>,
         virtual_allocator: BasicAlloc
     ) -> Self {
-        ProgramData { open_nodes: Vec::new(), fd_mapping: vec![Some(FdMapping::Stdin), Some(FdMapping::Stdout), Some(FdMapping::Stderr)], cwd, env, virtual_allocator }
+        ProgramData { open_nodes: Vec::new(), fd_mapping: vec![Some(FdMapping::Stdin), Some(FdMapping::Stdout), Some(FdMapping::Stderr)], cwd, env, virtual_allocator, just_forked: false, pid: None, parent_pid: None}
     }
 }
 
+pub type Emulator = Riscv64Cpu<LittleEndianVirtualMemory<&'static ProgramBasicAlloc>>;
+
+
 #[derive(Debug)]
 pub struct Program {
-    pub emu: Riscv64Cpu<LittleEndianVirtualMemory<&'static ProgramBasicAlloc>>,
+    pub emu: Emulator,
     pub data: ProgramData,
 }
 
 impl Program {
+    pub fn new(emu: Emulator, prog_data: ProgramData) -> Program {
+        Program { emu: emu, data: prog_data }
+    }
 
     fn load_args_into_memory(args: &[&str], virt_mem: &mut impl VirtualMemory<A = &'static ProgramBasicAlloc>, virtual_allocator: &mut BasicAlloc) -> Option<u64> {
         // Note: We load the arguments on the heap not on the stack
@@ -190,12 +200,12 @@ impl Program {
         // Create virtual allocator for the heap, this manages the locations of allocations on the heap in the virtual space
         // Or just generally the location of segments in virtual space, this can't be done for some segments like the elf regions and the stack
         // however elf regions and the stack are currently the only ones where that is a problem so we just do those and then we 
-        // mark the virtual address at the end of the elf regions and the begging of the stack and use the virtual space inbetween for
+        // mark the virtual address at the end of the elf regions and the begging of the stack and use the virtual space in-between for
         // all other regions that don't need a specific virtual location
 
         // NOTE: this allocator does not have a real pointer, a.k.a the allocator must never dereference any pointers
         // This means that for the current allocator ( BasicAlloc ) we can't use realloc
-        let mut virtual_allocator = BasicAlloc::from(lower_virt_addr as *mut u8, (u64::MAX - (PROGRAM_STACK_SIZE + lower_virt_addr)) as usize, false);
+        let mut virtual_allocator = BasicAlloc::from(lower_virt_addr as *mut u8, (u64::MAX - (PROGRAM_STACK_SIZE + lower_virt_addr)) as usize, true);
 
 
         let args_ptrs_array_virtual_ptr = Self::load_args_into_memory(args, &mut virt_mem, &mut virtual_allocator)?;

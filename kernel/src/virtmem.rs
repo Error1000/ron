@@ -3,7 +3,7 @@ use core::{arch::asm, marker::PhantomData, alloc::Allocator, convert::TryInto};
 
 use crate::emulator::EmulatorMemory;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 
 pub struct VirtRegion<A: Allocator> {
     virtual_start: u64, // Note: virtual_start "points" to the beginning of the region, not one after or one before
@@ -69,7 +69,7 @@ pub trait VirtualMemory {
     fn remove_region(&mut self, region_index: usize);
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LittleEndianVirtualMemory<A: Allocator> {
     map: Vec<VirtRegion<A>>,
 }

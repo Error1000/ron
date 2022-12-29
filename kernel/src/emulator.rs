@@ -778,8 +778,10 @@ where
     sign_extend::<T, u64>(val)
 }
 
-// TODO: Currently some illegal instructions don't halt the cpu, instead having the effect of a nop
 
+// FIXME: Currently some illegal instructions don't halt the cpu, instead having the effect of a nop
+
+#[derive(Clone)]
 pub struct Riscv64Cpu<MemType>
 where
     MemType: EmulatorMemory,

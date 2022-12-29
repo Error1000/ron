@@ -10,16 +10,13 @@ use rlibc::cstr::strlen;
 use rlibc::sys::SyscallNumber;
 
 use crate::{
-    emulator::Riscv64Cpu,
     hio::KeyboardPacketType,
-    program::{FdMapping, ProgramData, ProgramNode},
+    program::{FdMapping, ProgramData, ProgramNode, Emulator, Program},
     ps2_8042::KEYBOARD_INPUT,
     vfs,
-    virtmem::{self, LittleEndianVirtualMemory, UserPointer, VirtualMemory},
-    UART, allocator::{ProgramBasicAlloc, self},
+    virtmem::{self, UserPointer, VirtualMemory},
+    UART, allocator::{ProgramBasicAlloc, self}, scheduler,
 };
-
-type Emulator = Riscv64Cpu<LittleEndianVirtualMemory<&'static ProgramBasicAlloc>>;
 
 /* TODO: Add errno to program
 mod errno {
@@ -55,6 +52,7 @@ pub fn syscall_linux_abi_entry_point(emu: &mut Emulator, prog_data: &mut Program
     match syscall_number {
         SyscallNumber::Exit => exit(emu, argument_1() as usize),
 
+        // SAFETY: Argument 2 comes from the program itself so it is in its address space
         SyscallNumber::Read => {
             let val = read(
                 emu,
@@ -107,12 +105,14 @@ pub fn syscall_linux_abi_entry_point(emu: &mut Emulator, prog_data: &mut Program
             return_value(val as u64, emu)
         }
 
+        // SAFETY: Argument 1 comes from the program itself so it is in its address space
         SyscallNumber::Getcwd => {
             let val =
                 getcwd(emu, prog_data, unsafe { virtmem::UserPointer::<[u8]>::from_mem(argument_1()) }, argument_2() as usize);
             return_value(val as u64, emu)
         }
 
+        // SAFETY: Argument 1 comes from the program itself so it is in its address space
         SyscallNumber::Getenv => {
             let val = getenv(emu, prog_data, unsafe { virtmem::UserPointer::<[u8]>::from_mem(argument_1()) });
             return_value(val as u64, emu)
@@ -130,6 +130,11 @@ pub fn syscall_linux_abi_entry_point(emu: &mut Emulator, prog_data: &mut Program
 
         SyscallNumber::Dup2 => {
             let val = dup2(prog_data, argument_1() as usize, argument_2() as usize);
+            return_value(val as u64, emu)
+        }
+
+        SyscallNumber::Fork => {
+            let val = fork(emu, prog_data);
             return_value(val as u64, emu)
         }
 
@@ -344,13 +349,13 @@ fn close(prog_data: &mut ProgramData, fd: usize) -> isize {
 
     prog_data.fd_mapping[fd] = None;
 
-    // Drain None's if possible
+    // Drain None's if it wouldn't affect the indices of elements that are Some
     // Note: We cannot use retain or drain_filter because we need to keep the index of fds that are Some, which removing all None using retain or drain_filter will not do, for ex. on the vector: Some None Some
-    while prog_data.fd_mapping.last().map(|elem| elem.is_none()).unwrap_or(false) {
+    while prog_data.fd_mapping.last().map(|val|val.is_none()).unwrap_or(false) {
         prog_data.fd_mapping.pop();
     }
 
-    while prog_data.open_nodes.last().map(|elem| elem.is_none()).unwrap_or(false) {
+    while prog_data.open_nodes.last().map(|val|val.is_none()).unwrap_or(false) {
         prog_data.open_nodes.pop();
     }
 
@@ -571,9 +576,6 @@ fn dup(prog_data: &mut ProgramData, oldfd: usize) -> isize {
 }
 
 fn dup2(prog_data: &mut ProgramData, oldfd: usize, newfd: usize) -> isize {
-    use core::fmt::Write;
-    writeln!(UART.lock(), "dup2({}, {}) called!", oldfd, newfd);
-
     let node_mapping = if let Some(Some(val)) = prog_data.fd_mapping.get_mut(oldfd).copied() {
         val
     } else {
@@ -598,4 +600,20 @@ fn dup2(prog_data: &mut ProgramData, oldfd: usize, newfd: usize) -> isize {
 
     prog_data.fd_mapping[newfd] = Some(node_mapping);
     newfd as isize
+}
+
+fn fork(emu: &mut Emulator, prog_data: &mut ProgramData) -> usize {
+    if prog_data.just_forked { // We are the child and we are executing the fork again because we got cloned before our parent could get past the syscall instruction
+        prog_data.just_forked = false;
+        0
+    }else{ // We are the parent
+        let mut child = Program::new(emu.clone(), prog_data.clone());
+        // Since our tick hasn't ended we haven't advanced past the syscall instruction
+        // so the clone we just made is still on the same instruction as us, which is syscall fork
+        // So when we tick it, it will also call fork, to prevent it from cloning itself again, we use the just_forked flag
+        // to inform it that it is a new child and that it's call to fork should return 0
+        child.data.parent_pid = prog_data.pid;
+        child.data.just_forked = true;
+        scheduler::new_task(child)
+    }
 }

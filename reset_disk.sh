@@ -6,7 +6,7 @@ sudo sync
 sleep 1
 
 sudo rm disk.img
-dd if=/dev/zero of=disk.img bs=1M count=1
+dd if=/dev/zero of=disk.img bs=128M count=1
 
 sudo sync
 sleep 1
@@ -16,7 +16,7 @@ sleep 1
 
 # Remake the image
 sudo parted /dev/loop0 mklabel msdos
-sudo parted -a minimal /dev/loop0 mkpart primary 0% 1MB
+sudo parted -a minimal /dev/loop0 mkpart primary 0% 128MB
 sudo sync
 sleep 1
 

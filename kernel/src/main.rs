@@ -19,6 +19,7 @@ use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
+use allocator::PROGRAM_ALLOCATOR;
 use ata::{ATABus, ATADevice, ATADeviceFile};
 use char_device::CharDevice;
 use primitives::{LazyInitialised, Mutex};
@@ -86,6 +87,7 @@ mod multiboot;
 mod partitions;
 mod primitives;
 mod program;
+mod scheduler;
 mod ps2_8042;
 mod syscall;
 mod terminal;
@@ -283,6 +285,9 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         }
     }
 
+    scheduler::init();
+
+
     KEYBOARD_INPUT.lock().set(unsafe { ps2_8042::PS2Device::x86_default() });
 
     let mut cur_dir = vfs::Path::try_from("/").unwrap();
@@ -389,16 +394,20 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                 } else if cmnd.starts_with("clear") {
                     TERMINAL.lock().clear();
                 } else if cmnd.starts_with("free") {
-                    let heap_used = ALLOCATOR.lock().get_heap_used();
-                    let heap_max = ALLOCATOR.lock().get_heap_max();
+                    let kernel_heap_used = ALLOCATOR.lock().get_heap_used();
+                    let program_heap_used = PROGRAM_ALLOCATOR.0.lock().get_heap_used();
+                    let kernel_heap_max = ALLOCATOR.lock().get_heap_max();
+                    let program_heap_max = PROGRAM_ALLOCATOR.0.lock().get_heap_max();
                     writeln!(
                         TERMINAL.lock(),
                         "{} bytes of {} bytes used on heap, that's {}% !",
-                        heap_used,
-                        heap_max,
-                        heap_used as f32 / heap_max as f32 * 100.0
+                        kernel_heap_used+program_heap_used,
+                        kernel_heap_max+program_heap_max,
+                        (kernel_heap_used+program_heap_used) as f32 / (kernel_heap_max+program_heap_max) as f32 * 100.0
                     )
                     .unwrap();
+
+                    writeln!(TERMINAL.lock(), "Breakdown: {}% used of kernel heap, and {}% of program heap!", kernel_heap_used as f32/kernel_heap_max as f32, program_heap_used as f32/program_heap_max as f32).unwrap();
                 } else if cmnd.starts_with("mount.ext2") {
                     if let (Some(file), Some(mntpoint)) = (splat.next(), splat.next()) {
                         let mut file_node = vfs::Path::try_from(file.trim());
@@ -685,12 +694,14 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                     } else {
                         Err(())
                     };
+
                     let executable_path = if let Ok(val) = executable_path {
                         val
                     } else {
                         writeln!(TERMINAL.lock(), "Unrecognised command!").unwrap();
                         continue;
                     };
+
                     let node = executable_path.get_node();
                     let node = if let Some(val) = node {
                         val
@@ -698,6 +709,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         writeln!(TERMINAL.lock(), "Invalid executable path!").unwrap();
                         continue;
                     };
+                    
                     if let Node::File(executable) = node {
                         writeln!(TERMINAL.lock(), "Loading program, please wait ...").unwrap();
                         let contents = executable.borrow().read(0, executable.borrow().get_size() as usize);
@@ -729,35 +741,24 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         let mut program_env = BTreeMap::new();
                         program_env.insert("HOME", "/");
 
-                        let mut program =
+                        let program =
                             if let Some(p) = Program::from_elf(&contents, &bufs.split(' ').collect::<Vec<&str>>(), cur_dir.clone(), &program_env) {
                                 p
                             } else {
                                 writeln!(TERMINAL.lock(), "Failed to load elf file into program!").unwrap();
                                 continue;
                             };
+                        scheduler::new_task(program);
 
                         writeln!(TERMINAL.lock(), "Program loaded!").unwrap();
-                        loop {
-                            if let Some(packet) = unsafe { KEYBOARD_INPUT.lock().try_read_packet() } {
-                                if packet.special_keys.any_ctrl() && packet.char_codepoint == Some('c') {
-                                    write!(TERMINAL.lock(), "^C").unwrap();
-                                    // CTRL+C pressed, quitting
-                                    program.emu.halted = true;
-                                }
-                            }
-
-                            if program.tick().is_none() {
-                                break;
-                            }
-                        }
-
-                        writeln!(UART.lock(), "State after program ended: {:?}", program).unwrap();
                     } else {
                         writeln!(TERMINAL.lock(), "Executable path is not a file!").unwrap();
                     }
                 }
             }
+
+            // Wait until all processes finish executing
+            while scheduler::tick() {}
 
             write!(TERMINAL.lock(), "{} # ", cur_dir).unwrap();
             continue;
@@ -771,7 +772,8 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         }
     }
 
-    writeln!(UART.lock(), "Heap usage: {} bytes", allocator::ALLOCATOR.lock().get_heap_used()).unwrap();
+    writeln!(UART.lock(), "Kernel heap usage: {} bytes", allocator::ALLOCATOR.lock().get_heap_used()).unwrap();
+    writeln!(UART.lock(), "Program heap usage: {} bytes", allocator::PROGRAM_ALLOCATOR.0.lock().get_heap_used()).unwrap();
 
     // Shutdown
     writeln!(UART.lock(), "\nIt's now safe to turn off your computer!").unwrap();

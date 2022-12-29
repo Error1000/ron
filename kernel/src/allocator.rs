@@ -15,6 +15,7 @@ pub static PROGRAM_ALLOCATOR: ProgramBasicAlloc = ProgramBasicAlloc(Mutex::from(
 pub struct ProgramBasicAlloc(pub Mutex<BasicAlloc>);
 
 // This is a bump allocator that doesn't leak as much memory as a normal bump allocator
+#[derive(Clone)]
 pub struct BasicAlloc {
     base: *mut u8,
     len: usize,

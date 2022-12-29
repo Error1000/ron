@@ -104,6 +104,7 @@ impl Path {
                 break;
             }
             .trim();
+            
             if to_find == "" {
                 continue; // Account for // in paths
             }

@@ -18,6 +18,13 @@ pub const SEEK_SET: usize = 1;
 pub const SEEK_END: usize = 2;
 
 #[no_mangle]
+pub unsafe extern "C" fn exit(code: core::ffi::c_int) -> ! {
+    load_syscall_argument_1(code as usize);
+    syscall(SyscallNumber::Exit);
+    loop {} // Make sure no code executes and guarantees are upheld
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn open(pathname: *const core::ffi::c_char, flags: core::ffi::c_int) -> core::ffi::c_int {
     load_syscall_argument_1(pathname as usize);
     load_syscall_argument_2(flags as usize);
@@ -103,6 +110,15 @@ pub unsafe extern "C" fn fchdir(fd: core::ffi::c_int) -> core::ffi::c_int {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn chdir(path: *const core::ffi::c_char) -> core::ffi::c_int {
+    let fd = open(path, O_RDONLY as i32);
+    if fd < 0 { return -1; }
+    if fchdir(fd) < 0 { return -1; }
+    close(fd);
+    return 0;
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn dup(oldfd: core::ffi::c_int) -> core::ffi::c_int {
     load_syscall_argument_1(oldfd as usize);
     syscall(SyscallNumber::Dup);
@@ -118,19 +134,9 @@ pub unsafe extern "C" fn dup2(oldfd: core::ffi::c_int, newfd: core::ffi::c_int) 
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn chdir(path: *const core::ffi::c_char) -> core::ffi::c_int {
-    let fd = open(path, O_RDONLY as i32);
-    if fd < 0 { return -1; }
-    if fchdir(fd) < 0 { return -1; }
-    close(fd);
-    return 0;
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn exit(code: core::ffi::c_int) -> ! {
-    load_syscall_argument_1(code as usize);
-    syscall(SyscallNumber::Exit);
-    loop {} // Make sure no code executes and guarantees are upheld
+pub unsafe extern "C" fn fork() -> core::ffi::c_int {
+    syscall(SyscallNumber::Fork);
+    read_syscall_return() as core::ffi::c_int
 }
 
 #[repr(usize)]
@@ -149,6 +155,7 @@ pub enum SyscallNumber {
     Fchdir = 11,
     Dup = 12,
     Dup2 = 13,
+    Fork = 14,
     MaxValue,
 }
 

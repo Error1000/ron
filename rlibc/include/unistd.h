@@ -19,3 +19,4 @@ extern int fchdir(int fd);
 extern int chdir(const char* path);
 extern int dup(int oldfd);
 extern int dup2(int oldfd, int newfd);
+extern pid_t fork(void);
