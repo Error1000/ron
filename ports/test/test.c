@@ -1,4 +1,5 @@
 #include <unistd.h>
+#include <sys/wait.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -11,6 +12,7 @@ int main() {
 	}else{
 		// We are the parent
 		printf("In parent!\n");
+//		wait(NULL);
 		exit(0);
 	}
 }

@@ -133,10 +133,22 @@ pub unsafe extern "C" fn dup2(oldfd: core::ffi::c_int, newfd: core::ffi::c_int) 
     read_syscall_return() as core::ffi::c_int
 }
 
+type c_pid_t = core::ffi::c_int;
+
+
 #[no_mangle]
-pub unsafe extern "C" fn fork() -> core::ffi::c_int {
+pub unsafe extern "C" fn fork() -> c_pid_t {
     syscall(SyscallNumber::Fork);
-    read_syscall_return() as core::ffi::c_int
+    read_syscall_return() as c_pid_t
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn waitpid(pid: core::ffi::c_int, wstatus: *mut core::ffi::c_int, options: core::ffi::c_int) -> c_pid_t {
+    load_syscall_argument_1(pid as usize);
+    load_syscall_argument_2(wstatus as usize);
+    load_syscall_argument_3(options as usize);
+    syscall(SyscallNumber::Waitpid);
+    read_syscall_return() as c_pid_t
 }
 
 #[repr(usize)]

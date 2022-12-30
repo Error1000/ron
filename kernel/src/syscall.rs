@@ -654,10 +654,15 @@ fn waitpid(emu: &mut Emulator, prog_data: &mut ProgramData, pid: isize, wstatus:
                 }else{
                     return Some(-1); // wstatus is pointing to an address that is not mapped
                 };
-                unsafe{ *wstatus_ptr = 0b1_00000000 | info.exit_code & 0b11111111; }
+
+                if wstatus_ptr != null_mut() {
+                    unsafe{ *wstatus_ptr = 0b1_00000000 | info.exit_code & 0b11111111; }
+                }
+
                 return Some(info.cpid as isize);
             }
-            None => return Some(-1) // The child pid that we were waiting for is invalid
+
+            None => return Some(-1) // The child pid that we were waiting for is invalid or there is no child to wait for
         }
     }
 
