@@ -1,12 +1,11 @@
 use core::{
     convert::{TryFrom, TryInto},
     ptr::null_mut,
-    slice,
-    str::from_utf8_unchecked
+    slice
 };
 
-use alloc::vec::Vec;
-use rlibc::cstr::strlen;
+use alloc::{vec::Vec, string::String, borrow::ToOwned, collections::BTreeMap};
+use rlibc::{cstr::strlen, sys::O_RDONLY};
 use rlibc::sys::SyscallNumber;
 
 use crate::{
@@ -15,7 +14,7 @@ use crate::{
     ps2_8042::KEYBOARD_INPUT,
     vfs,
     virtmem::{self, UserPointer, VirtualMemory},
-    UART, allocator::{ProgramBasicAlloc, self}, scheduler, emulator::SyscallCpuAction,
+    UART, allocator::{ProgramBasicAlloc, self, BasicAlloc}, scheduler, emulator::SyscallCpuAction, elf::{ElfFile, elf_header},
 };
 
 /* TODO: Add errno to program
@@ -147,6 +146,29 @@ pub fn syscall_linux_abi_entry_point(emu: &mut Emulator, prog_data: &mut Program
             }
         }
 
+        SyscallNumber::Fexecve => {
+            let res = fexecve(emu, prog_data, argument_1() as usize, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_2())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_3())});
+            match res {
+                Ok(_) => return SyscallCpuAction::REPEAT_SYSCALL, // Don't advance to the next instruction as we want to start executing the new program from the first instruction
+                Err(val) => return_value(val as u64, emu)
+            }
+        }
+
+        SyscallNumber::Execve => {
+            let res = execve(emu, prog_data, unsafe{virtmem::UserPointer::<[u8]>::from_mem(argument_1())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_2())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_3())});
+            match res {
+                Ok(_) => return SyscallCpuAction::REPEAT_SYSCALL, // Don't advance to the next instruction as we want to start executing the new program from the first instruction
+                Err(val) => return_value(val as u64, emu)
+            }
+        }
+
+        SyscallNumber::Execvpe => {
+            let res = execvpe(emu, prog_data, unsafe{virtmem::UserPointer::<[u8]>::from_mem(argument_1())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_2())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_3())});
+            match res {
+                Ok(_) => return SyscallCpuAction::REPEAT_SYSCALL, // Don't advance to the next instruction as we want to start executing the new program from the first instruction
+                Err(val) => return_value(val as u64, emu)
+            }
+        }
         SyscallNumber::MaxValue => (),
     }
 
@@ -222,7 +244,7 @@ fn write(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: U
 }
 
 fn read(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: UserPointer<[u8]>, count: usize) -> i32 {
-    let buf = if let Some(val) = user_buf.try_as_ref(&mut emu.memory, count) { val } else { return -1 };
+    let buf = if let Some(val) = user_buf.try_as_mut(&mut emu.memory, count) { val } else { return -1 };
     let node_mapping = if let Some(Some(val)) = prog_data.fd_mapping.get(fd).copied() { val } else { return -1 };
 
     match node_mapping {
@@ -286,14 +308,13 @@ fn read(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: Us
 }
 
 fn open(emu: &mut Emulator, prog_data: &mut ProgramData, pathname: virtmem::UserPointer<[u8]>, flags: usize) -> isize {
-    let buf = {
-        let buf = if let Some(val) = pathname.try_as_ptr(&mut emu.memory) { val } else { return -1 };
-        let buf_len = unsafe { rlibc::cstr::strlen(buf as *const core::ffi::c_char) };
-        unsafe { slice::from_raw_parts(buf, buf_len as usize) }
+    let path = if let Some(val) = virtmem::cstr_user_pointer_to_str(pathname, &emu.memory) { val } else { return -1 };
+    let path = if let Ok(val) = vfs::Path::try_from(path) { val } else { 
+        // Maybe the pathname is relative to cwd
+        let mut current = prog_data.cwd.clone();
+        current.append_str(path);
+        current
     };
-
-    let path = if let Ok(val) = core::str::from_utf8(buf) { val } else { return -1 };
-    let path = if let Ok(val) = vfs::Path::try_from(path) { val } else { return -1 };
 
     // Get directory containing file
     let parent_node = if let Some(val) = path.clone().del_last().get_node() { val } else { return -1 };
@@ -305,6 +326,7 @@ fn open(emu: &mut Emulator, prog_data: &mut ProgramData, pathname: virtmem::User
             let mut node = val.1;
 
             // man open
+            // O_TRUNC
             // If the file already exists and is a regular file and the
             //   access mode allows writing (i.e., is O_RDWR or O_WRONLY)
             //   it will be truncated to length 0.
@@ -500,7 +522,7 @@ fn getcwd(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: virtmem:
         return userspace_null_ptr;
     }
 
-    let buf = if let Some(val) = virtual_ptr.try_as_ref(&mut emu.memory, buf_size) {
+    let buf = if let Some(val) = virtual_ptr.try_as_mut(&mut emu.memory, buf_size) {
         val
     } else {
         return userspace_null_ptr;
@@ -536,21 +558,13 @@ fn getenv(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: virtmem:
     // The getenv() function returns a pointer to the value in the
     // environment, or NULL if there is no match.
     // Source: man getenv
-    let key_ptr = if let Some(val) = virtual_ptr.try_as_ptr(&mut emu.memory) {
+
+    let key = if let Some(val) = virtmem::cstr_user_pointer_to_str(virtual_ptr, &emu.memory){
         val
     } else {
         return userspace_null_ptr;
     };
-
-    let key = unsafe {
-        from_utf8_unchecked(
-            if let Some(val) = virtual_ptr.try_as_ref(&mut emu.memory, strlen(key_ptr as *const core::ffi::c_char) as usize) {
-                val
-            } else {
-                return userspace_null_ptr;
-            },
-        )
-    };
+ 
 
     // Lookup the environment variable
     let res = prog_data.env.get(key);
@@ -656,6 +670,7 @@ fn waitpid(emu: &mut Emulator, prog_data: &mut ProgramData, pid: isize, wstatus:
                 };
 
                 if wstatus_ptr != null_mut() {
+                    // FIXME: Right now we only support exit status
                     unsafe{ *wstatus_ptr = 0b1_00000000 | info.exit_code & 0b11111111; }
                 }
 
@@ -671,8 +686,298 @@ fn waitpid(emu: &mut Emulator, prog_data: &mut ProgramData, pid: isize, wstatus:
         return None; // Tell he cpu to repeat syscall so once the scheduler tells us that the child received an update we can return
     } else if pid > 0 {
         prog_data.state = ProgramState::WAITING_FOR_CHILD_PROCESS(Some(pid as usize));
-        return None;// Tell he cpu to repeat syscall so once the scheduler tells us that the child received an update we can return
+        return None; // Tell he cpu to repeat syscall so once the scheduler tells us that the child received an update we can return
     }
 
     return Some(-1);
+}
+
+
+fn exec(emu: &mut Emulator, prog_data: &mut ProgramData, node: vfs::Node, node_path: vfs::Path, args: Vec<String>, envs: BTreeMap<String, String>) -> Result<(), isize> {
+    let file = if let vfs::Node::File(f) = &node {
+        f.borrow()
+    }else{
+        // fd was not a file
+        return Err(-1);
+    };
+
+    let file_size = file.get_size() as usize;
+
+    // We don't need the node anymore so shadow it with ()
+    #[allow(unused)]
+    let program_node = ();
+
+
+    // The fexecve() ignores the file offset of fd.
+    // Source: freebsd man fexecve (https://www.freebsd.org/cgi/man.cgi?query=fexecve&sektion=2&apropos=0&manpath=FreeBSD+10.0-RELEASE)
+    let file_bytes = if let Some(val) = file.read(0, file_size) {
+        val
+    } else {
+        // Couldn't read file
+        return Err(-1);
+    };
+
+    if let Some(elf) = ElfFile::from_bytes(&file_bytes){
+        if elf.header.instruction_set != elf_header::InstructionSet::RiscV {
+            return Err(-1);
+        }
+
+        if elf.header.elf_type != elf_header::ElfType::EXECUTABLE {
+            return Err(-1);
+        }
+
+        // Time to replace ourselves with this new executable
+
+        // First reset ourselves, past this point returning -1 is useless as the program would crash anyways
+        // FIXME: Don't crash the program if we fail to load the new program
+        emu.memory.clear_regions();
+        emu.reset_registers(elf.header.program_entry);
+
+        let lower_virt_addr = Program::map_elf_into_virtual_memory(&elf, &file_bytes, &mut emu.memory)
+        .ok_or_else(|| {
+            emu.halted = true;
+            return -1isize; // We need to return something so just return -1 even if it doesn't matter
+        })?; // Return -1 if we can't expand and map the elf into virtual memory
+        
+        const PROGRAM_STACK_SIZE: u64 = 8 * 1024;
+        let mut program_stack = Vec::new_in(&allocator::PROGRAM_ALLOCATOR);
+        program_stack.clear();
+        program_stack.resize(PROGRAM_STACK_SIZE as usize, 0u8);
+
+        // Add 8kb of stack space at the end of the virtual address space
+        let did_create_stack_region =  emu.memory.add_region(
+            u64::MAX - (PROGRAM_STACK_SIZE) + 1,     /* +1 because the address itself is included in the region */
+            program_stack, // NOTE: We don't use [] because that would allocate 1MB on the stack, then move it to the heap, which might overflow the stack
+        );
+        if did_create_stack_region.is_none() { // We failed to add a stack region
+            emu.halted = true;
+            return Err(-1); // We need to return something so just return -1 even if it doesn't matter
+        }
+
+        // Create virtual allocator for the heap, this manages the locations of allocations on the heap in the virtual space
+        // Or just generally the location of segments in virtual space, this can't be done for some segments like the elf regions and the stack
+        // as they require certain addresses
+        prog_data.virtual_allocator = BasicAlloc::from(lower_virt_addr as *mut u8, (u64::MAX - (PROGRAM_STACK_SIZE + lower_virt_addr)) as usize, true);
+
+        let args_ptrs_array_virtual_ptr = Program::load_args_into_virtual_memory(args.iter().map(|arg|arg.as_str()), args.len(), &mut emu.memory, &mut prog_data.virtual_allocator);
+        let args_ptrs_array_virtual_ptr = if let Some(val) = args_ptrs_array_virtual_ptr {
+            val
+        }else{
+            emu.halted = true;
+            return Err(-1); // We need to return something so just return -1 even if it doesn't matter
+        };
+
+
+        let prog_env = Program::load_env_into_virtual_memory(envs.iter().map(|(key, value)| (key.as_str(), value.as_str())), &mut emu.memory, &mut prog_data.virtual_allocator);
+        let prog_env = if let Some(val) = prog_env {
+            val
+        }else{
+            emu.halted = true;
+            return Err(-1); // We need to return something so just return -1 even if it doesn't matter
+        };
+
+        prog_data.env = prog_env;
+        
+
+        // Setup argc and argv
+        emu.write_reg(10, args.len() as u64); // argc
+        emu.write_reg(11, args_ptrs_array_virtual_ptr as u64); // argv
+
+        // We succeeded
+        return Ok(());
+    } else { 
+        // Maybe it's a shell script file
+        // Read until first \n to read first line
+        unimplemented!("Implement shell scripts!");
+    }
+}
+
+
+
+fn parse_exec_args(virtual_memory: &impl VirtualMemory, argv: virtmem::UserPointer<[u64]>) -> Option<Vec<String>> {
+    let mut parsed_args = Vec::new();
+    // argv is a pointer to pointers, the end is found by finding the first null pointer
+    let args_ref = {
+        let mut argv_ptr = argv.try_as_ptr(virtual_memory)?; // Error if the argv pointer is not in mapped virtual space
+        let mut args_len = 0;
+        while unsafe{*argv_ptr} != 0 {
+            argv_ptr = unsafe{argv_ptr.add(1)};
+            args_len += 1;
+        }
+        argv.try_as_ref(virtual_memory, args_len)? // Error if we can't create a slice
+    };
+
+    for virtual_arg_ptr in args_ref {
+        let arg = unsafe{ virtmem::UserPointer::<[u8]>::from_mem(*virtual_arg_ptr) };
+        let arg = virtmem::cstr_user_pointer_to_str(arg, virtual_memory);
+        let arg = if let Some(val) = arg {
+            val
+        }else{
+            // Couldn't parse part of argv as str, maybe it contains invalid utf8?
+            return None;
+        };
+        parsed_args.push(arg.to_owned());
+    }
+    Some(parsed_args)
+}
+
+fn parse_exec_env(virtual_memory: &impl VirtualMemory, envp: virtmem::UserPointer<[u64]>) -> Option<BTreeMap<String, String>> {
+    let mut parsed_env = BTreeMap::new();
+    let envs_ref = {
+        let mut envs_ptr = envp.try_as_ptr(virtual_memory)?; // Error if the argv pointer is not in mapped virtual space
+        let mut envs_len = 0;
+        while unsafe{*envs_ptr} != 0 {
+            envs_ptr = unsafe{envs_ptr.add(1)};
+            envs_len += 1;
+        }
+        envp.try_as_ref(virtual_memory, envs_len)? // Error if we can't create a slice
+    };
+
+    for virtual_env_ptr in envs_ref {
+        let env_str = unsafe{ virtmem::UserPointer::<[u8]>::from_mem(*virtual_env_ptr) };
+        let env_str = virtmem::cstr_user_pointer_to_str(env_str, virtual_memory);
+        let env_str = if let Some(val) = env_str {
+            val
+        }else{
+            // Couldn't parse part of envp as str, maybe it contains invalid utf8?
+            return None;
+        };
+
+        let (name, value) = if let Some((name, value)) = env_str.split_once('=') {
+            (name, value)
+        }else{
+            // Malformed env value
+            return None;
+        };
+
+        parsed_env.insert(name.to_owned(), value.to_owned());
+    }
+
+    Some(parsed_env)
+}
+
+
+// FIXME: This accepts a null envp to mean inherit current program's environment, the behavior of a null envp is unspecified as far as i'm aware
+// so this is NON-STANDRD
+fn fexecve(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, argv: virtmem::UserPointer<[u64]>, envp: virtmem::UserPointer<[u64]>) -> Result<(), isize> {
+    let node_index = if let Some(Some(FdMapping::Index(val))) = prog_data.fd_mapping.get(fd).copied() {
+        val
+    }else{
+        // Causes invalid fds and fds that map to stdin, stdout and stderr to error out
+        return Err(-1);
+    };
+    
+    // NOTE: If the node_index exists then the node must exist
+    let node = prog_data.open_nodes[node_index].as_mut().unwrap().clone();
+
+    // The file descriptor fd must be opened read-only
+    //    (O_RDONLY) or with the O_PATH flag and the caller must have permission
+    //    to execute the file that it refers to.
+    // source: man fexecve
+    if node.flags & O_RDONLY == 0 {
+        return Err(-1);
+    }
+
+    // Parse argv and envp
+    let parsed_args = parse_exec_args(&emu.memory, argv).ok_or_else(|| -1isize)?;
+    let parsed_env = if envp.get_inner() != 0 {
+        parse_exec_env(&emu.memory, envp)
+    }else{ 
+        let mut env = BTreeMap::new();
+        // If we get a null pointer reuse our current environment
+        // FIXME: NON-STANDARD
+        for (name, virtual_pointer_to_val) in &prog_data.env {
+            let val = unsafe{ virtmem::UserPointer::<[u8]>::from_mem(*virtual_pointer_to_val)};
+            let val = virtmem::cstr_user_pointer_to_str(val, &emu.memory);
+            let val = if let Some(val) = val {
+                val
+            }else{
+                // This program's environment is malformed, invalid utf8?
+                return Err(-1);
+            };
+
+            env.insert(name.clone(), val.to_owned());
+        }
+        Some(env)
+    }.ok_or_else(|| -1isize)?;
+    
+
+    exec(emu, prog_data, node.vfs_node, node.path, parsed_args, parsed_env)
+}
+
+
+// FIXME: This accepts a null envp to mean inherit current program's environment, the behavior of a null envp is unspecified as far as i'm aware
+// so this is NON-STANDRD
+fn execve(emu: &mut Emulator, prog_data: &mut ProgramData, pathname: virtmem::UserPointer<[u8]>, argv: virtmem::UserPointer<[u64]>, envp: virtmem::UserPointer<[u64]>) -> Result<(), isize> {
+    let path = if let Some(val) = virtmem::cstr_user_pointer_to_str(pathname, &emu.memory) { val } else { return Err(-1) };
+    // NOTE: execve does not allow CWD relative paths
+    let path = if let Ok(val) = vfs::Path::try_from(path) { val } else { return Err(-1) };
+
+    // Get directory containing file
+    let node = if let Some(val) = path.clone().get_node() { val } else { return Err(-1) };
+
+    // Parse argv and envp
+    let parsed_args = parse_exec_args(&emu.memory, argv).ok_or_else(|| -1isize)?;
+    let parsed_env = if envp.get_inner() != 0 {
+        parse_exec_env(&emu.memory, envp)
+    }else{ 
+        let mut env = BTreeMap::new();
+        // If we get a null pointer reuse our current environment
+        // FIXME: NON-STANDARD
+        for (name, virtual_pointer_to_val) in &prog_data.env {
+            let val = unsafe{ virtmem::UserPointer::<[u8]>::from_mem(*virtual_pointer_to_val)};
+            let val = virtmem::cstr_user_pointer_to_str(val, &emu.memory);
+            let val = if let Some(val) = val {
+                val
+            }else{
+                // This program's environment is malformed, invalid utf8?
+                return Err(-1);
+            };
+
+            env.insert(name.clone(), val.to_owned());
+        }
+        Some(env)
+    }.ok_or_else(|| -1isize)?;
+    
+
+    exec(emu, prog_data, node, path, parsed_args, parsed_env)
+}
+
+
+fn execvpe(emu: &mut Emulator, prog_data: &mut ProgramData, file: virtmem::UserPointer<[u8]>, argv: virtmem::UserPointer<[u64]>, envp: virtmem::UserPointer<[u64]>) -> Result<(), isize> {
+    // Same as execve but if path lookup fails for file then it looks in the PATH env variable of the current program
+    let path = if let Some(val) = virtmem::cstr_user_pointer_to_str(file, &emu.memory) { val } else { return Err(-1) };
+    // NOTE: execvpe does not allow CWD relative paths
+    let path = if let Ok(val) = vfs::Path::try_from(path) { val } else { 
+        unimplemented!("Lookup the file in the PATH environment variable!");
+    };
+
+    // Get directory containing file
+    let node = if let Some(val) = path.clone().get_node() { val } else { return Err(-1); };
+
+    // Parse argv and envp
+    let parsed_args = parse_exec_args(&emu.memory, argv).ok_or_else(|| -1isize)?;
+    let parsed_env = if envp.get_inner() != 0 {
+        parse_exec_env(&emu.memory, envp)
+    }else{ 
+        let mut env = BTreeMap::new();
+        // If we get a null pointer reuse our current environment
+        // FIXME: NON-STANDARD
+        for (name, virtual_pointer_to_val) in &prog_data.env {
+            let val = unsafe{ virtmem::UserPointer::<[u8]>::from_mem(*virtual_pointer_to_val)};
+            let val = virtmem::cstr_user_pointer_to_str(val, &emu.memory);
+            let val = if let Some(val) = val {
+                val
+            }else{
+                // This program's environment is malformed, invalid utf8?
+                return Err(-1);
+            };
+
+            env.insert(name.clone(), val.to_owned());
+        }
+        Some(env)
+    }.ok_or_else(|| -1isize)?;
+    
+
+    exec(emu, prog_data, node, path, parsed_args, parsed_env)
 }

@@ -69,14 +69,14 @@ pub fn tick() -> bool {
                 // Source: man waitpid 
                 let our_pid = list[i].as_ref().unwrap().data.pid.unwrap();
 
-                let mut child_that_had_state_change = None;
+                let mut state_change_of_child = None;
                 let mut waiting_is_invalid = false;
                 
                 if let Some(cpid) = cpid { // We are waiting for a specific process
                     if let Some(Some(child)) = list.get_mut(cpid) {
                         if child.data.parent_pid.unwrap() == our_pid {
                             if let ProgramState::TERMINATED_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT(exit_code) = child.data.state {
-                                child_that_had_state_change = Some((child.data.pid.unwrap(), exit_code));
+                                state_change_of_child = Some(WaitInformation{cpid: child.data.pid.unwrap(), exit_code});
                                 child.data.state = ProgramState::TERMINATED_WAITING_TO_BE_DEALLOCATED(exit_code);
                             }
                         }else{
@@ -92,17 +92,18 @@ pub fn tick() -> bool {
                         if p.data.parent_pid == Some(our_pid) {
                             waiting_is_invalid = false;
                             if let ProgramState::TERMINATED_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT(exit_code) = p.data.state {
-                                child_that_had_state_change = Some((p.data.pid.unwrap(), exit_code));
+                                state_change_of_child =  Some(WaitInformation{cpid: p.data.pid.unwrap(), exit_code});
                                 p.data.state = ProgramState::TERMINATED_WAITING_TO_BE_DEALLOCATED(exit_code);
                                 break;
                             }
                         }
                     }
                     // If there were no processes whose parents is us then we know that there is nobody to wait for
+                    // So that is why we start with waiting_is_invalid = true;
                 }
                   
-                if let Some((cpid, exit_code)) = child_that_had_state_change {
-                    list[i].as_mut().unwrap().data.state = ProgramState::FINISHED_WAITING_FOR_CHILD_PROCESS(Some(WaitInformation{cpid, exit_code}));
+                if let Some(info) = state_change_of_child {
+                    list[i].as_mut().unwrap().data.state = ProgramState::FINISHED_WAITING_FOR_CHILD_PROCESS(Some(info));
                 }else if waiting_is_invalid {
                     list[i].as_mut().unwrap().data.state = ProgramState::FINISHED_WAITING_FOR_CHILD_PROCESS(None);
                 }else{
@@ -117,7 +118,7 @@ pub fn tick() -> bool {
                 if !parent_exists {
                     // FIXME: Implement adoption properly
                     use core::fmt::Write;
-                    writeln!(UART.lock(), "Child with pid: {} has been orphaned!", list[i].as_ref().unwrap().data.pid.unwrap());
+                    writeln!(UART.lock(), "Child with pid: {} has been orphaned!", list[i].as_ref().unwrap().data.pid.unwrap()).unwrap();
                     // For now just switch to TERMINATED_WAITING_TO_BE_DEALLOCATED
                     list[i].as_mut().unwrap().data.state = ProgramState::TERMINATED_WAITING_TO_BE_DEALLOCATED(exit_code);
                 }

@@ -362,7 +362,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             vfs::Path::try_from(redir_str).ok()
                         } else {
                             let mut actual_dir = cur_dir.clone();
-                            actual_dir.push_str(redir_str.as_str());
+                            actual_dir.append_str(redir_str.as_str());
                             Some(actual_dir)
                         };
                         if let Some(node) = path.map(|path| path.get_node()) {
@@ -413,7 +413,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         let mut file_node = vfs::Path::try_from(file.trim());
                         if !file.starts_with("/") {
                             let mut actual_node = cur_dir.clone();
-                            actual_node.push_str(file);
+                            actual_node.append_str(file);
                             file_node = Ok(actual_node);
                         }
                         let file_node = if let Ok(val) = file_node {
@@ -453,7 +453,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         let mut mntpoint_node = vfs::Path::try_from(mntpoint.trim());
                         if !mntpoint.starts_with("/") {
                             let mut actual_node = cur_dir.clone();
-                            actual_node.push_str(mntpoint);
+                            actual_node.append_str(mntpoint);
                             mntpoint_node = Ok(actual_node);
                         }
                         let mntpoint_node = if let Ok(val) = mntpoint_node {
@@ -477,7 +477,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         let mut mntpoint_node = vfs::Path::try_from(mntpoint.trim());
                         if !mntpoint.starts_with("/") {
                             let mut actual_node = cur_dir.clone();
-                            actual_node.push_str(mntpoint);
+                            actual_node.append_str(mntpoint);
                             mntpoint_node = Ok(actual_node);
                         }
                         let mntpoint_node = if let Ok(val) = mntpoint_node {
@@ -514,7 +514,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                                 vfs::Path::try_from(file_str)
                             } else {
                                 let mut actual_dir = cur_dir.clone();
-                                actual_dir.push_str(file_str);
+                                actual_dir.append_str(file_str);
                                 Ok(actual_dir)
                             };
 
@@ -559,7 +559,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             vfs::Path::try_from(name)
                         } else {
                             let mut actual_dir = cur_dir.clone();
-                            actual_dir.push_str(name);
+                            actual_dir.append_str(name);
                             Ok(actual_dir)
                         };
                         let mut arg_path = if let Ok(val) = arg_path {
@@ -596,7 +596,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                                 writeln!(TERMINAL.lock(), "Invalid cd path!").unwrap();
                             }
                         } else {
-                            cur_dir.push_str(name);
+                            cur_dir.append_str(name);
                         }
                         if cur_dir.get_node().is_none() {
                             writeln!(TERMINAL.lock(), "Invalid cd path: {}!", cur_dir).unwrap();
@@ -635,7 +635,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             vfs::Path::try_from(name)
                         } else {
                             let mut actual_dir = cur_dir.clone();
-                            actual_dir.push_str(name);
+                            actual_dir.append_str(name);
                             Ok(actual_dir)
                         };
                         let mut arg_path = if let Ok(val) = arg_path {
@@ -689,7 +689,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         vfs::Path::try_from(cmnd)
                     } else if cmnd.starts_with('.') {
                         let mut actual_dir = cur_dir.clone();
-                        actual_dir.push_str(cmnd);
+                        actual_dir.append_str(cmnd);
                         Ok(actual_dir)
                     } else {
                         Err(())

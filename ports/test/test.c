@@ -8,6 +8,8 @@ int main() {
 	if(pid == 0){
 		// We are the child
 		printf("In child!\n");
+		char* args[] = {"/example", NULL};
+		execv("/example", args);
 		exit(1);
 	}else{
 		// We are the parent

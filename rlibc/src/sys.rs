@@ -133,6 +133,35 @@ pub unsafe extern "C" fn dup2(oldfd: core::ffi::c_int, newfd: core::ffi::c_int) 
     read_syscall_return() as core::ffi::c_int
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn fexecve(fd: core::ffi::c_int, argv: *const *mut core::ffi::c_char, envp: *const *mut core::ffi::c_char) -> core::ffi::c_int {
+    load_syscall_argument_1(fd as usize);
+    load_syscall_argument_2(argv as usize);
+    load_syscall_argument_3(envp as usize);
+    syscall(SyscallNumber::Fexecve);
+    read_syscall_return() as core::ffi::c_int
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn execve(pathname: *const core::ffi::c_char, argv: *const *mut core::ffi::c_char, envp: *const *mut core::ffi::c_char) -> core::ffi::c_int {
+    load_syscall_argument_1(pathname as usize);
+    load_syscall_argument_2(argv as usize);
+    load_syscall_argument_3(envp as usize);
+    syscall(SyscallNumber::Execve);
+    read_syscall_return() as core::ffi::c_int
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn execvpe(file: *const core::ffi::c_char, argv: *const *mut core::ffi::c_char, envp: *const *mut core::ffi::c_char) -> core::ffi::c_int {
+    load_syscall_argument_1(file as usize);
+    load_syscall_argument_2(argv as usize);
+    load_syscall_argument_3(envp as usize);
+    syscall(SyscallNumber::Execvpe);
+    read_syscall_return() as core::ffi::c_int
+}
+
+
+#[allow(non_camel_case_types)]
 type c_pid_t = core::ffi::c_int;
 
 
@@ -169,6 +198,9 @@ pub enum SyscallNumber {
     Dup2 = 13,
     Fork = 14,
     Waitpid = 15,
+    Fexecve = 16,
+    Execve = 17,
+    Execvpe = 18,
     MaxValue,
 }
 

@@ -85,7 +85,7 @@ impl Path {
         self
     }
 
-    pub fn push_str(&mut self, subnode: &str) {
+    pub fn append_str(&mut self, subnode: &str) {
         if !self.inner.ends_with('/') {
             self.inner.push('/');
         }
@@ -113,7 +113,7 @@ impl Path {
             for (child_name, child_node) in children {
                 if child_name == to_find {
                     cur_node = child_node;
-                    cur_path.push_str(to_find);
+                    cur_path.append_str(to_find);
                     continue 'path_traversal_loop;
                 }
             }
@@ -143,7 +143,7 @@ impl Path {
             for child in &cur_node.clone().borrow().children {
                 if child.borrow().path.last() == to_find {
                     cur_node = child.clone();
-                    cur_path.push_str(to_find);
+                    cur_path.append_str(to_find);
                     continue 'path_traversal_loop;
                 }
             }
@@ -238,7 +238,7 @@ impl RootFSNode {
 
     pub fn new_folder(slf: Rc<RefCell<RootFSNode>>, name: &str) -> Rc<RefCell<RootFSNode>> {
         let mut new_p = (*slf).borrow().path.clone();
-        new_p.push_str(name);
+        new_p.append_str(name);
         let new_f =
             Rc::new(RefCell::new(Self { path: new_p, parent: Some(slf.clone()), children: Vec::new(), mountpoint: None }));
         (*slf).borrow_mut().children.push(new_f.clone());

@@ -1,3 +1,4 @@
+use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::vec;
 use alloc::{ vec::Vec, collections::BTreeMap};
@@ -95,19 +96,19 @@ impl Program {
         Program { emu: emu, data: prog_data }
     }
 
-    fn load_args_into_memory(args: &[&str], virt_mem: &mut impl VirtualMemory<A = &'static ProgramBasicAlloc>, virtual_allocator: &mut BasicAlloc) -> Option<u64> {
+    pub fn load_args_into_virtual_memory<'arg>(args: impl Iterator<Item = &'arg str>, args_len: usize, virt_mem: &mut impl VirtualMemory<A = &'static ProgramBasicAlloc>, virtual_allocator: &mut BasicAlloc) -> Option<u64> {
         // Note: We load the arguments on the heap not on the stack
         // Allocate space for arguments pointer array
         let mut args_ptrs = Vec::<u8, &'static allocator::ProgramBasicAlloc>::new_in(&allocator::PROGRAM_ALLOCATOR);
         args_ptrs.clear();
-        args_ptrs.resize(args.len()*core::mem::size_of::<u64>(), 0);
+        args_ptrs.resize(args_len*core::mem::size_of::<u64>(), 0);
 
         let args_ptrs_array_virtual_ptr = virtual_allocator.alloc(core::alloc::Layout::from_size_align(args_ptrs.len()*core::mem::size_of::<u64>(), 1).ok()?) as u64;
         // It's a virtual pointer to an array of pointers to the arguments
         // A.k.a it's the value of argv
         if args_ptrs_array_virtual_ptr == 0 { return None; }
 
-        for (index, arg) in args.iter().enumerate() {
+        for (index, arg) in args.enumerate() {
             // Allocate space for arg and copy it in there
 
             let mut allocated_arg = Vec::<u8, &'static ProgramBasicAlloc>::new_in(&allocator::PROGRAM_ALLOCATOR);
@@ -136,9 +137,9 @@ impl Program {
         Some(args_ptrs_array_virtual_ptr)
     }
 
-    fn load_env_into_memory(env: &BTreeMap<&str, &str>, virt_mem: &mut impl VirtualMemory<A = &'static ProgramBasicAlloc>, virtual_allocator: &mut BasicAlloc) -> Option<BTreeMap<String, u64>> {
+    pub fn load_env_into_virtual_memory<'a>(env: impl Iterator<Item=(&'a str, &'a str)>, virt_mem: &mut impl VirtualMemory<A = &'static ProgramBasicAlloc>, virtual_allocator: &mut BasicAlloc) -> Option<BTreeMap<String, u64>> {
         let mut map = BTreeMap::new();
-        for (key, value) in env.iter() {
+        for (key, value) in env {
             // Allocate space for variable value
             let mut allocated_env_value = Vec::<u8, &'static ProgramBasicAlloc>::new_in(&allocator::PROGRAM_ALLOCATOR);
             allocated_env_value.clear();
@@ -158,32 +159,19 @@ impl Program {
             if virtual_env_value_ptr == 0 { return None; }
 
             virt_mem.add_region(virtual_env_value_ptr, allocated_env_value)?;
-            map.insert(String::from(*key), virtual_env_value_ptr);
+            map.insert(key.to_owned(), virtual_env_value_ptr);
         }
         Some(map)
     }
 
-
-    pub fn from_elf(elf_data: &[u8], args: &[&str], cwd: vfs::Path, env: &BTreeMap<&str, &str>) -> Option<Program> {
-        // elf_data contains the bytes of the elf file
-        let elf = ElfFile::from_bytes(elf_data)?;
-
-        if elf.header.instruction_set != elf_header::InstructionSet::RiscV {
-            return None;
-        }
-
-        if elf.header.elf_type != elf_header::ElfType::EXECUTABLE {
-            return None;
-        }
-
-        let mut virt_mem = LittleEndianVirtualMemory::new();
-
+    // Returns: lowest virt addr that is after all segments loaded, a.k.a the address at the end of the convex hull
+    pub fn map_elf_into_virtual_memory(elf: &ElfFile, elf_bytes: &[u8], virt_mem: &mut impl VirtualMemory<A = &'static ProgramBasicAlloc>) -> Option<u64> {
         let mut lower_virt_addr = 0; // Used to keep track of first virtual address that is free, so we can put the virtual allocator(heap) there
         // Map elf into virtual memory
-        for header in elf.program_headers {
+        for header in elf.program_headers.iter() {
             if header.segment_type == EnumCatchAll::from(elf_program_header::ProgramHeaderType::Load) {
                 let segment = {
-                    let segment_data = &elf_data
+                    let segment_data = &elf_bytes
                         [header.segment_file_offset as usize..(header.segment_file_offset + header.segment_file_size) as usize];
                     
                     let mut segment = Vec::new_in(&allocator::PROGRAM_ALLOCATOR);
@@ -203,6 +191,26 @@ impl Program {
             }
         }
 
+        Some(lower_virt_addr)
+    }
+
+
+    pub fn from_elf(elf_data: &[u8], args: &[&str], cwd: vfs::Path, env: &BTreeMap<&str, &str>) -> Option<Program> {
+        // elf_data contains the bytes of the elf file
+        let elf = ElfFile::from_bytes(elf_data)?;
+
+        if elf.header.instruction_set != elf_header::InstructionSet::RiscV {
+            return None;
+        }
+
+        if elf.header.elf_type != elf_header::ElfType::EXECUTABLE {
+            return None;
+        }
+
+        let mut virt_mem = LittleEndianVirtualMemory::new();
+
+        let lower_virt_addr = Self::map_elf_into_virtual_memory(&elf, &elf_data, &mut virt_mem)?; // Used to keep track of first virtual address that is free, so we can put the virtual allocator(heap) there
+       
         const PROGRAM_STACK_SIZE: u64 = 8 * 1024;
         let mut program_stack = Vec::new_in(&allocator::PROGRAM_ALLOCATOR);
         program_stack.clear();
@@ -217,17 +225,15 @@ impl Program {
 
         // Create virtual allocator for the heap, this manages the locations of allocations on the heap in the virtual space
         // Or just generally the location of segments in virtual space, this can't be done for some segments like the elf regions and the stack
-        // however elf regions and the stack are currently the only ones where that is a problem so we just do those and then we 
+        // as they require addresses however elf regions and the stack are currently the only ones where that is a problem so we just do those and then we 
         // mark the virtual address at the end of the elf regions and the begging of the stack and use the virtual space in-between for
         // all other regions that don't need a specific virtual location
 
-        // NOTE: this allocator does not have a real pointer, a.k.a the allocator must never dereference any pointers
-        // This means that for the current allocator ( BasicAlloc ) we can't use realloc
         let mut virtual_allocator = BasicAlloc::from(lower_virt_addr as *mut u8, (u64::MAX - (PROGRAM_STACK_SIZE + lower_virt_addr)) as usize, true);
 
 
-        let args_ptrs_array_virtual_ptr = Self::load_args_into_memory(args, &mut virt_mem, &mut virtual_allocator)?;
-        let prog_env = Self::load_env_into_memory(env, &mut virt_mem, &mut virtual_allocator)?;
+        let args_ptrs_array_virtual_ptr = Self::load_args_into_virtual_memory(args.iter().map(|arg|*arg), args.len(), &mut virt_mem, &mut virtual_allocator)?;
+        let prog_env = Self::load_env_into_virtual_memory(env.iter().map(|(key, value)|(*key, *value)), &mut virt_mem, &mut virtual_allocator)?;
 
         let mut emu = Riscv64Cpu::from(virt_mem, elf.header.program_entry, syscall::syscall_linux_abi_entry_point);
         

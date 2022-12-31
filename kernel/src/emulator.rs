@@ -784,6 +784,7 @@ where
 #[derive(Debug, PartialEq, Eq)]
 pub enum SyscallCpuAction {
     NONE,
+    #[allow(non_camel_case_types)]
     REPEAT_SYSCALL
 }
 
@@ -818,6 +819,11 @@ where
 {
     pub fn from(mem: MemType, start_address: u64, syscall: fn(&mut Self, &mut ProgramData) -> SyscallCpuAction) -> Riscv64Cpu<MemType> {
         Riscv64Cpu { program_counter: start_address, registers: [0u64; 31], memory: mem, halted: false, syscall }
+    }
+
+    pub fn reset_registers(&mut self, start_address: u64) {
+        self.program_counter = start_address;
+        self.registers = [0u64; 31];
     }
 
     pub fn write_reg(&mut self, reg_n: u8, val: u64) {

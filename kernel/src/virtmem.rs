@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use rlibc::cstr::strlen;
 use core::{arch::asm, marker::PhantomData, alloc::Allocator, convert::TryInto};
 
 use crate::emulator::EmulatorMemory;
@@ -67,6 +68,7 @@ pub trait VirtualMemory {
 
     fn add_region(&mut self, virt_addr: u64, data: Vec<u8, Self::A>) -> Option<()>;
     fn remove_region(&mut self, region_index: usize);
+    fn clear_regions(&mut self); // Remove all regions
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +123,10 @@ impl<A: Allocator> VirtualMemory for LittleEndianVirtualMemory<A> {
 
     fn remove_region(&mut self, region_index: usize) {
         self.map.remove(region_index);
+    }
+
+    fn clear_regions(&mut self) {
+        self.map.clear();
     }
 }
 
@@ -205,7 +211,7 @@ where
     is_port: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[repr(packed)] // For double user pointers, a.k.a UserPointer<UserPointer<T>>
 pub struct UserPointer<T>
 where
     T: ?Sized,
@@ -275,9 +281,9 @@ impl<T> KernPointer<T>
 where
     T: Sized,
 {
-    pub unsafe fn offset(&self, o: isize) -> Self {
+    pub unsafe fn offset(&self, offset: isize) -> Self {
         // FIXME: Does offsetting a port "address" work the same way as offestting a real memory address?
-        Self { inner: self.inner.offset(o), is_port: self.is_port }
+        Self { inner: self.inner.offset(offset), is_port: self.is_port }
     }
 }
 
@@ -287,6 +293,10 @@ where
 {
     pub fn get_inner(&self) -> u64 {
         self.inner as u64
+    }
+
+    pub unsafe fn offset(&self, offset: isize) -> Self {
+        Self{inner: (self.inner as i64 + offset as i64) as u64, phantom_hold: PhantomData}
     }
 }
 
@@ -360,9 +370,8 @@ impl UserPointer<u8> {
         Some(unsafe { region.0.backing_storage.as_mut_ptr().add(region.1.offset_in_region) })
     }
 
-    pub fn try_as_ref<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<&'mem mut u8> {
-        let region = virtual_memory.try_map_mut(self.inner)?;
-        region.0.backing_storage.get_mut(region.1.offset_in_region)
+    pub fn try_as_val<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<u8> {
+        Some(unsafe{*self.try_as_ptr(virtual_memory)?})
     }
 }
 
@@ -377,11 +386,28 @@ impl UserPointer<usize> {
         Some(unsafe { region.0.backing_storage.as_mut_ptr().add(region.1.offset_in_region)  as *mut usize})
     }
 
-    pub fn try_as_ref<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<usize> {
-        let region = virtual_memory.try_map_mut(self.inner)?;
-        Some(usize::from_le_bytes(region.0.backing_storage.get_mut(region.1.offset_in_region..region.1.offset_in_region+core::mem::size_of::<usize>())?.try_into().unwrap()))
+    pub fn try_as_val<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<usize> {
+        Some(unsafe{*self.try_as_ptr(virtual_memory)?})
     }
 }
+
+
+impl UserPointer<u64> {
+    // SAFTEY: Constructors assume address is in correct space
+    pub unsafe fn from_mem(addr: u64) -> Self {
+        Self { inner: addr, phantom_hold: PhantomData }
+    }
+
+    pub fn try_as_ptr<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<*mut u64> {
+        let region = virtual_memory.try_map_mut(self.inner)?;
+        Some(unsafe { region.0.backing_storage.as_mut_ptr().add(region.1.offset_in_region)  as *mut u64})
+    }
+
+    pub fn try_as_val<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<u64> {
+        Some(unsafe{*self.try_as_ptr(virtual_memory)?})
+    }
+}
+
 
 impl UserPointer<[u8]> {
     // SAFETY: Constructors assume address is in correct space
@@ -389,13 +415,55 @@ impl UserPointer<[u8]> {
         Self { inner: addr, phantom_hold: PhantomData }
     }
 
-    pub fn try_as_ptr<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<*mut u8> {
-        let region = virtual_memory.try_map_mut(self.inner)?;
-        Some(unsafe { region.0.backing_storage.as_mut_ptr().add(region.1.offset_in_region * core::mem::size_of::<u8>()) })
+
+    pub fn try_as_ptr<'mem>(&self, virtual_memory: &'mem impl VirtualMemory) -> Option<*const u8> {
+        let region = virtual_memory.try_map(self.inner)?;
+        Some(unsafe { region.0.backing_storage.as_ptr().add(region.1.offset_in_region) as *const u8})
     }
 
-    pub fn try_as_ref<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory, count: usize) -> Option<&'mem mut [u8]> {
+    pub fn try_as_mut_ptr<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<*mut u8> {
         let region = virtual_memory.try_map_mut(self.inner)?;
-        Some(&mut region.0.backing_storage[region.1.offset_in_region..region.1.offset_in_region + count])
+        Some(unsafe { region.0.backing_storage.as_mut_ptr().add(region.1.offset_in_region) as *mut u8})
     }
+
+
+    pub fn try_as_mut<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory, count: usize) -> Option<&'mem mut [u8]> {
+        Some(unsafe{ core::slice::from_raw_parts_mut(self.try_as_mut_ptr(virtual_memory)?, count) })
+    }
+
+    pub fn try_as_ref<'mem>(&self, virtual_memory: &'mem impl VirtualMemory, count: usize) -> Option<&'mem [u8]> {
+        Some(unsafe{ core::slice::from_raw_parts(self.try_as_ptr(virtual_memory)?, count) })
+    }
+}
+
+impl UserPointer<[u64]> {
+    // SAFETY: Constructors assume address is in correct space
+    pub unsafe fn from_mem(addr: u64) -> Self {
+        Self { inner: addr, phantom_hold: PhantomData }
+    }
+
+    pub fn try_as_ptr<'mem>(&self, virtual_memory: &'mem impl VirtualMemory) -> Option<*const u64> {
+        let region = virtual_memory.try_map(self.inner)?;
+        Some(unsafe { region.0.backing_storage.as_ptr().add(region.1.offset_in_region) as *const u64})
+    }
+
+    pub fn try_as_mut_ptr<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<*mut u64> {
+        let region = virtual_memory.try_map_mut(self.inner)?;
+        Some(unsafe { region.0.backing_storage.as_mut_ptr().add(region.1.offset_in_region) as *mut u64})
+    }
+
+    pub fn try_as_mut<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory, count: usize) -> Option<&'mem mut [u64]> {
+        Some(unsafe{ core::slice::from_raw_parts_mut(self.try_as_mut_ptr(virtual_memory)?, count) })
+    }
+
+    pub fn try_as_ref<'mem>(&self, virtual_memory: &'mem impl VirtualMemory, count: usize) -> Option<&'mem [u64]> {
+        Some(unsafe{ core::slice::from_raw_parts(self.try_as_ptr(virtual_memory)?, count) })
+    }
+}
+
+
+pub fn cstr_user_pointer_to_str(ptr: UserPointer<[u8]>, virtual_memory: &impl VirtualMemory) -> Option<&str> {
+    let str_len = unsafe{ strlen(ptr.try_as_ptr(virtual_memory)? as *const core::ffi::c_char ) } as usize;
+    let str = ptr.try_as_ref(virtual_memory, str_len)?;
+    core::str::from_utf8(str).ok()
 }
