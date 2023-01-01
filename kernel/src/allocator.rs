@@ -185,10 +185,7 @@ impl BasicAlloc {
 
 
     pub unsafe fn realloc(&mut self, ptr: *mut u8, layout: core::alloc::Layout, new_size: usize) -> *mut u8 {
-        let new_layout = core::alloc::Layout::from_size_align(new_size, layout.align());
-        let new_layout = if let Ok(val) = new_layout {
-            val
-        } else {
+        let Ok(new_layout) = core::alloc::Layout::from_size_align(new_size, layout.align()) else {
             return null_mut();
         };
 

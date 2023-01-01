@@ -416,28 +416,22 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             actual_node.append_str(file);
                             file_node = Ok(actual_node);
                         }
-                        let file_node = if let Ok(val) = file_node {
-                            val
-                        } else {
+                        let Ok(file_node) = file_node else {
                             writeln!(TERMINAL.lock(), "Malformed source path: \"{}\"!", file).unwrap();
                             continue;
                         };
-                        let file_node = if let Some(val) = file_node.get_node() {
-                            val
-                        } else {
+
+                        let Some(file_node) = file_node.get_node() else {
                             writeln!(TERMINAL.lock(), "Source path: \"{}\" does not exist!", file).unwrap();
                             continue;
                         };
-                        let file_node = if let vfs::Node::File(val) = file_node {
-                            val
-                        } else {
+
+                        let vfs::Node::File(file_node) = file_node else {
                             writeln!(TERMINAL.lock(), "Source path: \"{}\" is not a file!", file).unwrap();
                             continue;
                         };
-                        let e2fs = ext2::Ext2FS::new(file_node, false);
-                        let e2fs = if let Some(val) = e2fs {
-                            val
-                        } else {
+
+                        let Some(e2fs) = ext2::Ext2FS::new(file_node, false) else {
                             writeln!(TERMINAL.lock(), "Source file does not contain a valid ext2 fs!").unwrap();
                             continue;
                         };
@@ -456,15 +450,13 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             actual_node.append_str(mntpoint);
                             mntpoint_node = Ok(actual_node);
                         }
-                        let mntpoint_node = if let Ok(val) = mntpoint_node {
-                            val
-                        } else {
+
+                        let Ok(mntpoint_node) = mntpoint_node else {
                             writeln!(TERMINAL.lock(), "Malformed mountpoint path!").unwrap();
                             continue;
                         };
-                        let mntpoint_node = if let Some(val) = mntpoint_node.get_rootfs_node() {
-                            val
-                        } else {
+
+                        let Some(mntpoint_node)= mntpoint_node.get_rootfs_node() else {
                             writeln!(TERMINAL.lock(), "Mountpoint should exist in vfs!").unwrap();
                             continue;
                         };
@@ -480,18 +472,17 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             actual_node.append_str(mntpoint);
                             mntpoint_node = Ok(actual_node);
                         }
-                        let mntpoint_node = if let Ok(val) = mntpoint_node {
-                            val
-                        } else {
+
+                        let Ok(mntpoint_node) = mntpoint_node else {
                             writeln!(TERMINAL.lock(), "Malformed mountpoint path!").unwrap();
                             continue;
                         };
-                        let mntpoint_node = if let Some(val) = mntpoint_node.get_rootfs_node() {
-                            val
-                        } else {
+
+                        let Some(mntpoint_node) = mntpoint_node.get_rootfs_node() else {
                             writeln!(TERMINAL.lock(), "Mountpoint should exist in vfs!").unwrap();
                             continue;
                         };
+
                         (*mntpoint_node).borrow_mut().mountpoint = None;
                     } else {
                         writeln!(TERMINAL.lock(), "Not enough arguments!").unwrap();
@@ -519,15 +510,11 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             };
 
                             let node = arg_path.map(|path| path.get_node());
-                            let node = if let Ok(val) = node {
-                                val
-                            } else {
+                            let Ok(node)= node else {
                                 writeln!(TERMINAL.lock(), "Invalid path!").unwrap();
                                 continue;
                             };
-                            let node = if let Some(val) = node {
-                                val
-                            } else {
+                            let Some(node) = node else {
                                 writeln!(TERMINAL.lock(), "Path doesn't exist!").unwrap();
                                 continue;
                             };
@@ -562,18 +549,14 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             actual_dir.append_str(name);
                             Ok(actual_dir)
                         };
-                        let mut arg_path = if let Ok(val) = arg_path {
-                            val
-                        } else {
+                        let Ok(mut arg_path) = arg_path else {
                             writeln!(TERMINAL.lock(), "Bad path!").unwrap();
                             continue;
                         };
                         let name = arg_path.last().to_owned();
                         arg_path.del_last();
 
-                        let node = if let Some(val) = arg_path.get_node() {
-                            val
-                        } else {
+                        let Some(node) = arg_path.get_node() else {
                             writeln!(TERMINAL.lock(), "Non-existant path!").unwrap();
                             continue;
                         };
@@ -638,33 +621,24 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             actual_dir.append_str(name);
                             Ok(actual_dir)
                         };
-                        let mut arg_path = if let Ok(val) = arg_path {
-                            val
-                        } else {
+                        let Ok(mut arg_path) = arg_path else {
                             writeln!(TERMINAL.lock(), "Bad path!").unwrap();
                             continue;
                         };
                         let file_name = arg_path.last().to_owned();
                         arg_path.del_last();
 
-                        let node = if let Some(val) = arg_path.get_node() {
-                            val
-                        } else {
+                        let Some(node) = arg_path.get_node() else {
                             writeln!(TERMINAL.lock(), "Non-existant path!").unwrap();
                             continue;
                         };
+                        
                         if let Node::Folder(folder) = node {
-                            let child = if let Some(val) =
-                                folder.borrow_mut().get_children().into_iter().find(|child| child.0 == file_name)
-                            {
-                                val.1
-                            } else {
+                            let Some((_, child)) = folder.borrow_mut().get_children().into_iter().find(|child| child.0 == file_name) else {
                                 writeln!(TERMINAL.lock(), "File doesn't exist in folder!").unwrap();
                                 continue;
                             };
-                            let child = if let Node::File(f) = child {
-                                f
-                            } else {
+                            let Node::File(child) = child else {
                                 writeln!(TERMINAL.lock(), "Not a file!").unwrap();
                                 continue;
                             };
@@ -695,37 +669,26 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         Err(())
                     };
 
-                    let executable_path = if let Ok(val) = executable_path {
-                        val
-                    } else {
+                    let Ok(executable_path) = executable_path else {
                         writeln!(TERMINAL.lock(), "Unrecognised command!").unwrap();
                         continue;
                     };
 
-                    let node = executable_path.get_node();
-                    let node = if let Some(val) = node {
-                        val
-                    } else {
+                    let Some(node) = executable_path.get_node() else {
                         writeln!(TERMINAL.lock(), "Invalid executable path!").unwrap();
                         continue;
                     };
                     
                     if let Node::File(executable) = node {
                         writeln!(TERMINAL.lock(), "Loading program, please wait ...").unwrap();
-                        let contents = executable.borrow().read(0, executable.borrow().get_size() as usize);
-                        let contents = if let Some(res) = contents {
-                            res
-                        } else {
+                        let Some(contents) = executable.borrow().read(0, executable.borrow().get_size() as usize) else {
                             writeln!(TERMINAL.lock(), "Failed to read executable!").unwrap();
                             continue;
                         };
 
                         writeln!(TERMINAL.lock(), "Parsing program, please wait ...").unwrap();
                         {
-                            let elf = elf::ElfFile::from_bytes(&contents);
-                            let elf = if let Some(res) = elf {
-                                res
-                            } else {
+                            let Some(elf) = elf::ElfFile::from_bytes(&contents) else {
                                 writeln!(TERMINAL.lock(), "Executable is not an elf file!").unwrap();
                                 continue;
                             };

@@ -461,6 +461,7 @@ impl UserPointer<[u64]> {
     }
 }
 
+pub const USERSPACE_NULL_PTR: u64 = unsafe{ core::mem::transmute(core::ptr::null_mut::<u8>()) };
 
 pub fn cstr_user_pointer_to_str(ptr: UserPointer<[u8]>, virtual_memory: &impl VirtualMemory) -> Option<&str> {
     let str_len = unsafe{ strlen(ptr.try_as_ptr(virtual_memory)? as *const core::ffi::c_char ) } as usize;

@@ -358,9 +358,7 @@ impl Ext2RawInode {
         // Get descriptor of last block in file and try to put new block there, if that fails, try descriptors next to it, until one succeds or all fails
         // If there are no allocated blocks use descriptor 0 and ones next to it.
         let get_appropriate_descriptor_index = || {
-            let last_data_block_number = if let Some(val) = self.get_last_allocated_data_block_number(fs) {
-                val
-            } else {
+            let Some(last_data_block_number) = self.get_last_allocated_data_block_number(fs) else {
                 return Some(0);
             };
 
@@ -466,9 +464,7 @@ impl Ext2RawInode {
         // IDK just allocate the indirect blocks next to the data blocks?
         // TODO: Is this really a good approach to this?, idk, i haven't profiled or tested anything jsut guessing
         let get_appropriate_descriptor_index = || {
-            let last_data_block_number = if let Some(val) = self.get_last_allocated_data_block_number(fs) {
-                val
-            } else {
+            let Some(last_data_block_number) = self.get_last_allocated_data_block_number(fs) else {
                 return Some(0);
             };
             fs.get_descriptor_index_of_block_number(self.read_data_block_pointer(last_data_block_number, fs)?)
@@ -583,9 +579,8 @@ impl Ext2RawInode {
                 if ind >= v.len() {
                     break;
                 }
-                let byte_to_write = if let Some(val) = iter.next() {
-                    val
-                } else {
+
+                let Some(byte_to_write) = iter.next() else {
                     break;
                 };
                 v[ind] = *byte_to_write;
@@ -754,10 +749,7 @@ pub struct Ext2Folder {
 
 impl Ext2Folder {
     fn get_entries(&self) -> Vec<(usize, Ext2DirectoryEntryHeader, alloc::string::String)> {
-        let raw_data = self.inode.read_bytes(0, self.inode.get_size() as usize, &*self.fs.borrow());
-        let raw_data = if let Some(val) = raw_data {
-            val
-        } else {
+        let Some(raw_data) = self.inode.read_bytes(0, self.inode.get_size() as usize, &*self.fs.borrow()) else {
             return Vec::new();
         };
         let mut cur_ind = 0;

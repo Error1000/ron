@@ -92,6 +92,10 @@ impl Path {
         self.inner.push_str(subnode);
     }
 
+    pub fn into_inner(self) -> String {
+        self.inner
+    }
+    
     pub fn get_node(&self) -> Option<Node> {
         let mut cur_node: Node = Node::Folder((**VFS_ROOT.lock()).clone() as Rc<RefCell<dyn IFolder>>);
         let mut cur_path: Path = Path::root();

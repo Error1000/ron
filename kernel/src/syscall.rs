@@ -1,18 +1,17 @@
 use core::{
     convert::{TryFrom, TryInto},
-    ptr::null_mut,
-    slice
+    ptr::null_mut
 };
 
 use alloc::{vec::Vec, string::String, borrow::ToOwned, collections::BTreeMap};
-use rlibc::{cstr::strlen, sys::O_RDONLY};
+use rlibc::sys::O_RDONLY;
 use rlibc::sys::SyscallNumber;
 
 use crate::{
     hio::KeyboardPacketType,
     program::{FdMapping, ProgramData, ProgramNode, Emulator, Program, ProgramState},
     ps2_8042::KEYBOARD_INPUT,
-    vfs,
+    vfs::{self, Path},
     virtmem::{self, UserPointer, VirtualMemory},
     UART, allocator::{ProgramBasicAlloc, self, BasicAlloc}, scheduler, emulator::SyscallCpuAction, elf::{ElfFile, elf_header},
 };
@@ -30,9 +29,7 @@ mod errno {
 pub fn syscall_linux_abi_entry_point(emu: &mut Emulator, prog_data: &mut ProgramData) -> SyscallCpuAction {
     // Source: man syscall
     let syscall_number = emu.read_reg(17 /* a7 */);
-    let syscall_number = if let Ok(val) = SyscallNumber::try_from(syscall_number as usize) {
-        val
-    } else {
+    let Ok(syscall_number) = SyscallNumber::try_from(syscall_number as usize) else {
         use core::fmt::Write;
         let _ = writeln!(UART.lock(), "Syscall number {}, is not implemented, ignoring!", syscall_number);
         return SyscallCpuAction::NONE;
@@ -181,8 +178,8 @@ fn exit(emu: &mut Emulator, prog_data: &mut ProgramData, exit_number: usize) {
 }
 
 fn write(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: UserPointer<[u8]>, count: usize) -> i32 {
-    let buf = if let Some(val) = user_buf.try_as_ref(&mut emu.memory, count) { val } else { return -1 };
-    let node_mapping = if let Some(Some(val)) = prog_data.fd_mapping.get(fd).copied() { val } else { return -1 };
+    let Some(buf) = user_buf.try_as_ref(&mut emu.memory, count) else { return -1 };
+    let Some(Some(node_mapping)) = prog_data.fd_mapping.get(fd).copied() else { return -1 };
 
     match node_mapping {
         FdMapping::Index(node_index) => {
@@ -208,9 +205,7 @@ fn write(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: U
                     }
                 }
 
-                let inc = if let Some(amnt) = (*f).borrow_mut().write(node.cursor, buf) {
-                    amnt
-                } else {
+                let Some(inc) = (*f).borrow_mut().write(node.cursor, buf) else {
                     return -1;
                 };
 
@@ -228,9 +223,7 @@ fn write(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: U
         FdMapping::Stdout | crate::program::FdMapping::Stderr => {
             use crate::TERMINAL;
             use core::fmt::Write;
-            let str_buf = if let Ok(val) = core::str::from_utf8(buf) {
-                val
-            } else {
+            let Ok(str_buf) = core::str::from_utf8(buf) else {
                 return -1;
             };
 
@@ -243,9 +236,10 @@ fn write(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: U
     }
 }
 
+
 fn read(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: UserPointer<[u8]>, count: usize) -> i32 {
-    let buf = if let Some(val) = user_buf.try_as_mut(&mut emu.memory, count) { val } else { return -1 };
-    let node_mapping = if let Some(Some(val)) = prog_data.fd_mapping.get(fd).copied() { val } else { return -1 };
+    let Some(buf) = user_buf.try_as_mut(&mut emu.memory, count) else { return -1 };
+    let Some(Some(node_mapping)) = prog_data.fd_mapping.get(fd).copied() else { return -1 };
 
     match node_mapping {
         FdMapping::Index(node_index) => {
@@ -308,7 +302,7 @@ fn read(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: Us
 }
 
 fn open(emu: &mut Emulator, prog_data: &mut ProgramData, pathname: virtmem::UserPointer<[u8]>, flags: usize) -> isize {
-    let path = if let Some(val) = virtmem::cstr_user_pointer_to_str(pathname, &emu.memory) { val } else { return -1 };
+    let Some(path) = virtmem::cstr_user_pointer_to_str(pathname, &emu.memory) else { return -1 };
     let path = if let Ok(val) = vfs::Path::try_from(path) { val } else { 
         // Maybe the pathname is relative to cwd
         let mut current = prog_data.cwd.clone();
@@ -317,7 +311,7 @@ fn open(emu: &mut Emulator, prog_data: &mut ProgramData, pathname: virtmem::User
     };
 
     // Get directory containing file
-    let parent_node = if let Some(val) = path.clone().del_last().get_node() { val } else { return -1 };
+    let Some(parent_node) = path.clone().del_last().get_node() else { return -1 };
     let parent_node = if let vfs::Node::Folder(val) = parent_node { val } else { return -1 };
 
     let node = {
@@ -365,7 +359,7 @@ fn open(emu: &mut Emulator, prog_data: &mut ProgramData, pathname: virtmem::User
 
 // source: man close
 fn close(prog_data: &mut ProgramData, fd: usize) -> isize {
-    let node_mapping = if let Some(Some(val)) = prog_data.fd_mapping.get(fd).copied() { val } else { return -1 };
+    let Some(Some(node_mapping)) = prog_data.fd_mapping.get(fd).copied() else { return -1 };
     match node_mapping {
         FdMapping::Index(node_index) => {
             // NOTE: If the node_index exists then so must the node so it's fine to unwrap
@@ -395,7 +389,7 @@ fn close(prog_data: &mut ProgramData, fd: usize) -> isize {
 }
 
 fn lseek(prog_data: &mut ProgramData, fd: usize, offset: i64, whence: usize) -> i64 {
-    let node_mapping = if let Some(Some(val)) = prog_data.fd_mapping.get(fd).copied() { val } else { return -1 };
+    let Some(Some(node_mapping)) = prog_data.fd_mapping.get(fd).copied() else { return -1 };
 
     match node_mapping {
         FdMapping::Index(node_index) => {
@@ -429,14 +423,9 @@ fn lseek(prog_data: &mut ProgramData, fd: usize, offset: i64, whence: usize) -> 
 }
 
 fn malloc(emu: &mut Emulator, prog_data: &mut ProgramData, size: usize) -> u64 {
-    let userspace_null_ptr: u64 = null_mut::<u8>() as u64;
-
     // We also allocate size_of::<usize>() bytes more than we are requested to, to store the size of the allocation
-    let allocation_info = core::alloc::Layout::from_size_align(size + core::mem::size_of::<usize>(), 8);
-    let allocation_info = if let Ok(val) = allocation_info {
-        val
-    } else {
-        return userspace_null_ptr;
+    let Ok(allocation_info) = core::alloc::Layout::from_size_align(size + core::mem::size_of::<usize>(), 8) else {
+        return virtmem::USERSPACE_NULL_PTR;
     };
 
     // Try to allocate physical space
@@ -451,7 +440,7 @@ fn malloc(emu: &mut Emulator, prog_data: &mut ProgramData, size: usize) -> u64 {
 
     // Allocate virtual space
     let virtual_allocation_ptr = prog_data.virtual_allocator.alloc(allocation_info) as u64;
-    if virtual_allocation_ptr == userspace_null_ptr { return userspace_null_ptr; }
+    if virtual_allocation_ptr == virtmem::USERSPACE_NULL_PTR { return virtmem::USERSPACE_NULL_PTR; }
 
     // Create mapping
     emu.memory.add_region(virtual_allocation_ptr, physical_allocation);
@@ -462,18 +451,12 @@ fn malloc(emu: &mut Emulator, prog_data: &mut ProgramData, size: usize) -> u64 {
 fn free(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64) {
 
     // Translate pointer from user space
-    let mapped_alloc = emu.memory.try_map_mut(virtual_ptr);
-    let mapped_alloc = if let Some(val) = mapped_alloc {
-        val
-    } else {
+    let Some(mapped_alloc) = emu.memory.try_map_mut(virtual_ptr) else {
         return;
     };
 
     let size = usize::from_le_bytes(mapped_alloc.0.backing_storage[0..core::mem::size_of::<usize>()].try_into().unwrap());
-    let allocation_info = core::alloc::Layout::from_size_align(size, 8);
-    let allocation_info = if let Ok(val) = allocation_info {
-        val
-    }else{
+    let Ok(allocation_info) = core::alloc::Layout::from_size_align(size, 8) else{
         return;
     };
 
@@ -484,25 +467,17 @@ fn free(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64) {
 }
 
 fn realloc(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64, new_size: usize) -> u64 {
-    let userspace_null_ptr: u64 = null_mut::<u8>() as u64;
-
     // Translate pointer from user space
-    let mapped_alloc = emu.memory.try_map_mut(virtual_ptr);
-    let mapped_alloc = if let Some(val) = mapped_alloc {
-        val
-    } else {
-        return userspace_null_ptr;
+    let Some(mapped_alloc) = emu.memory.try_map_mut(virtual_ptr) else {
+        return virtmem::USERSPACE_NULL_PTR;
     };
 
     let data: Vec<u8, &'static ProgramBasicAlloc> = mapped_alloc.0.backing_storage.clone();
     free(emu, prog_data, virtual_ptr);
     let new_virtual_ptr = malloc(emu, prog_data, new_size);
     // Translate pointer from user space
-    let new_mapped_alloc = emu.memory.try_map_mut(new_virtual_ptr);
-    let new_mapped_alloc = if let Some(val) = new_mapped_alloc {
-        val
-    } else {
-        return userspace_null_ptr;
+    let Some(new_mapped_alloc) = emu.memory.try_map_mut(new_virtual_ptr) else {
+        return virtmem::USERSPACE_NULL_PTR;
     };
     new_mapped_alloc.0.backing_storage = data;
     return new_virtual_ptr;
@@ -512,20 +487,16 @@ fn getcwd(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: virtmem:
     // On failure, these functions return NULL
     // Source: man getcwd
 
-    let userspace_null_ptr: u64 = null_mut::<u8>() as u64;
-
     // If the length of the absolute pathname of the current working
     // directory, including the terminating null byte, exceeds size
     // bytes, NULL is returned
     // Source: man getcwd
     if prog_data.cwd.len() + 1 > buf_size {
-        return userspace_null_ptr;
+        return virtmem::USERSPACE_NULL_PTR;
     }
 
-    let buf = if let Some(val) = virtual_ptr.try_as_mut(&mut emu.memory, buf_size) {
-        val
-    } else {
-        return userspace_null_ptr;
+    let Some(buf) = virtual_ptr.try_as_mut(&mut emu.memory, buf_size) else {
+        return virtmem::USERSPACE_NULL_PTR;
     };
 
     for (i, c) in prog_data.cwd.chars().enumerate() {
@@ -537,50 +508,39 @@ fn getcwd(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: virtmem:
 }
 
 fn fchdir(prog_data: &mut ProgramData, fd: usize) -> isize {
-    prog_data.cwd = if let Some(Some(node_mapping)) = prog_data.fd_mapping.get(fd).copied() {
-        match node_mapping {
-            FdMapping::Index(node_index) => {
-                let node = prog_data.open_nodes[node_index].as_mut().unwrap();
-                node.path.clone()
-            }
-            FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr => return -1,
-        }
-    } else {
+    let Some(Some(node_mapping)) = prog_data.fd_mapping.get(fd).copied() else {
         return -1;
     };
 
-    return 0;
+    match node_mapping {
+        FdMapping::Index(node_index) => {
+            let node = prog_data.open_nodes[node_index].as_mut().unwrap();
+            prog_data.cwd = node.path.clone();
+            return 0;
+        }
+        FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr => return -1,
+    }
 }
 
 fn getenv(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: virtmem::UserPointer<[u8]>) -> u64 {
-    let userspace_null_ptr: u64 = null_mut::<u8>() as u64;
-
     // The getenv() function returns a pointer to the value in the
     // environment, or NULL if there is no match.
     // Source: man getenv
 
-    let key = if let Some(val) = virtmem::cstr_user_pointer_to_str(virtual_ptr, &emu.memory){
-        val
-    } else {
-        return userspace_null_ptr;
+    let Some(key) = virtmem::cstr_user_pointer_to_str(virtual_ptr, &emu.memory) else {
+        return virtmem::USERSPACE_NULL_PTR;
     };
- 
 
     // Lookup the environment variable
-    let res = prog_data.env.get(key);
-    let res = if let Some(val) = res {
-        val
-    } else {
-        return userspace_null_ptr;
+    let Some(res) = prog_data.env.get(key) else {
+        return virtmem::USERSPACE_NULL_PTR;
     };
 
     return *res;
 }
 
 fn dup(prog_data: &mut ProgramData, oldfd: usize) -> isize {
-    let node_mapping = if let Some(Some(val)) = prog_data.fd_mapping.get_mut(oldfd).copied() {
-        val
-    } else {
+    let Some(Some(node_mapping)) = prog_data.fd_mapping.get_mut(oldfd).copied() else {
         return -1;
     };
 
@@ -600,9 +560,7 @@ fn dup(prog_data: &mut ProgramData, oldfd: usize) -> isize {
 }
 
 fn dup2(prog_data: &mut ProgramData, oldfd: usize, newfd: usize) -> isize {
-    let node_mapping = if let Some(Some(val)) = prog_data.fd_mapping.get_mut(oldfd).copied() {
-        val
-    } else {
+    let Some(Some(node_mapping)) = prog_data.fd_mapping.get_mut(oldfd).copied() else {
         return -1;
     };
 
@@ -662,10 +620,7 @@ fn waitpid(emu: &mut Emulator, prog_data: &mut ProgramData, pid: isize, wstatus:
     if let ProgramState::FINISHED_WAITING_FOR_CHILD_PROCESS(info) = prog_data.state {
         match info {
             Some(info) => {
-                let wstatus_ptr = wstatus.try_as_ptr(&mut emu.memory);
-                let wstatus_ptr = if let Some(val) = wstatus_ptr {
-                    val
-                }else{
+                let Some(wstatus_ptr) = wstatus.try_as_ptr(&mut emu.memory) else {
                     return Some(-1); // wstatus is pointing to an address that is not mapped
                 };
 
@@ -693,7 +648,21 @@ fn waitpid(emu: &mut Emulator, prog_data: &mut ProgramData, pid: isize, wstatus:
 }
 
 
-fn exec(emu: &mut Emulator, prog_data: &mut ProgramData, node: vfs::Node, node_path: vfs::Path, args: Vec<String>, envs: BTreeMap<String, String>) -> Result<(), isize> {
+
+// FIXME: Support elf interpreters
+mod exec_internal {
+
+use super::*;
+
+// Internal function that accepts internal args and env formats, used to carry out the actual replacement of the running program with the new program
+// NOTE: Supports interpreter scripts
+pub fn exec(emu: &mut Emulator, prog_data: &mut ProgramData, node: vfs::Node, node_path: vfs::Path, args: Vec<String>, envs: BTreeMap<String, String>, recursion_depth: usize) -> Result<(), isize> {
+    if recursion_depth > 100 {
+        // Too many recursive calls
+        // This can happen if for example the interpreter of a script file is itself
+        return  Err(-1);
+    }
+
     let file = if let vfs::Node::File(f) = &node {
         f.borrow()
     }else{
@@ -707,17 +676,12 @@ fn exec(emu: &mut Emulator, prog_data: &mut ProgramData, node: vfs::Node, node_p
     #[allow(unused)]
     let program_node = ();
 
-
-    // The fexecve() ignores the file offset of fd.
-    // Source: freebsd man fexecve (https://www.freebsd.org/cgi/man.cgi?query=fexecve&sektion=2&apropos=0&manpath=FreeBSD+10.0-RELEASE)
-    let file_bytes = if let Some(val) = file.read(0, file_size) {
-        val
-    } else {
+    let Some(file_bytes) = file.read(0, file_size) else {
         // Couldn't read file
         return Err(-1);
     };
 
-    if let Some(elf) = ElfFile::from_bytes(&file_bytes){
+    if let Some(elf) = ElfFile::from_bytes(&file_bytes) {
         if elf.header.instruction_set != elf_header::InstructionSet::RiscV {
             return Err(-1);
         }
@@ -759,19 +723,23 @@ fn exec(emu: &mut Emulator, prog_data: &mut ProgramData, node: vfs::Node, node_p
         // as they require certain addresses
         prog_data.virtual_allocator = BasicAlloc::from(lower_virt_addr as *mut u8, (u64::MAX - (PROGRAM_STACK_SIZE + lower_virt_addr)) as usize, true);
 
-        let args_ptrs_array_virtual_ptr = Program::load_args_into_virtual_memory(args.iter().map(|arg|arg.as_str()), args.len(), &mut emu.memory, &mut prog_data.virtual_allocator);
-        let args_ptrs_array_virtual_ptr = if let Some(val) = args_ptrs_array_virtual_ptr {
-            val
-        }else{
+
+        let Some(args_ptrs_array_virtual_ptr) = Program::load_args_into_virtual_memory(
+            args.iter().map(|arg|arg.as_str()), 
+            args.len(), 
+            &mut emu.memory, 
+            &mut prog_data.virtual_allocator
+        ) else {
             emu.halted = true;
             return Err(-1); // We need to return something so just return -1 even if it doesn't matter
         };
 
 
-        let prog_env = Program::load_env_into_virtual_memory(envs.iter().map(|(key, value)| (key.as_str(), value.as_str())), &mut emu.memory, &mut prog_data.virtual_allocator);
-        let prog_env = if let Some(val) = prog_env {
-            val
-        }else{
+        let Some(prog_env) = Program::load_env_into_virtual_memory(
+            envs.iter().map(|(key, value)| (key.as_str(), value.as_str())), 
+            &mut emu.memory, 
+            &mut prog_data.virtual_allocator
+        ) else {
             emu.halted = true;
             return Err(-1); // We need to return something so just return -1 even if it doesn't matter
         };
@@ -786,33 +754,91 @@ fn exec(emu: &mut Emulator, prog_data: &mut ProgramData, node: vfs::Node, node_p
         // We succeeded
         return Ok(());
     } else { 
-        // Maybe it's a shell script file
-        // Read until first \n to read first line
-        unimplemented!("Implement shell scripts!");
+        // Maybe it's a interpreter script file
+        // Check for #!
+        if file_bytes[0] == b'#' && file_bytes[1] == b'!' {
+            // Read until first '\n'  to read the first line
+            let Some(first_line) = file_bytes.split(|&byte| byte == b'\n').next() else {
+                return Err(-1);
+            };
+            
+            let Ok(first_line)  = core::str::from_utf8(first_line) else {
+                return Err(-1); // Error out if the first line is not valid utf-8
+            };
+
+            let first_line = first_line[2..].trim(); // Ignore #! and extraneous whitespace
+
+            let (interpreter, opt_arg) = if let Some((interpreter, opt_arg)) = first_line.split_once(' ') {
+                // We found a space so there is an optional argument
+                // NOTE: We parse the optional argument as everything after the interpreter so it may contain whitespace itself
+                (interpreter, Some(opt_arg))
+            }else{
+                // The entire line is just the interpreter
+                (first_line, None)
+            };
+            
+            let Ok(interpreter_path) = vfs::Path::try_from(interpreter) else { 
+                // Error out if interpreter is not an absolute path, as we will not accept searching for it in the PATH environment variable
+                return Err(-1) 
+            };
+        
+            let Some(interpreter_node) = interpreter_path.clone().get_node() else { return Err(-1) }; // Error out if the path is valid but the file doesn't exist
+        
+            // Now we must modify the args so that they contain opt_arg and the scripts's path
+            // NOTE: The environment stays the same, so the interpreter will get the environment provided to exec if the file is a script
+
+            
+            //  If the pathname argument of execve() specifies an interpreter
+            //  script, then interpreter will be invoked with the following
+            //  arguments:
+
+            //  interpreter [optional-arg] pathname arg...
+            // Source: man execve
+            
+            let mut new_args = Vec::new();
+            new_args.push(interpreter_path.clone().into_inner()); // the first argument for the interpreter is it's path
+            if let Some(interpreter_arg) = opt_arg { new_args.push(interpreter_arg.to_owned()); } // If the opt_arg exists the push it
+            new_args.push(node_path.into_inner()); // path to the file(script) provided to exec
+
+
+            // Finally append the arguments provided to exec, ignoring the first one which would have been argv[0]
+
+            // arg...  is the series of words pointed
+            // to by the argv argument of execve(), starting at argv[1].  Note
+            // that there is no way to get the argv[0] that was passed to the
+            // execve() call.
+            // Source: man execve
+
+            new_args.extend(args.into_iter().skip(1));
+
+            return exec(emu, prog_data, interpreter_node, interpreter_path, new_args, envs, recursion_depth+1);
+        }else{
+            // It's not an elf or a shell script, so error out
+            return Err(-1);
+        }
     }
 }
 
 
-
-fn parse_exec_args(virtual_memory: &impl VirtualMemory, argv: virtmem::UserPointer<[u64]>) -> Option<Vec<String>> {
+// Transform a user provided argv into an internal args representation
+pub fn parse_exec_args(virtual_memory: &impl VirtualMemory, argv: virtmem::UserPointer<[u64]>) -> Option<Vec<String>> {
     let mut parsed_args = Vec::new();
     // argv is a pointer to pointers, the end is found by finding the first null pointer
     let args_ref = {
         let mut argv_ptr = argv.try_as_ptr(virtual_memory)?; // Error if the argv pointer is not in mapped virtual space
         let mut args_len = 0;
-        while unsafe{*argv_ptr} != 0 {
-            argv_ptr = unsafe{argv_ptr.add(1)};
+        while unsafe{*argv_ptr} != virtmem::USERSPACE_NULL_PTR {
+            // NOTE: count is in units of T, so add 1 goes to the next pointer
+            // Source: https://doc.rust-lang.org/std/primitive.pointer.html#method.add
+            argv_ptr = unsafe{argv_ptr.add(1)}; 
             args_len += 1;
         }
-        argv.try_as_ref(virtual_memory, args_len)? // Error if we can't create a slice
+        argv.try_as_ref(virtual_memory, args_len)? // Error if we can't create a slice from it
     };
 
-    for virtual_arg_ptr in args_ref {
-        let arg = unsafe{ virtmem::UserPointer::<[u8]>::from_mem(*virtual_arg_ptr) };
-        let arg = virtmem::cstr_user_pointer_to_str(arg, virtual_memory);
-        let arg = if let Some(val) = arg {
-            val
-        }else{
+    for &virtual_arg_ptr in args_ref {
+        let arg = unsafe{ virtmem::UserPointer::<[u8]>::from_mem(virtual_arg_ptr) };
+        let Some(arg) = virtmem::cstr_user_pointer_to_str(arg, virtual_memory) else {
             // Couldn't parse part of argv as str, maybe it contains invalid utf8?
             return None;
         };
@@ -821,32 +847,31 @@ fn parse_exec_args(virtual_memory: &impl VirtualMemory, argv: virtmem::UserPoint
     Some(parsed_args)
 }
 
-fn parse_exec_env(virtual_memory: &impl VirtualMemory, envp: virtmem::UserPointer<[u64]>) -> Option<BTreeMap<String, String>> {
+// Transform a user provided envp into an internal env representation
+pub fn parse_exec_env(virtual_memory: &impl VirtualMemory, envp: virtmem::UserPointer<[u64]>) -> Option<BTreeMap<String, String>> {
     let mut parsed_env = BTreeMap::new();
     let envs_ref = {
         let mut envs_ptr = envp.try_as_ptr(virtual_memory)?; // Error if the argv pointer is not in mapped virtual space
         let mut envs_len = 0;
         while unsafe{*envs_ptr} != 0 {
+            // NOTE: count is in units of T, so add 1 goes to the next pointer
+            // Source: https://doc.rust-lang.org/std/primitive.pointer.html#method.add
             envs_ptr = unsafe{envs_ptr.add(1)};
             envs_len += 1;
         }
         envp.try_as_ref(virtual_memory, envs_len)? // Error if we can't create a slice
     };
 
-    for virtual_env_ptr in envs_ref {
-        let env_str = unsafe{ virtmem::UserPointer::<[u8]>::from_mem(*virtual_env_ptr) };
+    for &virtual_env_ptr in envs_ref {
+        let env_str = unsafe{ virtmem::UserPointer::<[u8]>::from_mem(virtual_env_ptr) };
         let env_str = virtmem::cstr_user_pointer_to_str(env_str, virtual_memory);
-        let env_str = if let Some(val) = env_str {
-            val
-        }else{
+        let Some(env_str) = env_str else {
             // Couldn't parse part of envp as str, maybe it contains invalid utf8?
             return None;
         };
 
-        let (name, value) = if let Some((name, value)) = env_str.split_once('=') {
-            (name, value)
-        }else{
-            // Malformed env value
+        let Some((name, value)) = env_str.split_once('=') else {
+            // Malformed env variable
             return None;
         };
 
@@ -856,13 +881,43 @@ fn parse_exec_env(virtual_memory: &impl VirtualMemory, envp: virtmem::UserPointe
     Some(parsed_env)
 }
 
+// FIXME: This accepts a null envp to mean inherit current program's environment, the behavior of a null envp is unspecified as far as i'm aware, so this is NON-STANDRD
+// envp quirk refers to the fact that it accepts null envp
+pub fn parse_argv_and_envp_with_envp_quirk(virtual_memory: &impl VirtualMemory, prog_data: &ProgramData, argv: virtmem::UserPointer<[u64]>, envp: virtmem::UserPointer<[u64]>) -> Option<(Vec<String>, BTreeMap<String, String>)> {
+    // Parse argv and envp
 
-// FIXME: This accepts a null envp to mean inherit current program's environment, the behavior of a null envp is unspecified as far as i'm aware
-// so this is NON-STANDRD
+    // WARNING: At the time of writing this comment, if argv is null 
+    //          then when parse_exec_args calls try_as_ptr it will try to map null 
+    //          which is not mapped in virtual space, so it will simply fail 
+    //          and return None which will cause us to return -1 due to ok_or_else
+    let parsed_args = parse_exec_args(virtual_memory, argv)?;
+
+    let parsed_env = if envp.get_inner() != virtmem::USERSPACE_NULL_PTR {
+        parse_exec_env(virtual_memory, envp)
+    }else{  
+        // If we get a null pointer, then reuse our current environment
+        // WARNING: NON-STANDARD
+        let mut env = BTreeMap::new();
+        for (name, &virtual_pointer_to_val) in &prog_data.env {
+            let val = unsafe{ virtmem::UserPointer::<[u8]>::from_mem(virtual_pointer_to_val)};
+            let Some(val) = virtmem::cstr_user_pointer_to_str(val, virtual_memory) else {
+                // *This program's* environment is malformed, invalid utf8?
+                return None;
+            };
+
+            env.insert(name.clone(), val.to_owned());
+        }
+
+        Some(env)
+    }?; // Error out if parse_exec_env fails to parse the environment provided
+
+    return Some((parsed_args, parsed_env));
+}
+
+}
+
 fn fexecve(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, argv: virtmem::UserPointer<[u64]>, envp: virtmem::UserPointer<[u64]>) -> Result<(), isize> {
-    let node_index = if let Some(Some(FdMapping::Index(val))) = prog_data.fd_mapping.get(fd).copied() {
-        val
-    }else{
+    let Some(Some(FdMapping::Index(node_index))) = prog_data.fd_mapping.get(fd).copied() else{
         // Causes invalid fds and fds that map to stdin, stdout and stderr to error out
         return Err(-1);
     };
@@ -873,111 +928,89 @@ fn fexecve(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, argv: vir
     // The file descriptor fd must be opened read-only
     //    (O_RDONLY) or with the O_PATH flag and the caller must have permission
     //    to execute the file that it refers to.
-    // source: man fexecve
+    // source: freebsd man fexecve
     if node.flags & O_RDONLY == 0 {
         return Err(-1);
     }
 
-    // Parse argv and envp
-    let parsed_args = parse_exec_args(&emu.memory, argv).ok_or_else(|| -1isize)?;
-    let parsed_env = if envp.get_inner() != 0 {
-        parse_exec_env(&emu.memory, envp)
-    }else{ 
-        let mut env = BTreeMap::new();
-        // If we get a null pointer reuse our current environment
-        // FIXME: NON-STANDARD
-        for (name, virtual_pointer_to_val) in &prog_data.env {
-            let val = unsafe{ virtmem::UserPointer::<[u8]>::from_mem(*virtual_pointer_to_val)};
-            let val = virtmem::cstr_user_pointer_to_str(val, &emu.memory);
-            let val = if let Some(val) = val {
-                val
-            }else{
-                // This program's environment is malformed, invalid utf8?
-                return Err(-1);
-            };
-
-            env.insert(name.clone(), val.to_owned());
-        }
-        Some(env)
-    }.ok_or_else(|| -1isize)?;
-    
-
-    exec(emu, prog_data, node.vfs_node, node.path, parsed_args, parsed_env)
+    let (parsed_args, parsed_env) = exec_internal::parse_argv_and_envp_with_envp_quirk(&emu.memory, prog_data, argv, envp)
+    .ok_or_else(|| -1isize)?;
+  
+    // Finally now that we have the parsed args and environment do the exec
+    exec_internal::exec(emu, prog_data, node.vfs_node, node.path, parsed_args, parsed_env, 0)
 }
 
 
-// FIXME: This accepts a null envp to mean inherit current program's environment, the behavior of a null envp is unspecified as far as i'm aware
-// so this is NON-STANDRD
+// FIXME: This accepts a null envp to mean inherit current program's environment, the behavior of a null envp is unspecified as far as i'm aware, so this is NON-STANDRD
 fn execve(emu: &mut Emulator, prog_data: &mut ProgramData, pathname: virtmem::UserPointer<[u8]>, argv: virtmem::UserPointer<[u64]>, envp: virtmem::UserPointer<[u64]>) -> Result<(), isize> {
-    let path = if let Some(val) = virtmem::cstr_user_pointer_to_str(pathname, &emu.memory) { val } else { return Err(-1) };
-    // NOTE: execve does not allow CWD relative paths
-    let path = if let Ok(val) = vfs::Path::try_from(path) { val } else { return Err(-1) };
+    let Some(path) = virtmem::cstr_user_pointer_to_str(pathname, &emu.memory) else { return Err(-1) };
+    let Ok(path) = vfs::Path::try_from(path) else { 
+        // NOTE: execve does not allow CWD relative paths or searching in the PATH environment variable so error out
+        return Err(-1) 
+    };
 
-    // Get directory containing file
-    let node = if let Some(val) = path.clone().get_node() { val } else { return Err(-1) };
+    let Some(node) = path.clone().get_node() else { return Err(-1) };
 
-    // Parse argv and envp
-    let parsed_args = parse_exec_args(&emu.memory, argv).ok_or_else(|| -1isize)?;
-    let parsed_env = if envp.get_inner() != 0 {
-        parse_exec_env(&emu.memory, envp)
-    }else{ 
-        let mut env = BTreeMap::new();
-        // If we get a null pointer reuse our current environment
-        // FIXME: NON-STANDARD
-        for (name, virtual_pointer_to_val) in &prog_data.env {
-            let val = unsafe{ virtmem::UserPointer::<[u8]>::from_mem(*virtual_pointer_to_val)};
-            let val = virtmem::cstr_user_pointer_to_str(val, &emu.memory);
-            let val = if let Some(val) = val {
-                val
-            }else{
-                // This program's environment is malformed, invalid utf8?
-                return Err(-1);
-            };
+    let (parsed_args, parsed_env) = exec_internal::parse_argv_and_envp_with_envp_quirk(&emu.memory, prog_data, argv, envp)
+    .ok_or_else(|| -1isize)?;
 
-            env.insert(name.clone(), val.to_owned());
-        }
-        Some(env)
-    }.ok_or_else(|| -1isize)?;
-    
-
-    exec(emu, prog_data, node, path, parsed_args, parsed_env)
+    // Finally now that we have the parsed args and environment do the exec
+    exec_internal::exec(emu, prog_data, node, path, parsed_args, parsed_env, 0)
 }
 
 
 fn execvpe(emu: &mut Emulator, prog_data: &mut ProgramData, file: virtmem::UserPointer<[u8]>, argv: virtmem::UserPointer<[u64]>, envp: virtmem::UserPointer<[u64]>) -> Result<(), isize> {
-    // Same as execve but if path lookup fails for file then it looks in the PATH env variable of the current program
-    let path = if let Some(val) = virtmem::cstr_user_pointer_to_str(file, &emu.memory) { val } else { return Err(-1) };
-    // NOTE: execvpe does not allow CWD relative paths
-    let path = if let Ok(val) = vfs::Path::try_from(path) { val } else { 
-        unimplemented!("Lookup the file in the PATH environment variable!");
+    // Same as execve but if path lookup fails for file then it looks in the PATH environment variable of the current program
+
+    let Some(file) = virtmem::cstr_user_pointer_to_str(file, &emu.memory) else { return Err(-1) };
+    let (path, node) = if let Some(path) = vfs::Path::try_from(file).ok() {
+        (Some(path.clone()), path.get_node())
+    }else{
+        (None, None)
     };
 
-    // Get directory containing file
-    let node = if let Some(val) = path.clone().get_node() { val } else { return Err(-1); };
+    // If both the path and hte node are valid after just trying the file as an absolute path then return them else do PATH environment variable lookup
+    let (path, node) = if let (Some(path), Some(node)) = (path, node) { (path, node) } else {
+        // NOTE: execvpe does not allow CWD relative paths, but does allow lookup in the PATH environment variable
+        // NOTE: We only get here if we couldn't parse the file as an absolute path
 
-    // Parse argv and envp
-    let parsed_args = parse_exec_args(&emu.memory, argv).ok_or_else(|| -1isize)?;
-    let parsed_env = if envp.get_inner() != 0 {
-        parse_exec_env(&emu.memory, envp)
-    }else{ 
-        let mut env = BTreeMap::new();
-        // If we get a null pointer reuse our current environment
-        // FIXME: NON-STANDARD
-        for (name, virtual_pointer_to_val) in &prog_data.env {
-            let val = unsafe{ virtmem::UserPointer::<[u8]>::from_mem(*virtual_pointer_to_val)};
-            let val = virtmem::cstr_user_pointer_to_str(val, &emu.memory);
-            let val = if let Some(val) = val {
-                val
-            }else{
-                // This program's environment is malformed, invalid utf8?
-                return Err(-1);
+        // Get *our* PATH environment variable
+        let Some(&path_value) = prog_data.env.get("PATH") else {
+            return Err(-1); // file is not an absolute path and PATH variable doesn't exist
+        };
+        
+        let path_value = unsafe{virtmem::UserPointer::<[u8]>::from_mem(path_value)};
+        let Some(path_value) = virtmem::cstr_user_pointer_to_str(path_value, &emu.memory) else {
+            return Err(-1); // PATH environment variable value is not a valid utf-8 string
+        };
+
+        let mut found = None;
+        
+        // PATH environment variable has the format /a/b:/c/d:/l/m
+        for path in path_value.split(':') {
+            let Ok(mut path) = Path::try_from(path) else {
+                continue; // Ignore malformed paths in the PATH environment variable
             };
 
-            env.insert(name.clone(), val.to_owned());
-        }
-        Some(env)
-    }.ok_or_else(|| -1isize)?;
-    
+            // Try it out
+            path.append_str(file);
 
-    exec(emu, prog_data, node, path, parsed_args, parsed_env)
+            if let Some(node) = path.clone().get_node() {
+                found = Some((path, node));
+                break;
+            }
+        }
+
+        let Some(found) = found else {
+            return Err(-1); // If we couldn't find the file even after PATH lookup then error out
+        };
+
+        found
+    };
+
+    let (parsed_args, parsed_env) = exec_internal::parse_argv_and_envp_with_envp_quirk(&emu.memory, prog_data, argv, envp)
+    .ok_or_else(|| -1isize)?;
+
+    exec_internal::exec(emu, prog_data, node, path, parsed_args, parsed_env, 0)
 }
+
