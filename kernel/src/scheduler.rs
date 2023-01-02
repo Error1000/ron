@@ -1,11 +1,11 @@
-use crate::{Mutex, primitives::{LazyInitialised, MutexGuard}, program::{Program, ProgramState, WaitInformation}, UART};
+use crate::{Mutex, primitives::{LazyInitialised, MutexGuard}, process::{Process, ProcessState, WaitInformation}, UART};
 use alloc::vec::Vec;
 
-static TASK_LIST: Mutex<LazyInitialised<Vec<Option<Program>>>> = Mutex::from(LazyInitialised::uninit());
+static TASK_LIST: Mutex<LazyInitialised<Vec<Option<Process>>>> = Mutex::from(LazyInitialised::uninit());
 
 // Because you can't otherwise create tasks during a tick, which a task might want to do if it, for eg., forks
 static NUMBER_OF_TASKS: Mutex<LazyInitialised<usize>> = Mutex::from(LazyInitialised::uninit());
-static NEW_TASK_LIST: Mutex<LazyInitialised<Vec<Option<Program>>>> = Mutex::from(LazyInitialised::uninit());
+static NEW_TASK_LIST: Mutex<LazyInitialised<Vec<Option<Process>>>> = Mutex::from(LazyInitialised::uninit());
 
 pub fn init() {
     TASK_LIST.lock().set(Vec::new());
@@ -14,7 +14,7 @@ pub fn init() {
 }
 
 // Returns: The new processes pid
-pub fn new_task(mut program:  Program) -> usize {
+pub fn new_task(mut program:  Process) -> usize {
     let mut list = NEW_TASK_LIST.lock();
     let new_pid = NUMBER_OF_TASKS.lock().clone();
     program.data.pid = Some(new_pid);
@@ -23,7 +23,7 @@ pub fn new_task(mut program:  Program) -> usize {
     new_pid
 }
 
-fn move_new_tasks_into_list(list: &mut MutexGuard<LazyInitialised<Vec<Option<Program>>>>) {
+fn move_new_tasks_into_list(list: &mut MutexGuard<LazyInitialised<Vec<Option<Process>>>>) {
     let mut new_list = NEW_TASK_LIST.lock();
     while let Some(p) = new_list.pop() { list.push(p); }
     **NUMBER_OF_TASKS.lock() = list.len();
@@ -49,20 +49,21 @@ pub fn tick() -> bool {
         // SAFTEY: list[i].unwrap() is guaranteed to work because of the if above
 
         match list[i].as_ref().unwrap().data.state {
-            ProgramState::RUNNING | crate::program::ProgramState::RUNNING_NEW_CHILD_JUST_FORKED  | ProgramState::FINISHED_WAITING_FOR_CHILD_PROCESS(_) => {
+            ProcessState::RUNNING | crate::process::ProcessState::RUNNING_NEW_CHILD_JUST_FORKED  | ProcessState::FINISHED_WAITING_FOR_CHILD_PROCESS(_) => {
                 let program = list[i].as_mut().unwrap();
-                if program.tick().is_none() { // Program ended
+                if program.tick().is_none() { // Program ended due to illegal instruction or another type of exception
+                    // FIXME: Should use SIGILL when i get around to implementing signals
                     if program.data.parent_pid != None { // If we are a child we don't want to be deallocated until the parent acknowledges us
-                        program.data.state = ProgramState::TERMINATED_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT(program.data.exit_code.unwrap());
+                        program.data.state = ProcessState::TERMINATED_DUE_TO_ILLEGAL_INSTRUCTION_WAITING_TO_BE_DEALLOCATED;
                     } else {
-                        program.data.state = ProgramState::TERMINATED_WAITING_TO_BE_DEALLOCATED(program.data.exit_code.unwrap());
+                        program.data.state = ProcessState::TERMINATED_DUE_TO_ILLEGAL_INSTRUCTION_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT;
                     }
                 }
                     
                 move_new_tasks_into_list(&mut list);
             }
 
-            ProgramState::WAITING_FOR_CHILD_PROCESS(cpid) => {
+            ProcessState::WAITING_FOR_CHILD_PROCESS{cpid} => {
                 // A state change is considered to
                 // be: the child terminated; the child was stopped by a signal; or
                 // the child was resumed by a signal.
@@ -75,9 +76,9 @@ pub fn tick() -> bool {
                 if let Some(cpid) = cpid { // We are waiting for a specific process
                     if let Some(Some(child)) = list.get_mut(cpid) {
                         if child.data.parent_pid.unwrap() == our_pid {
-                            if let ProgramState::TERMINATED_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT(exit_code) = child.data.state {
+                            if let ProcessState::TERMINATED_NORMALLY_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT{exit_code} = child.data.state {
                                 state_change_of_child = Some(WaitInformation{cpid: child.data.pid.unwrap(), exit_code});
-                                child.data.state = ProgramState::TERMINATED_WAITING_TO_BE_DEALLOCATED(exit_code);
+                                child.data.state = ProcessState::TERMINATED_NORMALLY_WAITING_TO_BE_DEALLOCATED{exit_code};
                             }
                         }else{
                             waiting_is_invalid = true;
@@ -91,9 +92,9 @@ pub fn tick() -> bool {
                         // Search for procceses that are children waiting, and their parent is us
                         if p.data.parent_pid == Some(our_pid) {
                             waiting_is_invalid = false;
-                            if let ProgramState::TERMINATED_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT(exit_code) = p.data.state {
+                            if let ProcessState::TERMINATED_NORMALLY_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT{exit_code} = p.data.state {
                                 state_change_of_child =  Some(WaitInformation{cpid: p.data.pid.unwrap(), exit_code});
-                                p.data.state = ProgramState::TERMINATED_WAITING_TO_BE_DEALLOCATED(exit_code);
+                                p.data.state = ProcessState::TERMINATED_NORMALLY_WAITING_TO_BE_DEALLOCATED{exit_code};
                                 break;
                             }
                         }
@@ -103,15 +104,15 @@ pub fn tick() -> bool {
                 }
                   
                 if let Some(info) = state_change_of_child {
-                    list[i].as_mut().unwrap().data.state = ProgramState::FINISHED_WAITING_FOR_CHILD_PROCESS(Some(info));
+                    list[i].as_mut().unwrap().data.state = ProcessState::FINISHED_WAITING_FOR_CHILD_PROCESS(Some(info));
                 }else if waiting_is_invalid {
-                    list[i].as_mut().unwrap().data.state = ProgramState::FINISHED_WAITING_FOR_CHILD_PROCESS(None);
+                    list[i].as_mut().unwrap().data.state = ProcessState::FINISHED_WAITING_FOR_CHILD_PROCESS(None);
                 }else{
                     // We still need to wait more
                 }
             }
 
-            ProgramState::TERMINATED_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT(exit_code) => {
+            ProcessState::TERMINATED_NORMALLY_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT{exit_code} => {
                 // Check to see if we have been orphaned
                 let parents_pid = list[i].as_ref().unwrap().data.parent_pid.unwrap();
                 let parent_exists = list.get_mut(parents_pid).map(|p|p.is_some()).unwrap_or(false);
@@ -119,14 +120,35 @@ pub fn tick() -> bool {
                     // FIXME: Implement adoption properly
                     use core::fmt::Write;
                     writeln!(UART.lock(), "Child with pid: {} has been orphaned!", list[i].as_ref().unwrap().data.pid.unwrap()).unwrap();
-                    // For now just switch to TERMINATED_WAITING_TO_BE_DEALLOCATED
-                    list[i].as_mut().unwrap().data.state = ProgramState::TERMINATED_WAITING_TO_BE_DEALLOCATED(exit_code);
+                    // For now just switch to TERMINATED_NORMALLY_WAITING_TO_BE_DEALLOCATED
+                    list[i].as_mut().unwrap().data.state = ProcessState::TERMINATED_NORMALLY_WAITING_TO_BE_DEALLOCATED{exit_code};
                 }
             }
 
-            ProgramState::TERMINATED_WAITING_TO_BE_DEALLOCATED(_) => {
+            ProcessState::TERMINATED_DUE_TO_ILLEGAL_INSTRUCTION_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT => {
+                // Check to see if we have been orphaned
+                let parents_pid = list[i].as_ref().unwrap().data.parent_pid.unwrap();
+                let parent_exists = list.get_mut(parents_pid).map(|p|p.is_some()).unwrap_or(false);
+                if !parent_exists {
+                    // FIXME: Implement adoption properly
+                    use core::fmt::Write;
+                    writeln!(UART.lock(), "Child with pid: {} has been orphaned!", list[i].as_ref().unwrap().data.pid.unwrap()).unwrap();
+                    // For now just switch to TERMINATED_DUE_TO_ILLEGAL_INSTRUCTION_WAITING_TO_BE_DEALLOCATED
+                    list[i].as_mut().unwrap().data.state = ProcessState::TERMINATED_DUE_TO_ILLEGAL_INSTRUCTION_WAITING_TO_BE_DEALLOCATED;
+                }
+            }
+
+            ProcessState::TERMINATED_NORMALLY_WAITING_TO_BE_DEALLOCATED{exit_code: _} => {
                 use core::fmt::Write;
-                writeln!(UART.lock(), "State after program ended: {:?}", list[i].as_ref().unwrap()).unwrap();
+                writeln!(UART.lock(), "State after program ended normally: {:?}", list[i].as_ref().unwrap()).unwrap();
+                list[i] = None;
+                // Drain None's if it wouldn't affect the indices of elements that are Some
+                while list.last().map(|val|val.is_none()).unwrap_or(false) { list.pop(); }
+            }
+
+            ProcessState::TERMINATED_DUE_TO_ILLEGAL_INSTRUCTION_WAITING_TO_BE_DEALLOCATED => {
+                use core::fmt::Write;
+                writeln!(UART.lock(), "State after program ended due to illegal instruction: {:?}", list[i].as_ref().unwrap()).unwrap();
                 list[i] = None;
                 // Drain None's if it wouldn't affect the indices of elements that are Some
                 while list.last().map(|val|val.is_none()).unwrap_or(false) { list.pop(); }

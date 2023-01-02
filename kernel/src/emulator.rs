@@ -740,7 +740,7 @@ mod riscv_instruction {
 
 use riscv_instruction::*;
 
-use crate::program::ProgramData;
+use crate::process::ProcessData;
 
 // NOTE: Does not support T's bigger than 256-bits wide
 pub fn sign_extend<T, U>(val: T) -> U
@@ -782,10 +782,12 @@ where
 // FIXME: Currently some illegal instructions don't halt the cpu, instead having the effect of a nop
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum SyscallCpuAction {
+pub enum CpuAction {
     NONE,
     #[allow(non_camel_case_types)]
-    REPEAT_SYSCALL
+    REPEAT_INSTRUCTION,
+    #[allow(non_camel_case_types)]
+    RAISE_EXCEPTION
 }
 
 #[derive(Clone)]
@@ -796,8 +798,7 @@ where
     program_counter: u64,
     registers: [u64; 31],
     pub memory: MemType,
-    pub halted: bool,
-    syscall: fn(&mut Self, &mut ProgramData) -> SyscallCpuAction,
+    syscall: fn(&mut Self, &mut ProcessData) -> CpuAction,
 }
 
 impl<MemType> Debug for Riscv64Cpu<MemType>
@@ -808,7 +809,6 @@ where
         f.debug_struct("Riscv64Cpu")
             .field("program_counter", &self.program_counter)
             .field("registers", &self.registers)
-            .field("halted", &self.halted)
             .finish()
     }
 }
@@ -817,8 +817,8 @@ impl<MemType> Riscv64Cpu<MemType>
 where
     MemType: EmulatorMemory,
 {
-    pub fn from(mem: MemType, start_address: u64, syscall: fn(&mut Self, &mut ProgramData) -> SyscallCpuAction) -> Riscv64Cpu<MemType> {
-        Riscv64Cpu { program_counter: start_address, registers: [0u64; 31], memory: mem, halted: false, syscall }
+    pub fn from(mem: MemType, start_address: u64, syscall: fn(&mut Self, &mut ProcessData) -> CpuAction) -> Riscv64Cpu<MemType> {
+        Riscv64Cpu { program_counter: start_address, registers: [0u64; 31], memory: mem, syscall }
     }
 
     pub fn reset_registers(&mut self, start_address: u64) {
@@ -841,12 +841,8 @@ where
     }
 
     // Run one clock cycle
-    // Note: Returns None when ticking fails ( for example maybe instruction parsing failed, or maybe the cpu is halted )
-    pub fn tick(&mut self, prog: &mut ProgramData) -> Option<()> {
-        if self.halted {
-            return None;
-        }
-
+    // Note: Returns None when ticking fails ( for example maybe instruction parsing failed, or maybe the cpu raised an exception )
+    pub fn tick(&mut self, prog: &mut ProcessData) -> Option<()> {
         let mut instruction = self.memory.read_u32_le(self.program_counter);
         let is_compressed = (instruction & 0b11) != 0b11;
         let inst_size = if is_compressed { core::mem::size_of::<u16>() as u64 } else { core::mem::size_of::<u32>() as u64 };
@@ -1416,11 +1412,11 @@ where
         // Reference: Issue #92, https://github.com/hashmismatch/packed_struct.rs/issues/92
         // So therefore i am instead using big endian for parsing instructions
         let opcode: RiscvOpcode = RiscvOpcode::from_primitive((instruction & 0b111_1111) as u8)?;
-        let mut syscall_action = SyscallCpuAction::NONE;
+        let mut action = CpuAction::NONE;
         match opcode.get_type() {
             RiscvInstType::RType => self.execute_rtype_inst(RiscvRTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?),
             RiscvInstType::IType => {
-                syscall_action = self.execute_itype_inst(RiscvITypeInstruction::unpack(&instruction.to_be_bytes()).ok()?, inst_size, prog);
+                action = self.execute_itype_inst(RiscvITypeInstruction::unpack(&instruction.to_be_bytes()).ok()?, inst_size, prog);
             }
             RiscvInstType::SType => self.execute_stype_inst(RiscvSTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?),
             RiscvInstType::BType => {
@@ -1428,12 +1424,16 @@ where
             }
             RiscvInstType::UType => self.execute_utype_inst(RiscvUTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?),
             RiscvInstType::JType => {
-                self.execute_jtype_inst(RiscvJTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?, inst_size)
+                action = self.execute_jtype_inst(RiscvJTypeInstruction::unpack(&instruction.to_be_bytes()).ok()?, inst_size);
             }
         }
 
-        if syscall_action != SyscallCpuAction::REPEAT_SYSCALL {
+        if action != CpuAction::REPEAT_INSTRUCTION {
             self.program_counter += inst_size;
+        }
+
+        if action == CpuAction::RAISE_EXCEPTION {
+            return None;
         }
 
         Some(())
@@ -1661,7 +1661,7 @@ where
         }
     }
 
-    fn execute_itype_inst(&mut self, inst: RiscvITypeInstruction, inst_size: u64, prog_data: &mut ProgramData) -> SyscallCpuAction {
+    fn execute_itype_inst(&mut self, inst: RiscvITypeInstruction, inst_size: u64, proc_data: &mut ProcessData) -> CpuAction {
         match (inst.opcode, inst.funct3) {
             (RiscvOpcode::OPIMM, 0b000) => {
                 // ADDI
@@ -1776,8 +1776,8 @@ where
                 if new_program_counter == self.program_counter {
                     use crate::UART;
                     use core::fmt::Write;
-                    writeln!(UART.lock(), "Detected infinite loop, halting cpu!").unwrap();
-                    self.halted = true;
+                    writeln!(UART.lock(), "Detected infinite loop, raising exception!").unwrap();
+                    return CpuAction::RAISE_EXCEPTION;
                 }
                 // NOTE: Order is important we cannot store to rd before calculating because rs1 might be rd
                 self.write_reg(inst.rd, self.program_counter + inst_size); // For C(compressed) instructions, because we exapnd them to full instructions
@@ -1841,13 +1841,13 @@ where
             (RiscvOpcode::SYSTEM, _) => {
                 if inst.parse_imm() == 0 {
                     // ECALL
-                    return (self.syscall)(self, prog_data);
+                    return (self.syscall)(self, proc_data);
                 }
             }
             _ => (),
         }
 
-        SyscallCpuAction::NONE
+        CpuAction::NONE
     }
 
     fn execute_stype_inst(&mut self, inst: RiscvSTypeInstruction) {
@@ -1964,7 +1964,7 @@ where
         }
     }
 
-    fn execute_jtype_inst(&mut self, inst: RiscvJTypeInstruction, inst_size: u64) {
+    fn execute_jtype_inst(&mut self, inst: RiscvJTypeInstruction, inst_size: u64) -> CpuAction {
         match inst.opcode {
             RiscvOpcode::JAL => {
                 // The jump and link (JAL) instruction uses the J-type format, where the J-immediate encodes a
@@ -1975,8 +1975,8 @@ where
                 if new_program_counter == self.program_counter {
                     use crate::UART;
                     use core::fmt::Write;
-                    writeln!(UART.lock(), "Detected infinite loop, halting cpu!").unwrap();
-                    self.halted = true;
+                    writeln!(UART.lock(), "Detected infinite loop, raising excpetion cpu!").unwrap();
+                    return CpuAction::RAISE_EXCEPTION;
                 }
 
                 // NOTE: Although order here is not important since calculating the new program counter does not involve reading a register, for consistency we still do it in the same order as JALR
@@ -1987,5 +1987,7 @@ where
             }
             _ => (),
         }
+
+        return CpuAction::NONE;
     }
 }

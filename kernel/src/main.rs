@@ -23,7 +23,7 @@ use allocator::PROGRAM_ALLOCATOR;
 use ata::{ATABus, ATADevice, ATADeviceFile};
 use char_device::CharDevice;
 use primitives::{LazyInitialised, Mutex};
-use program::Program;
+use process::Process;
 use ps2_8042::KEYBOARD_INPUT;
 use terminal::{Terminal, TERMINAL};
 use vfs::{IFile, IFolder, Node, RootFSNode};
@@ -86,7 +86,7 @@ mod hio;
 mod multiboot;
 mod partitions;
 mod primitives;
-mod program;
+mod process;
 mod scheduler;
 mod ps2_8042;
 mod syscall;
@@ -705,7 +705,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         program_env.insert("HOME", "/");
 
                         let program =
-                            if let Some(p) = Program::from_elf(&contents, &bufs.split(' ').collect::<Vec<&str>>(), cur_dir.clone(), &program_env) {
+                            if let Some(p) = Process::from_elf(&contents, &bufs.split(' ').collect::<Vec<&str>>(), cur_dir.clone(), &program_env) {
                                 p
                             } else {
                                 writeln!(TERMINAL.lock(), "Failed to load elf file into program!").unwrap();

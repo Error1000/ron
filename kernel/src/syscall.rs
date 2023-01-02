@@ -9,11 +9,11 @@ use rlibc::sys::SyscallNumber;
 
 use crate::{
     hio::KeyboardPacketType,
-    program::{FdMapping, ProgramData, ProgramNode, Emulator, Program, ProgramState},
+    process::{FdMapping, ProcessData, ProcessNode, Emulator, Process, ProcessState},
     ps2_8042::KEYBOARD_INPUT,
     vfs::{self, Path},
     virtmem::{self, UserPointer, VirtualMemory},
-    UART, allocator::{ProgramBasicAlloc, self, BasicAlloc}, scheduler, emulator::SyscallCpuAction, elf::{ElfFile, elf_header},
+    UART, allocator::{ProgramBasicAlloc, self, BasicAlloc}, scheduler, emulator::CpuAction, elf::{ElfFile, elf_header},
 };
 
 /* TODO: Add errno to program
@@ -26,13 +26,13 @@ mod errno {
     pub const EISDIR: isize = -6;
 }*/
 
-pub fn syscall_entry_point(emu: &mut Emulator, prog_data: &mut ProgramData) -> SyscallCpuAction {
+pub fn syscall_entry_point(emu: &mut Emulator, proc_data: &mut ProcessData) -> CpuAction {
     // Source: man syscall
     let syscall_number = emu.read_reg(17 /* a7 */);
     let Ok(syscall_number) = SyscallNumber::try_from(syscall_number as usize) else {
         use core::fmt::Write;
         let _ = writeln!(UART.lock(), "Syscall number {}, is not implemented, ignoring!", syscall_number);
-        return SyscallCpuAction::NONE;
+        return CpuAction::NONE;
     };
 
     // a0-a5
@@ -46,13 +46,12 @@ pub fn syscall_entry_point(emu: &mut Emulator, prog_data: &mut ProgramData) -> S
     let return_value = |val, emu: &mut Emulator| emu.write_reg(10, val);
 
     match syscall_number {
-        SyscallNumber::Exit => exit(emu, prog_data, argument_1() as usize),
+        SyscallNumber::Exit => exit( proc_data, argument_1() as usize),
 
-        // SAFETY: Argument 2 comes from the program itself so it is in its address space
         SyscallNumber::Read => {
             let val = read(
                 emu,
-                prog_data,
+                proc_data,
                 argument_1() as usize,
                 unsafe { UserPointer::<[u8]>::from_mem(argument_2()) },
                 argument_3() as usize,
@@ -60,11 +59,10 @@ pub fn syscall_entry_point(emu: &mut Emulator, prog_data: &mut ProgramData) -> S
             return_value(val as i64 as u64, emu);
         }
 
-        // SAFETY: Argument 2 comes from the program itself so it is in its address space
         SyscallNumber::Write => {
             let val = write(
                 emu,
-                prog_data,
+                proc_data,
                 argument_1() as usize,
                 unsafe { virtmem::UserPointer::<[u8]>::from_mem(argument_2()) },
                 argument_3() as usize,
@@ -72,119 +70,123 @@ pub fn syscall_entry_point(emu: &mut Emulator, prog_data: &mut ProgramData) -> S
             return_value(val as i64 as u64, emu);
         }
 
-        // SAFETY: Argument 1 comes from the program itself so it is in its address space
         SyscallNumber::Open => {
             let val =
-                open(emu, prog_data, unsafe { virtmem::UserPointer::<[u8]>::from_mem(argument_1()) }, argument_2() as usize);
+                open(emu, proc_data, unsafe { virtmem::UserPointer::<[u8]>::from_mem(argument_1()) }, argument_2() as usize);
             return_value(val as u64, emu);
         }
 
         SyscallNumber::Close => {
-            let val = close(prog_data, argument_1() as usize);
+            let val = close(proc_data, argument_1() as usize);
             return_value(val as u64, emu);
         }
 
         SyscallNumber::Malloc => {
-            let val = malloc(emu, prog_data, argument_1() as usize);
+            let val = malloc(emu, proc_data, argument_1() as usize);
             return_value(val as u64, emu);
         }
 
-        SyscallNumber::Free => free(emu, prog_data, argument_1()),
+        SyscallNumber::Free => free(emu, proc_data, argument_1()),
 
         SyscallNumber::LSeek => {
-            let val = lseek(prog_data, argument_1() as usize, argument_2() as i64, argument_3() as usize);
+            let val = lseek(proc_data, argument_1() as usize, argument_2() as i64, argument_3() as usize);
             return_value(val as u64, emu);
         }
 
         SyscallNumber::Realloc => {
-            let val = realloc(emu, prog_data, argument_1(), argument_2() as usize);
+            let val = realloc(emu, proc_data, argument_1(), argument_2() as usize);
             return_value(val as u64, emu);
         }
 
-        // SAFETY: Argument 1 comes from the program itself so it is in its address space
         SyscallNumber::Getcwd => {
             let val =
-                getcwd(emu, prog_data, unsafe { virtmem::UserPointer::<[u8]>::from_mem(argument_1()) }, argument_2() as usize);
+                getcwd(emu, proc_data, unsafe { virtmem::UserPointer::<[u8]>::from_mem(argument_1()) }, argument_2() as usize);
             return_value(val as u64, emu);
         }
 
-        // SAFETY: Argument 1 comes from the program itself so it is in its address space
         SyscallNumber::Getenv => {
-            let val = getenv(emu, prog_data, unsafe { virtmem::UserPointer::<[u8]>::from_mem(argument_1()) });
+            let val = getenv(emu, proc_data, unsafe { virtmem::UserPointer::<[u8]>::from_mem(argument_1()) });
             return_value(val as u64, emu);
         }
 
         SyscallNumber::Fchdir => {
-            let val = fchdir(prog_data, argument_1() as usize);
+            let val = fchdir(proc_data, argument_1() as usize);
             return_value(val as u64, emu);
         }
 
         SyscallNumber::Dup => {
-            let val = dup(prog_data, argument_1() as usize);
+            let val = dup(proc_data, argument_1() as usize);
             return_value(val as u64, emu);
         }
 
         SyscallNumber::Dup2 => {
-            let val = dup2(prog_data, argument_1() as usize, argument_2() as usize);
+            let val = dup2(proc_data, argument_1() as usize, argument_2() as usize);
             return_value(val as u64, emu);
         }
 
         SyscallNumber::Fork => {
-            let val = fork(emu, prog_data);
+            let val = fork(emu, proc_data);
             return_value(val as u64, emu);
         }
 
         SyscallNumber::Waitpid => {
-            let val = waitpid(emu, prog_data, argument_1() as isize, unsafe{virtmem::UserPointer::<usize>::from_mem(argument_2())}, argument_3() as usize );
+            let val = waitpid(emu, proc_data, argument_1() as isize, unsafe{virtmem::UserPointer::<usize>::from_mem(argument_2())}, argument_3() as usize );
             if let Some(val) = val{
                 return_value(val as u64, emu);
             }else{
-                return SyscallCpuAction::REPEAT_SYSCALL;
+                // Waitpid will cause the scheduler to stop ticking the program until the change happens, however once the change does happen
+                // the instruction that it *would* execute would be the one after the syscall
+                // so the syscall will not be able to return the wait information
+                // so instead we just make the process repeat the instruction
+                // so that when the change happens it just calls syscall again, which will call waitpid again
+                // and give waitpid a chance to actually return the data structure with the information of the wait call 
+                // to make sure that once waitpid returns it doesn't get called again we 
+                // make waitpid return an Option which is None only if it is to be called again
+                return CpuAction::REPEAT_INSTRUCTION;
             }
         }
 
         SyscallNumber::Fexecve => {
-            let res = fexecve(emu, prog_data, argument_1() as usize, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_2())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_3())});
+            let res = fexecve(emu, proc_data, argument_1() as usize, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_2())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_3())});
             match res {
-                Ok(_) => return SyscallCpuAction::REPEAT_SYSCALL, // Don't advance to the next instruction as we want to start executing the new program from the first instruction
+                Ok(_) => return CpuAction::REPEAT_INSTRUCTION, // Don't advance to the next instruction as we want to start executing the new program from the first instruction
                 Err(val) => return_value(val as u64, emu)
             }
         }
 
         SyscallNumber::Execve => {
-            let res = execve(emu, prog_data, unsafe{virtmem::UserPointer::<[u8]>::from_mem(argument_1())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_2())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_3())});
+            let res = execve(emu, proc_data, unsafe{virtmem::UserPointer::<[u8]>::from_mem(argument_1())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_2())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_3())});
             match res {
-                Ok(_) => return SyscallCpuAction::REPEAT_SYSCALL, // Don't advance to the next instruction as we want to start executing the new program from the first instruction
+                Ok(_) => return CpuAction::REPEAT_INSTRUCTION, // Don't advance to the next instruction as we want to start executing the new program from the first instruction
                 Err(val) => return_value(val as u64, emu)
             }
         }
 
         SyscallNumber::Execvpe => {
-            let res = execvpe(emu, prog_data, unsafe{virtmem::UserPointer::<[u8]>::from_mem(argument_1())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_2())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_3())});
+            let res = execvpe(emu, proc_data, unsafe{virtmem::UserPointer::<[u8]>::from_mem(argument_1())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_2())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_3())});
             match res {
-                Ok(_) => return SyscallCpuAction::REPEAT_SYSCALL, // Don't advance to the next instruction as we want to start executing the new program from the first instruction
+                Ok(_) => return CpuAction::REPEAT_INSTRUCTION, // Don't advance to the next instruction as we want to start executing the new program from the first instruction
                 Err(val) => return_value(val as u64, emu)
             }
         }
         SyscallNumber::MaxValue => (),
     }
 
-    return SyscallCpuAction::NONE;
+    return CpuAction::NONE;
 }
 
-fn exit(emu: &mut Emulator, prog_data: &mut ProgramData, exit_number: usize) {
-    emu.halted = true;
-    prog_data.exit_code = Some(exit_number);
+fn exit(proc_data: &mut ProcessData, exit_code: usize) {
+    proc_data.state = ProcessState::TERMINATED_NORMALLY_WAITING_TO_BE_DEALLOCATED{exit_code};
 }
 
-fn write(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: UserPointer<[u8]>, count: usize) -> i32 {
+fn write(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, user_buf: UserPointer<[u8]>, count: usize) -> i32 {
     let Some(buf) = user_buf.try_as_ref(&mut emu.memory, count) else { return -1 };
-    let Some(Some(node_mapping)) = prog_data.fd_mapping.get(fd).copied() else { return -1 };
+    let Some(Some(node_mapping)) = proc_data.fd_mapping.get(fd).copied() else { return -1 };
 
     match node_mapping {
         FdMapping::Index(node_index) => {
             // If the node_index exists then so does the node
-            let node = prog_data.open_nodes[node_index].as_mut().unwrap();
+            let node = proc_data.open_nodes[node_index].as_mut().unwrap();
 
             // Check for write access
             if node.flags & rlibc::sys::O_WRONLY == 0 {
@@ -220,7 +222,7 @@ fn write(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: U
 
         FdMapping::Stdin => return -1, // Can't write to stdin
 
-        FdMapping::Stdout | crate::program::FdMapping::Stderr => {
+        FdMapping::Stdout | crate::process::FdMapping::Stderr => {
             use crate::TERMINAL;
             use core::fmt::Write;
             let Ok(str_buf) = core::str::from_utf8(buf) else {
@@ -237,14 +239,14 @@ fn write(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: U
 }
 
 
-fn read(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: UserPointer<[u8]>, count: usize) -> i32 {
+fn read(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, user_buf: UserPointer<[u8]>, count: usize) -> i32 {
     let Some(buf) = user_buf.try_as_mut(&mut emu.memory, count) else { return -1 };
-    let Some(Some(node_mapping)) = prog_data.fd_mapping.get(fd).copied() else { return -1 };
+    let Some(Some(node_mapping)) = proc_data.fd_mapping.get(fd).copied() else { return -1 };
 
     match node_mapping {
         FdMapping::Index(node_index) => {
             // If the node_index exists then so does the node
-            let node = prog_data.open_nodes[node_index].as_mut().unwrap();
+            let node = proc_data.open_nodes[node_index].as_mut().unwrap();
 
             // Check for read access
             if node.flags & rlibc::sys::O_RDONLY == 0 {
@@ -288,7 +290,7 @@ fn read(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: Us
                     use crate::TERMINAL;
                     use core::fmt::Write;
                     write!(TERMINAL.lock(), "^C").unwrap();
-                    emu.halted = true;
+                    exit(proc_data, 1);
                 }
                 let c = if packet.special_keys.any_shift() { packet.shift_codepoint() } else { packet.char_codepoint };
                 let c = if let Some(val) = c { val } else { continue };
@@ -301,11 +303,11 @@ fn read(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, user_buf: Us
     }
 }
 
-fn open(emu: &mut Emulator, prog_data: &mut ProgramData, pathname: virtmem::UserPointer<[u8]>, flags: usize) -> isize {
+fn open(emu: &mut Emulator, proc_data: &mut ProcessData, pathname: virtmem::UserPointer<[u8]>, flags: usize) -> isize {
     let Some(path) = virtmem::cstr_user_pointer_to_str(pathname, &emu.memory) else { return -1 };
     let path = if let Ok(val) = vfs::Path::try_from(path) { val } else { 
         // Maybe the pathname is relative to cwd
-        let mut current = prog_data.cwd.clone();
+        let mut current = proc_data.cwd.clone();
         current.append_str(path);
         current
     };
@@ -316,9 +318,7 @@ fn open(emu: &mut Emulator, prog_data: &mut ProgramData, pathname: virtmem::User
 
     let node = {
         let search_result = (*parent_node).borrow_mut().get_children().into_iter().find(|child| child.0 == path.last());
-        if let Some(val) = search_result {
-            let mut node = val.1;
-
+        if let Some((_, mut node)) = search_result {
             // man open
             // O_TRUNC
             // If the file already exists and is a regular file and the
@@ -349,51 +349,51 @@ fn open(emu: &mut Emulator, prog_data: &mut ProgramData, pathname: virtmem::User
     };
 
     // TODO: Consider changing it so it actually uses the lowest fd number, instead of using a fd number that is known to be free
-    prog_data.open_nodes.push(Some(ProgramNode { vfs_node: node, cursor: 0, flags, path, reference_count: 1 }));
-    let node_index = prog_data.open_nodes.len() - 1;
-    prog_data.fd_mapping.push(Some(FdMapping::Index(node_index)));
+    proc_data.open_nodes.push(Some(ProcessNode { vfs_node: node, cursor: 0, flags, path, reference_count: 1 }));
+    let node_index = proc_data.open_nodes.len() - 1;
+    proc_data.fd_mapping.push(Some(FdMapping::Index(node_index)));
 
     // -1 because we just added a new one
-    prog_data.fd_mapping.len() as isize - 1
+    proc_data.fd_mapping.len() as isize - 1
 }
 
 // source: man close
-fn close(prog_data: &mut ProgramData, fd: usize) -> isize {
-    let Some(Some(node_mapping)) = prog_data.fd_mapping.get(fd).copied() else { return -1 };
+fn close(proc_data: &mut ProcessData, fd: usize) -> isize {
+    let Some(Some(node_mapping)) = proc_data.fd_mapping.get(fd).copied() else { return -1 };
     match node_mapping {
         FdMapping::Index(node_index) => {
             // NOTE: If the node_index exists then so must the node so it's fine to unwrap
-            let node = prog_data.open_nodes[node_index].as_mut().unwrap();
+            let node = proc_data.open_nodes[node_index].as_mut().unwrap();
             if node.reference_count > 1 {
                 node.reference_count -= 1;
             } else {
-                prog_data.open_nodes[node_index] = None;
+                proc_data.open_nodes[node_index] = None;
             }
         }
         FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr => {} // No need to close stdin, stdout or stderr since they are not actual nodes
     }
 
-    prog_data.fd_mapping[fd] = None;
+    proc_data.fd_mapping[fd] = None;
 
     // Drain None's if it wouldn't affect the indices of elements that are Some
     // Note: We cannot use retain or drain_filter because we need to keep the index of fds that are Some, which removing all None using retain or drain_filter will not do, for ex. on the vector: Some None Some
-    while prog_data.fd_mapping.last().map(|val|val.is_none()).unwrap_or(false) {
-        prog_data.fd_mapping.pop();
+    while proc_data.fd_mapping.last().map(|val|val.is_none()).unwrap_or(false) {
+        proc_data.fd_mapping.pop();
     }
 
-    while prog_data.open_nodes.last().map(|val|val.is_none()).unwrap_or(false) {
-        prog_data.open_nodes.pop();
+    while proc_data.open_nodes.last().map(|val|val.is_none()).unwrap_or(false) {
+        proc_data.open_nodes.pop();
     }
 
     return 0;
 }
 
-fn lseek(prog_data: &mut ProgramData, fd: usize, offset: i64, whence: usize) -> i64 {
-    let Some(Some(node_mapping)) = prog_data.fd_mapping.get(fd).copied() else { return -1 };
+fn lseek(proc_data: &mut ProcessData, fd: usize, offset: i64, whence: usize) -> i64 {
+    let Some(Some(node_mapping)) = proc_data.fd_mapping.get(fd).copied() else { return -1 };
 
     match node_mapping {
         FdMapping::Index(node_index) => {
-            let node = prog_data.open_nodes[node_index].as_mut().unwrap();
+            let node = proc_data.open_nodes[node_index].as_mut().unwrap();
             match whence {
                 rlibc::sys::SEEK_SET => {
                     node.cursor = offset as u64;
@@ -422,7 +422,7 @@ fn lseek(prog_data: &mut ProgramData, fd: usize, offset: i64, whence: usize) -> 
     }
 }
 
-fn malloc(emu: &mut Emulator, prog_data: &mut ProgramData, size: usize) -> u64 {
+fn malloc(emu: &mut Emulator, proc_data: &mut ProcessData, size: usize) -> u64 {
     // We also allocate size_of::<usize>() bytes more than we are requested to, to store the size of the allocation
     let Ok(allocation_info) = core::alloc::Layout::from_size_align(size + core::mem::size_of::<usize>(), 8) else {
         return virtmem::USERSPACE_NULL_PTR;
@@ -439,7 +439,7 @@ fn malloc(emu: &mut Emulator, prog_data: &mut ProgramData, size: usize) -> u64 {
     }
 
     // Allocate virtual space
-    let virtual_allocation_ptr = prog_data.virtual_allocator.alloc(allocation_info) as u64;
+    let virtual_allocation_ptr = proc_data.virtual_allocator.alloc(allocation_info) as u64;
     if virtual_allocation_ptr == virtmem::USERSPACE_NULL_PTR { return virtmem::USERSPACE_NULL_PTR; }
 
     // Create mapping
@@ -448,7 +448,7 @@ fn malloc(emu: &mut Emulator, prog_data: &mut ProgramData, size: usize) -> u64 {
     return virtual_allocation_ptr+core::mem::size_of::<usize>() as u64;
 }
 
-fn free(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64) {
+fn free(emu: &mut Emulator, proc_data: &mut ProcessData, virtual_ptr: u64) {
 
     // Translate pointer from user space
     let Some(mapped_alloc) = emu.memory.try_map_mut(virtual_ptr) else {
@@ -463,18 +463,18 @@ fn free(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64) {
     let alloc_region_index = mapped_alloc.1.region_index;
     emu.memory.remove_region(alloc_region_index);
 
-    prog_data.virtual_allocator.dealloc((virtual_ptr-core::mem::size_of::<usize>() as u64) as *mut u8, allocation_info);
+    proc_data.virtual_allocator.dealloc((virtual_ptr-core::mem::size_of::<usize>() as u64) as *mut u8, allocation_info);
 }
 
-fn realloc(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64, new_size: usize) -> u64 {
+fn realloc(emu: &mut Emulator, proc_data: &mut ProcessData, virtual_ptr: u64, new_size: usize) -> u64 {
     // Translate pointer from user space
     let Some(mapped_alloc) = emu.memory.try_map_mut(virtual_ptr) else {
         return virtmem::USERSPACE_NULL_PTR;
     };
 
     let data: Vec<u8, &'static ProgramBasicAlloc> = mapped_alloc.0.backing_storage.clone();
-    free(emu, prog_data, virtual_ptr);
-    let new_virtual_ptr = malloc(emu, prog_data, new_size);
+    free(emu, proc_data, virtual_ptr);
+    let new_virtual_ptr = malloc(emu, proc_data, new_size);
     // Translate pointer from user space
     let Some(new_mapped_alloc) = emu.memory.try_map_mut(new_virtual_ptr) else {
         return virtmem::USERSPACE_NULL_PTR;
@@ -483,7 +483,7 @@ fn realloc(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: u64, ne
     return new_virtual_ptr;
 }
 
-fn getcwd(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: virtmem::UserPointer<[u8]>, buf_size: usize) -> u64 {
+fn getcwd(emu: &mut Emulator, proc_data: &mut ProcessData, virtual_ptr: virtmem::UserPointer<[u8]>, buf_size: usize) -> u64 {
     // On failure, these functions return NULL
     // Source: man getcwd
 
@@ -491,7 +491,7 @@ fn getcwd(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: virtmem:
     // directory, including the terminating null byte, exceeds size
     // bytes, NULL is returned
     // Source: man getcwd
-    if prog_data.cwd.len() + 1 > buf_size {
+    if proc_data.cwd.len() + 1 > buf_size {
         return virtmem::USERSPACE_NULL_PTR;
     }
 
@@ -499,7 +499,7 @@ fn getcwd(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: virtmem:
         return virtmem::USERSPACE_NULL_PTR;
     };
 
-    for (i, c) in prog_data.cwd.chars().enumerate() {
+    for (i, c) in proc_data.cwd.chars().enumerate() {
         buf[i] = c as u8;
     }
 
@@ -507,22 +507,22 @@ fn getcwd(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: virtmem:
     return virtual_ptr.get_inner();
 }
 
-fn fchdir(prog_data: &mut ProgramData, fd: usize) -> isize {
-    let Some(Some(node_mapping)) = prog_data.fd_mapping.get(fd).copied() else {
+fn fchdir(proc_data: &mut ProcessData, fd: usize) -> isize {
+    let Some(Some(node_mapping)) = proc_data.fd_mapping.get(fd).copied() else {
         return -1;
     };
 
     match node_mapping {
         FdMapping::Index(node_index) => {
-            let node = prog_data.open_nodes[node_index].as_mut().unwrap();
-            prog_data.cwd = node.path.clone();
+            let node = proc_data.open_nodes[node_index].as_mut().unwrap();
+            proc_data.cwd = node.path.clone();
             return 0;
         }
         FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr => return -1,
     }
 }
 
-fn getenv(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: virtmem::UserPointer<[u8]>) -> u64 {
+fn getenv(emu: &mut Emulator, proc_data: &mut ProcessData, virtual_ptr: virtmem::UserPointer<[u8]>) -> u64 {
     // The getenv() function returns a pointer to the value in the
     // environment, or NULL if there is no match.
     // Source: man getenv
@@ -532,81 +532,81 @@ fn getenv(emu: &mut Emulator, prog_data: &mut ProgramData, virtual_ptr: virtmem:
     };
 
     // Lookup the environment variable
-    let Some(res) = prog_data.env.get(key) else {
+    let Some(res) = proc_data.env.get(key) else {
         return virtmem::USERSPACE_NULL_PTR;
     };
 
     return *res;
 }
 
-fn dup(prog_data: &mut ProgramData, oldfd: usize) -> isize {
-    let Some(Some(node_mapping)) = prog_data.fd_mapping.get_mut(oldfd).copied() else {
+fn dup(proc_data: &mut ProcessData, oldfd: usize) -> isize {
+    let Some(Some(node_mapping)) = proc_data.fd_mapping.get_mut(oldfd).copied() else {
         return -1;
     };
 
     match node_mapping {
         FdMapping::Index(node_index) => {
             // NOTE: If the node_index exists then the node must exist
-            let node = prog_data.open_nodes[node_index].as_mut().unwrap();
+            let node = proc_data.open_nodes[node_index].as_mut().unwrap();
             node.reference_count += 1;
         }
 
         FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr => {} // No need to update ref count of stdin, stdout or stderr since they are handled specially anyways
     }
 
-    prog_data.fd_mapping.push(Some(node_mapping));
+    proc_data.fd_mapping.push(Some(node_mapping));
     // -1 because we just added the new one
-    prog_data.fd_mapping.len() as isize - 1
+    proc_data.fd_mapping.len() as isize - 1
 }
 
-fn dup2(prog_data: &mut ProgramData, oldfd: usize, newfd: usize) -> isize {
-    let Some(Some(node_mapping)) = prog_data.fd_mapping.get_mut(oldfd).copied() else {
+fn dup2(proc_data: &mut ProcessData, oldfd: usize, newfd: usize) -> isize {
+    let Some(Some(node_mapping)) = proc_data.fd_mapping.get_mut(oldfd).copied() else {
         return -1;
     };
 
-    close(prog_data, newfd);
+    close(proc_data, newfd);
 
     match node_mapping {
         FdMapping::Index(node_index) => {
             // NOTE: If the node_index exists then the node must exist
-            let node = prog_data.open_nodes[node_index].as_mut().unwrap();
+            let node = proc_data.open_nodes[node_index].as_mut().unwrap();
             node.reference_count += 1;
         }
 
         FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr => {} // No need to update ref count of stdin, stdout or stderr since they are handled specially anyways
     }
 
-    if newfd > prog_data.fd_mapping.len() {
-        prog_data.fd_mapping.resize(newfd+1, None);
+    if newfd > proc_data.fd_mapping.len() {
+        proc_data.fd_mapping.resize(newfd+1, None);
     }
 
-    prog_data.fd_mapping[newfd] = Some(node_mapping);
+    proc_data.fd_mapping[newfd] = Some(node_mapping);
     newfd as isize
 }
 
-fn fork(emu: &mut Emulator, prog_data: &mut ProgramData) -> usize {
-    match prog_data.state {
-        ProgramState::RUNNING_NEW_CHILD_JUST_FORKED => {
+fn fork(emu: &mut Emulator, proc_data: &mut ProcessData) -> usize {
+    match proc_data.state {
+        ProcessState::RUNNING_NEW_CHILD_JUST_FORKED => {
             // We are the child and we are executing the fork again because we got cloned before our parent could get past the syscall instruction
-            prog_data.state = ProgramState::RUNNING;
+            proc_data.state = ProcessState::RUNNING;
             0
         }
 
         _ => {
             // We are the parent
-            let mut child = Program::new(emu.clone(), prog_data.clone());
+            let mut child = Process::new(emu.clone(), proc_data.clone());
             // Since our tick hasn't ended we haven't advanced past the syscall instruction
             // so the clone we just made is still on the same instruction as us, which is syscall fork
             // So when we tick it, it will also call fork, to prevent it from cloning itself again, we use the just_forked flag
             // to inform it that it is a new child and that it's call to fork should return 0
-            child.data.parent_pid = prog_data.pid;
-            child.data.state = ProgramState::RUNNING_NEW_CHILD_JUST_FORKED;
+            child.data.parent_pid = proc_data.pid;
+            child.data.state = ProcessState::RUNNING_NEW_CHILD_JUST_FORKED;
             scheduler::new_task(child)
         }
     } 
 }
 
-fn waitpid(emu: &mut Emulator, prog_data: &mut ProgramData, pid: isize, wstatus: UserPointer<usize>, options: usize) -> Option<isize> {
+fn waitpid(emu: &mut Emulator, proc_data: &mut ProcessData, pid: isize, wstatus: UserPointer<usize>, options: usize) -> Option<isize> {
     // RETURN VALUE
     // waitpid(): on success, returns the process ID of the child whose
     // state has changed; if WNOHANG was specified and one or more
@@ -617,7 +617,7 @@ fn waitpid(emu: &mut Emulator, prog_data: &mut ProgramData, pid: isize, wstatus:
     // NOTE: options (like WUNTRACED) are irrelevant right now since we don't support STOPPING and RESUMING
     // FIXME: Support waiting for stopping and resuming once we have signals
 
-    if let ProgramState::FINISHED_WAITING_FOR_CHILD_PROCESS(info) = prog_data.state {
+    if let ProcessState::FINISHED_WAITING_FOR_CHILD_PROCESS(info) = proc_data.state {
         match info {
             Some(info) => {
                 let Some(wstatus_ptr) = wstatus.try_as_ptr(&mut emu.memory) else {
@@ -637,10 +637,10 @@ fn waitpid(emu: &mut Emulator, prog_data: &mut ProgramData, pid: isize, wstatus:
     }
 
     if pid == -1 { // Wait for any child process
-        prog_data.state = ProgramState::WAITING_FOR_CHILD_PROCESS(None);
+        proc_data.state = ProcessState::WAITING_FOR_CHILD_PROCESS{cpid: None};
         return None; // Tell he cpu to repeat syscall so once the scheduler tells us that the child received an update we can return
     } else if pid > 0 {
-        prog_data.state = ProgramState::WAITING_FOR_CHILD_PROCESS(Some(pid as usize));
+        proc_data.state = ProcessState::WAITING_FOR_CHILD_PROCESS{cpid: Some(pid as usize)};
         return None; // Tell he cpu to repeat syscall so once the scheduler tells us that the child received an update we can return
     }
 
@@ -656,7 +656,7 @@ use super::*;
 
 // Internal function that accepts internal args and env formats, used to carry out the actual replacement of the running program with the new program
 // NOTE: Supports interpreter scripts
-pub fn exec(emu: &mut Emulator, prog_data: &mut ProgramData, node: vfs::Node, node_path: vfs::Path, args: Vec<String>, envs: BTreeMap<String, String>, recursion_depth: usize) -> Result<(), isize> {
+pub fn exec(emu: &mut Emulator, proc_data: &mut ProcessData, node: vfs::Node, node_path: vfs::Path, args: Vec<String>, envs: BTreeMap<String, String>, recursion_depth: usize) -> Result<(), isize> {
     if recursion_depth > 100 {
         // Too many recursive calls
         // This can happen if for example the interpreter of a script file is itself
@@ -697,9 +697,9 @@ pub fn exec(emu: &mut Emulator, prog_data: &mut ProgramData, node: vfs::Node, no
         emu.memory.clear_regions();
         emu.reset_registers(elf.header.program_entry);
 
-        let lower_virt_addr = Program::map_elf_into_virtual_memory(&elf, &file_bytes, &mut emu.memory)
+        let lower_virt_addr = Process::load_elf_into_virtual_memory(&elf, &file_bytes, &mut emu.memory)
         .ok_or_else(|| {
-            emu.halted = true;
+            exit( proc_data, 1);
             return -1isize; // We need to return something so just return -1 even if it doesn't matter
         })?; // Return -1 if we can't expand and map the elf into virtual memory
         
@@ -714,37 +714,37 @@ pub fn exec(emu: &mut Emulator, prog_data: &mut ProgramData, node: vfs::Node, no
             program_stack, // NOTE: We don't use [] because that would allocate 1MB on the stack, then move it to the heap, which might overflow the stack
         );
         if did_create_stack_region.is_none() { // We failed to add a stack region
-            emu.halted = true;
+            exit( proc_data, 1);
             return Err(-1); // We need to return something so just return -1 even if it doesn't matter
         }
 
         // Create virtual allocator for the heap, this manages the locations of allocations on the heap in the virtual space
         // Or just generally the location of segments in virtual space, this can't be done for some segments like the elf regions and the stack
         // as they require certain addresses
-        prog_data.virtual_allocator = BasicAlloc::from(lower_virt_addr as *mut u8, (u64::MAX - (PROGRAM_STACK_SIZE + lower_virt_addr)) as usize, true);
+        proc_data.virtual_allocator = BasicAlloc::from(lower_virt_addr as *mut u8, (u64::MAX - (PROGRAM_STACK_SIZE + lower_virt_addr)) as usize, true);
 
 
-        let Some(args_ptrs_array_virtual_ptr) = Program::load_args_into_virtual_memory(
+        let Some(args_ptrs_array_virtual_ptr) = Process::load_args_into_virtual_memory(
             args.iter().map(|arg|arg.as_str()), 
             args.len(), 
             &mut emu.memory, 
-            &mut prog_data.virtual_allocator
+            &mut proc_data.virtual_allocator
         ) else {
-            emu.halted = true;
+            exit( proc_data, 1);
             return Err(-1); // We need to return something so just return -1 even if it doesn't matter
         };
 
 
-        let Some(prog_env) = Program::load_env_into_virtual_memory(
+        let Some(prog_env) = Process::load_env_into_virtual_memory(
             envs.iter().map(|(key, value)| (key.as_str(), value.as_str())), 
             &mut emu.memory, 
-            &mut prog_data.virtual_allocator
+            &mut proc_data.virtual_allocator
         ) else {
-            emu.halted = true;
+            exit( proc_data, 1);
             return Err(-1); // We need to return something so just return -1 even if it doesn't matter
         };
 
-        prog_data.env = prog_env;
+        proc_data.env = prog_env;
         
 
         // Setup argc and argv
@@ -811,7 +811,7 @@ pub fn exec(emu: &mut Emulator, prog_data: &mut ProgramData, node: vfs::Node, no
 
             new_args.extend(args.into_iter().skip(1));
 
-            return exec(emu, prog_data, interpreter_node, interpreter_path, new_args, envs, recursion_depth+1);
+            return exec(emu, proc_data, interpreter_node, interpreter_path, new_args, envs, recursion_depth+1);
         }else{
             // It's not an elf or a shell script, so error out
             return Err(-1);
@@ -883,7 +883,7 @@ pub fn parse_exec_env(virtual_memory: &impl VirtualMemory, envp: virtmem::UserPo
 
 // FIXME: This accepts a null envp to mean inherit current program's environment, the behavior of a null envp is unspecified as far as i'm aware, so this is NON-STANDRD
 // envp quirk refers to the fact that it accepts null envp
-pub fn parse_argv_and_envp_with_envp_quirk(virtual_memory: &impl VirtualMemory, prog_data: &ProgramData, argv: virtmem::UserPointer<[u64]>, envp: virtmem::UserPointer<[u64]>) -> Option<(Vec<String>, BTreeMap<String, String>)> {
+pub fn parse_argv_and_envp_with_envp_quirk(virtual_memory: &impl VirtualMemory, proc_data: &ProcessData, argv: virtmem::UserPointer<[u64]>, envp: virtmem::UserPointer<[u64]>) -> Option<(Vec<String>, BTreeMap<String, String>)> {
     // Parse argv and envp
 
     // WARNING: At the time of writing this comment, if argv is null 
@@ -898,7 +898,7 @@ pub fn parse_argv_and_envp_with_envp_quirk(virtual_memory: &impl VirtualMemory, 
         // If we get a null pointer, then reuse our current environment
         // WARNING: NON-STANDARD
         let mut env = BTreeMap::new();
-        for (name, &virtual_pointer_to_val) in &prog_data.env {
+        for (name, &virtual_pointer_to_val) in &proc_data.env {
             let val = unsafe{ virtmem::UserPointer::<[u8]>::from_mem(virtual_pointer_to_val)};
             let Some(val) = virtmem::cstr_user_pointer_to_str(val, virtual_memory) else {
                 // *This program's* environment is malformed, invalid utf8?
@@ -916,14 +916,14 @@ pub fn parse_argv_and_envp_with_envp_quirk(virtual_memory: &impl VirtualMemory, 
 
 }
 
-fn fexecve(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, argv: virtmem::UserPointer<[u64]>, envp: virtmem::UserPointer<[u64]>) -> Result<(), isize> {
-    let Some(Some(FdMapping::Index(node_index))) = prog_data.fd_mapping.get(fd).copied() else{
+fn fexecve(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, argv: virtmem::UserPointer<[u64]>, envp: virtmem::UserPointer<[u64]>) -> Result<(), isize> {
+    let Some(Some(FdMapping::Index(node_index))) = proc_data.fd_mapping.get(fd).copied() else{
         // Causes invalid fds and fds that map to stdin, stdout and stderr to error out
         return Err(-1);
     };
     
     // NOTE: If the node_index exists then the node must exist
-    let node = prog_data.open_nodes[node_index].as_mut().unwrap().clone();
+    let node = proc_data.open_nodes[node_index].as_mut().unwrap().clone();
 
     // The file descriptor fd must be opened read-only
     //    (O_RDONLY) or with the O_PATH flag and the caller must have permission
@@ -933,16 +933,15 @@ fn fexecve(emu: &mut Emulator, prog_data: &mut ProgramData, fd: usize, argv: vir
         return Err(-1);
     }
 
-    let (parsed_args, parsed_env) = exec_internal::parse_argv_and_envp_with_envp_quirk(&emu.memory, prog_data, argv, envp)
+    let (parsed_args, parsed_env) = exec_internal::parse_argv_and_envp_with_envp_quirk(&emu.memory, proc_data, argv, envp)
     .ok_or_else(|| -1isize)?;
   
     // Finally now that we have the parsed args and environment do the exec
-    exec_internal::exec(emu, prog_data, node.vfs_node, node.path, parsed_args, parsed_env, 0)
+    exec_internal::exec(emu, proc_data, node.vfs_node, node.path, parsed_args, parsed_env, 0)
 }
 
 
-// FIXME: This accepts a null envp to mean inherit current program's environment, the behavior of a null envp is unspecified as far as i'm aware, so this is NON-STANDRD
-fn execve(emu: &mut Emulator, prog_data: &mut ProgramData, pathname: virtmem::UserPointer<[u8]>, argv: virtmem::UserPointer<[u64]>, envp: virtmem::UserPointer<[u64]>) -> Result<(), isize> {
+fn execve(emu: &mut Emulator, proc_data: &mut ProcessData, pathname: virtmem::UserPointer<[u8]>, argv: virtmem::UserPointer<[u64]>, envp: virtmem::UserPointer<[u64]>) -> Result<(), isize> {
     let Some(path) = virtmem::cstr_user_pointer_to_str(pathname, &emu.memory) else { return Err(-1) };
     let Ok(path) = vfs::Path::try_from(path) else { 
         // NOTE: execve does not allow CWD relative paths or searching in the PATH environment variable so error out
@@ -951,15 +950,15 @@ fn execve(emu: &mut Emulator, prog_data: &mut ProgramData, pathname: virtmem::Us
 
     let Some(node) = path.clone().get_node() else { return Err(-1) };
 
-    let (parsed_args, parsed_env) = exec_internal::parse_argv_and_envp_with_envp_quirk(&emu.memory, prog_data, argv, envp)
+    let (parsed_args, parsed_env) = exec_internal::parse_argv_and_envp_with_envp_quirk(&emu.memory, proc_data, argv, envp)
     .ok_or_else(|| -1isize)?;
 
     // Finally now that we have the parsed args and environment do the exec
-    exec_internal::exec(emu, prog_data, node, path, parsed_args, parsed_env, 0)
+    exec_internal::exec(emu, proc_data, node, path, parsed_args, parsed_env, 0)
 }
 
 
-fn execvpe(emu: &mut Emulator, prog_data: &mut ProgramData, file: virtmem::UserPointer<[u8]>, argv: virtmem::UserPointer<[u64]>, envp: virtmem::UserPointer<[u64]>) -> Result<(), isize> {
+fn execvpe(emu: &mut Emulator, proc_data: &mut ProcessData, file: virtmem::UserPointer<[u8]>, argv: virtmem::UserPointer<[u64]>, envp: virtmem::UserPointer<[u64]>) -> Result<(), isize> {
     // Same as execve but if path lookup fails for file then it looks in the PATH environment variable of the current program
 
     let Some(file) = virtmem::cstr_user_pointer_to_str(file, &emu.memory) else { return Err(-1) };
@@ -975,7 +974,7 @@ fn execvpe(emu: &mut Emulator, prog_data: &mut ProgramData, file: virtmem::UserP
         // NOTE: We only get here if we couldn't parse the file as an absolute path
 
         // Get *our* PATH environment variable
-        let Some(&path_value) = prog_data.env.get("PATH") else {
+        let Some(&path_value) = proc_data.env.get("PATH") else {
             return Err(-1); // file is not an absolute path and PATH variable doesn't exist
         };
         
@@ -1008,9 +1007,9 @@ fn execvpe(emu: &mut Emulator, prog_data: &mut ProgramData, file: virtmem::UserP
         found
     };
 
-    let (parsed_args, parsed_env) = exec_internal::parse_argv_and_envp_with_envp_quirk(&emu.memory, prog_data, argv, envp)
+    let (parsed_args, parsed_env) = exec_internal::parse_argv_and_envp_with_envp_quirk(&emu.memory, proc_data, argv, envp)
     .ok_or_else(|| -1isize)?;
 
-    exec_internal::exec(emu, prog_data, node, path, parsed_args, parsed_env, 0)
+    exec_internal::exec(emu, proc_data, node, path, parsed_args, parsed_env, 0)
 }
 
