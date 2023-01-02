@@ -3,3 +3,7 @@ all: dash.c
 
 clean:
 	rm -f dash
+
+install:
+	rm -f ../../disk/dash
+	cp dash ../../disk

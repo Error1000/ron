@@ -49,8 +49,8 @@ pub enum ProgramState {
     RUNNING,
     RUNNING_NEW_CHILD_JUST_FORKED,
     WAITING_FOR_CHILD_PROCESS(Option<usize>),
-    FINISHED_WAITING_FOR_CHILD_PROCESS(Option<WaitInformation>), // Used to allow to scheduler to inform the program that the child changed state
-    TERMINATED_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT(usize), // equivalent to ZOMBIE
+    FINISHED_WAITING_FOR_CHILD_PROCESS(Option<WaitInformation>), // Used to allow the scheduler to inform the program that the child changed state
+    TERMINATED_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT(usize), // equivalent to ZOMBIE on linux
     TERMINATED_WAITING_TO_BE_DEALLOCATED(usize),
 }
 
@@ -243,7 +243,7 @@ impl Program {
         let argv_virtual_ptr = Self::load_args_into_virtual_memory(args.iter().map(|arg|*arg), args.len(), &mut virt_mem, &mut virtual_allocator)?;
         let prog_env = Self::load_env_into_virtual_memory(env.iter().map(|(key, value)|(*key, *value)), &mut virt_mem, &mut virtual_allocator)?;
 
-        let mut emu = Riscv64Cpu::from(virt_mem, elf.header.program_entry, syscall::syscall_linux_abi_entry_point);
+        let mut emu = Riscv64Cpu::from(virt_mem, elf.header.program_entry, syscall::syscall_entry_point);
         
         // Setup argc and argv
         emu.write_reg(10, args.len() as u64); // argc

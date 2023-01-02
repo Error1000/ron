@@ -26,7 +26,7 @@ mod errno {
     pub const EISDIR: isize = -6;
 }*/
 
-pub fn syscall_linux_abi_entry_point(emu: &mut Emulator, prog_data: &mut ProgramData) -> SyscallCpuAction {
+pub fn syscall_entry_point(emu: &mut Emulator, prog_data: &mut ProgramData) -> SyscallCpuAction {
     // Source: man syscall
     let syscall_number = emu.read_reg(17 /* a7 */);
     let Ok(syscall_number) = SyscallNumber::try_from(syscall_number as usize) else {
@@ -985,7 +985,7 @@ fn execvpe(emu: &mut Emulator, prog_data: &mut ProgramData, file: virtmem::UserP
         };
 
         let mut found = None;
-        
+
         // PATH environment variable has the format /a/b:/c/d:/l/m
         for path in path_value.split(':') {
             let Ok(mut path) = Path::try_from(path) else {
