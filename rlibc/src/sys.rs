@@ -137,6 +137,26 @@ pub unsafe extern "C" fn dup2(oldfd: core::ffi::c_int, newfd: core::ffi::c_int) 
     read_syscall_return() as core::ffi::c_int
 }
 
+#[allow(non_camel_case_types)]
+type c_pid_t = core::ffi::c_int;
+
+
+#[no_mangle]
+pub unsafe extern "C" fn fork() -> c_pid_t {
+    syscall(SyscallNumber::Fork);
+    read_syscall_return() as c_pid_t
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn waitpid(pid: core::ffi::c_int, wstatus: *mut core::ffi::c_int, options: core::ffi::c_int) -> c_pid_t {
+    load_syscall_argument_1(pid as usize);
+    load_syscall_argument_2(wstatus as usize);
+    load_syscall_argument_3(options as usize);
+    syscall(SyscallNumber::Waitpid);
+    read_syscall_return() as c_pid_t
+}
+
+
 #[no_mangle]
 pub unsafe extern "C" fn fexecve(fd: core::ffi::c_int, argv: *const *mut core::ffi::c_char, envp: *const *mut core::ffi::c_char) -> core::ffi::c_int {
     load_syscall_argument_1(fd as usize);
@@ -164,24 +184,11 @@ pub unsafe extern "C" fn execvpe(file: *const core::ffi::c_char, argv: *const *m
     read_syscall_return() as core::ffi::c_int
 }
 
-
-#[allow(non_camel_case_types)]
-type c_pid_t = core::ffi::c_int;
-
-
 #[no_mangle]
-pub unsafe extern "C" fn fork() -> c_pid_t {
-    syscall(SyscallNumber::Fork);
-    read_syscall_return() as c_pid_t
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn waitpid(pid: core::ffi::c_int, wstatus: *mut core::ffi::c_int, options: core::ffi::c_int) -> c_pid_t {
-    load_syscall_argument_1(pid as usize);
-    load_syscall_argument_2(wstatus as usize);
-    load_syscall_argument_3(options as usize);
-    syscall(SyscallNumber::Waitpid);
-    read_syscall_return() as c_pid_t
+pub unsafe extern "C" fn pipe(fds: *const core::ffi::c_int) -> core::ffi::c_int {
+    load_syscall_argument_1(fds as usize);
+    syscall(SyscallNumber::Pipe);
+    read_syscall_return() as core::ffi::c_int
 }
 
 #[repr(usize)]
@@ -205,6 +212,7 @@ pub enum SyscallNumber {
     Fexecve = 16,
     Execve = 17,
     Execvpe = 18,
+    Pipe = 19,
     MaxValue,
 }
 
@@ -217,7 +225,7 @@ impl TryFrom<usize> for SyscallNumber {
         } else {
             return Ok(unsafe { core::mem::transmute(value) });
         }
-        // SAFETY: SyscallNumber is reper(usize), value is usize
+        // SAFETY: SyscallNumber is repr(usize), value is usize
         // and we just checked that value is less than the max value of SyscallNumber
     }
 }

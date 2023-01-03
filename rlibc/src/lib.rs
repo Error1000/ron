@@ -724,6 +724,7 @@ pub unsafe extern "C" fn puts(str: *const core::ffi::c_char) -> core::ffi::c_int
     return 1;
 }
 
+// FIXME: Doesn't print errno
 #[no_mangle]
 pub unsafe extern "C" fn perror(str: *const core::ffi::c_char) -> core::ffi::c_int {
     let mut t = 0;

@@ -23,6 +23,7 @@ extern pid_t fork(void);
 extern int fexecve(int fd, char *const argv[], char *const envp[]);
 extern int execve(const char* pathname, char *const argv[], char* const envp[]);
 extern int execvpe(const char* file, char *const argv[], char *const envp[]);
+extern int pipe(int pipefds[2]);
 
 #define execv(pathname, argv) execve(pathname, argv, NULL)
 #define execvp(file, argv) execvpe(file, argv, NULL)

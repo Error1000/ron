@@ -534,6 +534,7 @@ impl Ext2RawInode {
         if offset + len > self.get_size() {
             return None;
         }
+        
         let starting_block_index = offset / (e2fs.get_block_size() as usize);
         let starting_block_offset = offset % (e2fs.get_block_size() as usize);
         let mut res: Vec<u8> = Vec::with_capacity(len);

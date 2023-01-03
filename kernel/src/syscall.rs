@@ -3,13 +3,13 @@ use core::{
     ptr::null_mut
 };
 
-use alloc::{vec::Vec, string::String, borrow::ToOwned, collections::BTreeMap};
+use alloc::{vec::Vec, string::String, borrow::ToOwned, collections::{BTreeMap, VecDeque}};
 use rlibc::sys::O_RDONLY;
 use rlibc::sys::SyscallNumber;
 
 use crate::{
     hio::KeyboardPacketType,
-    process::{FdMapping, ProcessData, ProcessNode, Emulator, Process, ProcessState},
+    process::{FdMapping, ProcessData, ProcessNode, Emulator, Process, ProcessState, ProcessPipe},
     ps2_8042::KEYBOARD_INPUT,
     vfs::{self, Path},
     virtmem::{self, UserPointer, VirtualMemory},
@@ -49,14 +49,17 @@ pub fn syscall_entry_point(emu: &mut Emulator, proc_data: &mut ProcessData) -> C
         SyscallNumber::Exit => exit( proc_data, argument_1() as usize),
 
         SyscallNumber::Read => {
-            let val = read(
+            if let Some(val) = read(
                 emu,
                 proc_data,
                 argument_1() as usize,
                 unsafe { UserPointer::<[u8]>::from_mem(argument_2()) },
                 argument_3() as usize,
-            );
-            return_value(val as i64 as u64, emu);
+            ){
+                return_value(val as i64 as u64, emu);
+            }else{
+                return CpuAction::REPEAT_INSTRUCTION;
+            }
         }
 
         SyscallNumber::Write => {
@@ -169,6 +172,12 @@ pub fn syscall_entry_point(emu: &mut Emulator, proc_data: &mut ProcessData) -> C
                 Err(val) => return_value(val as u64, emu)
             }
         }
+
+        SyscallNumber::Pipe => {
+            let res = pipe(emu, proc_data, unsafe{virtmem::UserPointer::<[core::ffi::c_int]>::from_mem(argument_1())});
+            return_value(res as u64, emu)
+        }
+
         SyscallNumber::MaxValue => (),
     }
 
@@ -181,10 +190,10 @@ fn exit(proc_data: &mut ProcessData, exit_code: usize) {
 
 fn write(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, user_buf: UserPointer<[u8]>, count: usize) -> i32 {
     let Some(buf) = user_buf.try_as_ref(&mut emu.memory, count) else { return -1 };
-    let Some(Some(node_mapping)) = proc_data.fd_mapping.get(fd).copied() else { return -1 };
+    let Some(Some(node_mapping)) = proc_data.fd_mappings.get(fd).cloned() else { return -1 };
 
     match node_mapping {
-        FdMapping::Index(node_index) => {
+        FdMapping::Regular(node_index) => {
             // If the node_index exists then so does the node
             let node = proc_data.open_nodes[node_index].as_mut().unwrap();
 
@@ -222,6 +231,16 @@ fn write(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, user_buf: U
 
         FdMapping::Stdin => return -1, // Can't write to stdin
 
+        FdMapping::PipeReadEnd(_) => return -1, // Can't write to read end of pipe
+
+        FdMapping::PipeWriteEnd(pipe_index) => {
+            let mut pipes = scheduler::PIPES.lock();
+            let pipe = pipes[pipe_index].as_mut().unwrap();
+            if pipe.readers_count == 0 { return -1; }
+            pipe.buf.extend(buf);
+            return count as i32;
+        }
+
         FdMapping::Stdout | crate::process::FdMapping::Stderr => {
             use crate::TERMINAL;
             use core::fmt::Write;
@@ -239,18 +258,18 @@ fn write(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, user_buf: U
 }
 
 
-fn read(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, user_buf: UserPointer<[u8]>, count: usize) -> i32 {
-    let Some(buf) = user_buf.try_as_mut(&mut emu.memory, count) else { return -1 };
-    let Some(Some(node_mapping)) = proc_data.fd_mapping.get(fd).copied() else { return -1 };
+fn read(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, user_buf: UserPointer<[u8]>, count: usize) -> Option<i32> {
+    let Some(buf) = user_buf.try_as_mut(&mut emu.memory, count) else { return Some(-1) };
+    let Some(Some(node_mapping)) = proc_data.fd_mappings.get(fd).cloned() else { return Some(-1) };
 
     match node_mapping {
-        FdMapping::Index(node_index) => {
+        FdMapping::Regular(node_index) => {
             // If the node_index exists then so does the node
             let node = proc_data.open_nodes[node_index].as_mut().unwrap();
 
             // Check for read access
             if node.flags & rlibc::sys::O_RDONLY == 0 {
-                return -1;
+                return Some(-1);
             }
 
             if let vfs::Node::File(f) = node.vfs_node.clone() {
@@ -271,16 +290,44 @@ fn read(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, user_buf: Us
                 }
 
                 node.cursor += index;
-                return index as i32;
+                return Some(index as i32);
             } else {
-                return -1; // Can't read directory
+                return Some(-1); // Can't read directory
             }
+        }
+
+        FdMapping::PipeWriteEnd(_) => return Some(-1), // Can't read from write end of pipe
+
+        FdMapping::PipeReadEnd(pipe_index) => {
+            let mut pipes = scheduler::PIPES.lock();
+            let pipe = pipes[pipe_index].as_mut().unwrap();
+
+            let mut index = 0;
+            while index < count {
+                let Some(byte) = pipe.buf.pop_front() else { break; };
+                buf[index] = byte;
+                index += 1;
+            }
+            
+            if index == 0 { // No data left to read
+               if pipe.writers_count == 0 {
+                 // No more writers, so EOF
+                 return Some(0); 
+               } else {
+                 // Wait for writer
+                 proc_data.state = ProcessState::WAITING_FOR_READ_PIPE { pipe_index: pipe_index };
+                 return None; // Will cause read to be repeated until something is read effectively emulating a block on read
+               }
+            }
+
+            return Some(index as i32);
         }
 
         FdMapping::Stdin => {
             // FIXME: Allow character echoing in the console
             loop {
-                // We only allow applications to read one character from stdin at a time to stop the keyboard from being hogged by applications
+                // We only allow applications to read only one character from stdin at a time to stop the keyboard from being hogged by applications
+                // FIXME: Implement better drivers
                 let packet = unsafe { KEYBOARD_INPUT.lock().read_packet() };
                 if packet.typ == KeyboardPacketType::KeyReleased {
                     continue;
@@ -295,11 +342,11 @@ fn read(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, user_buf: Us
                 let c = if packet.special_keys.any_shift() { packet.shift_codepoint() } else { packet.char_codepoint };
                 let c = if let Some(val) = c { val } else { continue };
                 buf[0] = if let Ok(val) = c.try_into() { val } else { continue };
-                return 1;
+                return Some(1);
             }
         }
 
-        FdMapping::Stdout | FdMapping::Stderr => return -1, // Can't read stdout or stderr
+        FdMapping::Stdout | FdMapping::Stderr => return Some(-1), // Can't read stdout or stderr
     }
 }
 
@@ -319,11 +366,11 @@ fn open(emu: &mut Emulator, proc_data: &mut ProcessData, pathname: virtmem::User
     let node = {
         let search_result = (*parent_node).borrow_mut().get_children().into_iter().find(|child| child.0 == path.last());
         if let Some((_, mut node)) = search_result {
-            // man open
             // O_TRUNC
             // If the file already exists and is a regular file and the
             //   access mode allows writing (i.e., is O_RDWR or O_WRONLY)
             //   it will be truncated to length 0.
+            // Source: man open
             if (flags & rlibc::sys::O_TRUNC != 0) && (flags & rlibc::sys::O_WRONLY != 0) {
                 if let vfs::Node::File(f) = &mut node {
                     if f.borrow_mut().resize(0).is_none() {
@@ -348,37 +395,73 @@ fn open(emu: &mut Emulator, proc_data: &mut ProcessData, pathname: virtmem::User
         }
     };
 
-    // TODO: Consider changing it so it actually uses the lowest fd number, instead of using a fd number that is known to be free
+    // FIXME: This is non-compliant
+    // NOTE: Consider changing it so it actually uses the lowest fd number, instead of using a fd number that is known to be free
     proc_data.open_nodes.push(Some(ProcessNode { vfs_node: node, cursor: 0, flags, path, reference_count: 1 }));
     let node_index = proc_data.open_nodes.len() - 1;
-    proc_data.fd_mapping.push(Some(FdMapping::Index(node_index)));
+    proc_data.fd_mappings.push(Some(FdMapping::Regular(node_index)));
 
     // -1 because we just added a new one
-    proc_data.fd_mapping.len() as isize - 1
+    proc_data.fd_mappings.len() as isize - 1
 }
 
 // source: man close
-fn close(proc_data: &mut ProcessData, fd: usize) -> isize {
-    let Some(Some(node_mapping)) = proc_data.fd_mapping.get(fd).copied() else { return -1 };
-    match node_mapping {
-        FdMapping::Index(node_index) => {
-            // NOTE: If the node_index exists then so must the node so it's fine to unwrap
+pub fn close(proc_data: &mut ProcessData, fd: usize) -> isize {
+    let Some(Some(fd_mapping)) = proc_data.fd_mappings.get(fd).cloned() else { return -1 };
+
+    match fd_mapping {
+        FdMapping::Regular(node_index) => {
+            // NOTE: If the fd mapping exists then so must the node so it's fine to unwrap
             let node = proc_data.open_nodes[node_index].as_mut().unwrap();
-            if node.reference_count > 1 {
-                node.reference_count -= 1;
-            } else {
+            if node.reference_count == 1 {
                 proc_data.open_nodes[node_index] = None;
+            } else if node.reference_count > 1 {
+                node.reference_count -= 1;
             }
+        }
+
+        FdMapping::PipeReadEnd(pipe_index) => {
+            let mut pipes = scheduler::PIPES.lock();
+            // NOTE: If a FdMapping exists then the pipe must exist
+            let pipe = pipes[pipe_index].as_mut().unwrap();
+
+            if pipe.readers_count == 1 && pipe.writers_count == 0 {
+                pipes[pipe_index] = None;
+
+                // Drain None's if it wouldn't affect the location of Some's
+                while pipes.last().map(|val|val.is_none()).unwrap_or(false) {
+                    pipes.pop();
+                }
+            } else if pipe.readers_count >= 1 { // Pipes can still exist with 0 writes, this is to allow readers to finish reading all the contents of the pipe
+                pipe.readers_count -= 1;
+            }
+        }
+
+        FdMapping::PipeWriteEnd(pipe_index) => {
+            let mut pipes = scheduler::PIPES.lock();
+            // NOTE: If a FdMapping exists then the pipe must exist
+            let pipe = pipes[pipe_index].as_mut().unwrap();
+            if pipe.writers_count == 1 && pipe.readers_count == 0 {
+                pipes[pipe_index] = None;
+    
+                // Drain None's if it wouldn't affect the location of Some's
+                while pipes.last().map(|val|val.is_none()).unwrap_or(false) {
+                    pipes.pop();
+                }
+            } else if pipe.writers_count >= 1 { // Pipes can still exist with 0 readers, this is to make it so that a FdMapping to a pipe is always valid to keep the system simple
+                pipe.writers_count -= 1;
+            } 
+
         }
         FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr => {} // No need to close stdin, stdout or stderr since they are not actual nodes
     }
 
-    proc_data.fd_mapping[fd] = None;
+    proc_data.fd_mappings[fd] = None;
 
     // Drain None's if it wouldn't affect the indices of elements that are Some
     // Note: We cannot use retain or drain_filter because we need to keep the index of fds that are Some, which removing all None using retain or drain_filter will not do, for ex. on the vector: Some None Some
-    while proc_data.fd_mapping.last().map(|val|val.is_none()).unwrap_or(false) {
-        proc_data.fd_mapping.pop();
+    while proc_data.fd_mappings.last().map(|val|val.is_none()).unwrap_or(false) {
+        proc_data.fd_mappings.pop();
     }
 
     while proc_data.open_nodes.last().map(|val|val.is_none()).unwrap_or(false) {
@@ -389,10 +472,10 @@ fn close(proc_data: &mut ProcessData, fd: usize) -> isize {
 }
 
 fn lseek(proc_data: &mut ProcessData, fd: usize, offset: i64, whence: usize) -> i64 {
-    let Some(Some(node_mapping)) = proc_data.fd_mapping.get(fd).copied() else { return -1 };
+    let Some(Some(node_mapping)) = proc_data.fd_mappings.get(fd).cloned() else { return -1 };
 
     match node_mapping {
-        FdMapping::Index(node_index) => {
+        FdMapping::Regular(node_index) => {
             let node = proc_data.open_nodes[node_index].as_mut().unwrap();
             match whence {
                 rlibc::sys::SEEK_SET => {
@@ -419,6 +502,10 @@ fn lseek(proc_data: &mut ProcessData, fd: usize, offset: i64, whence: usize) -> 
         }
 
         FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr => return -1,
+
+        // It is not possible to apply lseek(2) to a pipe.
+        // Source: man pipe
+        FdMapping::PipeReadEnd(_) | FdMapping::PipeWriteEnd(_) => return -1,
     }
 }
 
@@ -508,17 +595,17 @@ fn getcwd(emu: &mut Emulator, proc_data: &mut ProcessData, virtual_ptr: virtmem:
 }
 
 fn fchdir(proc_data: &mut ProcessData, fd: usize) -> isize {
-    let Some(Some(node_mapping)) = proc_data.fd_mapping.get(fd).copied() else {
+    let Some(Some(node_mapping)) = proc_data.fd_mappings.get(fd).cloned() else {
         return -1;
     };
 
     match node_mapping {
-        FdMapping::Index(node_index) => {
+        FdMapping::Regular(node_index) => {
             let node = proc_data.open_nodes[node_index].as_mut().unwrap();
             proc_data.cwd = node.path.clone();
             return 0;
         }
-        FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr => return -1,
+        FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr | FdMapping::PipeReadEnd(_) | FdMapping::PipeWriteEnd(_) => return -1,
     }
 }
 
@@ -540,47 +627,73 @@ fn getenv(emu: &mut Emulator, proc_data: &mut ProcessData, virtual_ptr: virtmem:
 }
 
 fn dup(proc_data: &mut ProcessData, oldfd: usize) -> isize {
-    let Some(Some(node_mapping)) = proc_data.fd_mapping.get_mut(oldfd).copied() else {
+    let Some(Some(node_mapping)) = proc_data.fd_mappings.get_mut(oldfd).cloned() else {
         return -1;
     };
 
     match node_mapping {
-        FdMapping::Index(node_index) => {
+        FdMapping::Regular(node_index) => {
             // NOTE: If the node_index exists then the node must exist
             let node = proc_data.open_nodes[node_index].as_mut().unwrap();
             node.reference_count += 1;
         }
 
+        FdMapping::PipeReadEnd(pipe_index) => {
+            let mut pipes = scheduler::PIPES.lock();
+            let pipe = pipes[pipe_index].as_mut().unwrap();
+            pipe.readers_count += 1;
+        }
+
+        FdMapping::PipeWriteEnd(pipe_index) => {
+            let mut pipes = scheduler::PIPES.lock();
+            let pipe = pipes[pipe_index].as_mut().unwrap();
+            pipe.writers_count += 1;
+        }
+
         FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr => {} // No need to update ref count of stdin, stdout or stderr since they are handled specially anyways
     }
 
-    proc_data.fd_mapping.push(Some(node_mapping));
+    // FIXME: This is non-compliant
+    // NOTE: Consider changing it so it uses the lowest fd number available instead of a fd number that is known to be free
+    proc_data.fd_mappings.push(Some(node_mapping));
     // -1 because we just added the new one
-    proc_data.fd_mapping.len() as isize - 1
+    proc_data.fd_mappings.len() as isize - 1
 }
 
 fn dup2(proc_data: &mut ProcessData, oldfd: usize, newfd: usize) -> isize {
-    let Some(Some(node_mapping)) = proc_data.fd_mapping.get_mut(oldfd).copied() else {
+    let Some(Some(node_mapping)) = proc_data.fd_mappings.get_mut(oldfd).cloned() else {
         return -1;
     };
 
     close(proc_data, newfd);
 
     match node_mapping {
-        FdMapping::Index(node_index) => {
-            // NOTE: If the node_index exists then the node must exist
+        FdMapping::Regular(node_index) => {
+            // NOTE: If the fd mapping exists then the node must exist
             let node = proc_data.open_nodes[node_index].as_mut().unwrap();
             node.reference_count += 1;
+        }
+
+        FdMapping::PipeReadEnd(pipe_index) => {
+            let mut pipes = scheduler::PIPES.lock();
+            let pipe = pipes[pipe_index].as_mut().unwrap();
+            pipe.readers_count += 1;
+        }
+
+        FdMapping::PipeWriteEnd(pipe_index) => {
+            let mut pipes = scheduler::PIPES.lock();
+            let pipe = pipes[pipe_index].as_mut().unwrap();
+            pipe.writers_count += 1;
         }
 
         FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr => {} // No need to update ref count of stdin, stdout or stderr since they are handled specially anyways
     }
 
-    if newfd > proc_data.fd_mapping.len() {
-        proc_data.fd_mapping.resize(newfd+1, None);
+    if newfd > proc_data.fd_mappings.len() {
+        proc_data.fd_mappings.resize(newfd+1, None);
     }
 
-    proc_data.fd_mapping[newfd] = Some(node_mapping);
+    proc_data.fd_mappings[newfd] = Some(node_mapping);
     newfd as isize
 }
 
@@ -595,8 +708,29 @@ fn fork(emu: &mut Emulator, proc_data: &mut ProcessData) -> usize {
         _ => {
             // We are the parent
             let mut child = Process::new(emu.clone(), proc_data.clone());
+
+            // Since pipes are global we need to go through all the pipe fds and increment their reference counts
+            // as cloning the proc_data is equivalent to creating new fds that point to the same pipe with dup
+            // The reason this is fine for regular files is because files are cloned when we clone, but
+            // pipes are not as they are global
+            let mut pipes = scheduler::PIPES.lock();
+
+            for fd_mapping in child.data.fd_mappings.iter() {
+                match fd_mapping.clone() {
+                    Some(FdMapping::PipeReadEnd(pipe_index)) => {
+                        pipes[pipe_index].as_mut().unwrap().readers_count += 1;
+                    }
+                    
+                    Some(FdMapping::PipeWriteEnd(pipe_index)) => {
+                        pipes[pipe_index].as_mut().unwrap().writers_count += 1;
+                    }
+
+                    _ => ()
+                }
+            }
+
             // Since our tick hasn't ended we haven't advanced past the syscall instruction
-            // so the clone we just made is still on the same instruction as us, which is syscall fork
+            // so the child we just made is still on the same instruction as us, which is syscall fork
             // So when we tick it, it will also call fork, to prevent it from cloning itself again, we use the just_forked flag
             // to inform it that it is a new child and that it's call to fork should return 0
             child.data.parent_pid = proc_data.pid;
@@ -638,10 +772,10 @@ fn waitpid(emu: &mut Emulator, proc_data: &mut ProcessData, pid: isize, wstatus:
 
     if pid == -1 { // Wait for any child process
         proc_data.state = ProcessState::WAITING_FOR_CHILD_PROCESS{cpid: None};
-        return None; // Tell he cpu to repeat syscall so once the scheduler tells us that the child received an update we can return
-    } else if pid > 0 {
+        return None; // Tell the cpu to repeat syscall so once the scheduler tells us that the child received an update we can return
+    } else if pid > 0 { // Wait for a specific child process
         proc_data.state = ProcessState::WAITING_FOR_CHILD_PROCESS{cpid: Some(pid as usize)};
-        return None; // Tell he cpu to repeat syscall so once the scheduler tells us that the child received an update we can return
+        return None; // Tell the cpu to repeat syscall so once the scheduler tells us that the child received an update we can return
     }
 
     return Some(-1);
@@ -917,7 +1051,7 @@ pub fn parse_argv_and_envp_with_envp_quirk(virtual_memory: &impl VirtualMemory, 
 }
 
 fn fexecve(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, argv: virtmem::UserPointer<[u64]>, envp: virtmem::UserPointer<[u64]>) -> Result<(), isize> {
-    let Some(Some(FdMapping::Index(node_index))) = proc_data.fd_mapping.get(fd).copied() else{
+    let Some(Some(FdMapping::Regular(node_index))) = proc_data.fd_mappings.get(fd).cloned() else{
         // Causes invalid fds and fds that map to stdin, stdout and stderr to error out
         return Err(-1);
     };
@@ -1013,3 +1147,21 @@ fn execvpe(emu: &mut Emulator, proc_data: &mut ProcessData, file: virtmem::UserP
     exec_internal::exec(emu, proc_data, node, path, parsed_args, parsed_env, 0)
 }
 
+fn pipe(emu: &mut Emulator, proc_data: &mut ProcessData, fds: virtmem::UserPointer<[core::ffi::c_int]>) -> isize {
+    let Some(fds) = fds.try_as_mut(&mut emu.memory, 2) else { return -1; }; // Error out if ptr is not mapped in the virtual space
+    let mut pipes = scheduler::PIPES.lock();
+    let pipe_index = pipes.len();
+    pipes.push(Some(ProcessPipe{buf: VecDeque::new(), readers_count: 1, writers_count: 1}));
+
+    // FIXME: This is non-compliant
+    // NOTE: Consider using the lowest free fd instead of a fd that is known to be free
+    let read_fd = proc_data.fd_mappings.len();
+    proc_data.fd_mappings.push(Some(FdMapping::PipeReadEnd(pipe_index)));
+    let write_fd = proc_data.fd_mappings.len();
+    proc_data.fd_mappings.push(Some(FdMapping::PipeWriteEnd(pipe_index)));
+    
+    fds[0] = read_fd as core::ffi::c_int;
+    fds[1] = write_fd as core::ffi::c_int;
+
+    return 0;
+}

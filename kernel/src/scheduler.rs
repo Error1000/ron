@@ -1,4 +1,4 @@
-use crate::{Mutex, primitives::{LazyInitialised, MutexGuard}, process::{Process, ProcessState, WaitInformation}, UART};
+use crate::{Mutex, primitives::{LazyInitialised, MutexGuard}, process::{Process, ProcessState, WaitInformation, ProcessPipe}, UART};
 use alloc::vec::Vec;
 
 static TASK_LIST: Mutex<LazyInitialised<Vec<Option<Process>>>> = Mutex::from(LazyInitialised::uninit());
@@ -7,18 +7,23 @@ static TASK_LIST: Mutex<LazyInitialised<Vec<Option<Process>>>> = Mutex::from(Laz
 static NUMBER_OF_TASKS: Mutex<LazyInitialised<usize>> = Mutex::from(LazyInitialised::uninit());
 static NEW_TASK_LIST: Mutex<LazyInitialised<Vec<Option<Process>>>> = Mutex::from(LazyInitialised::uninit());
 
+pub static PIPES: Mutex<LazyInitialised<Vec<Option<ProcessPipe>>>> = Mutex::from(LazyInitialised::uninit());
+
+
+// WARNING: Global allocator must be initialized before calling this function!
 pub fn init() {
     TASK_LIST.lock().set(Vec::new());
     NEW_TASK_LIST.lock().set(Vec::new());
     NUMBER_OF_TASKS.lock().set(0);
+    PIPES.lock().set(Vec::new());
 }
 
 // Returns: The new processes pid
-pub fn new_task(mut program:  Process) -> usize {
+pub fn new_task(mut process:  Process) -> usize {
     let mut list = NEW_TASK_LIST.lock();
     let new_pid = NUMBER_OF_TASKS.lock().clone();
-    program.data.pid = Some(new_pid);
-    list.push(Some(program));
+    process.data.pid = Some(new_pid);
+    list.push(Some(process));
     **NUMBER_OF_TASKS.lock() += 1;
     new_pid
 }
@@ -31,7 +36,7 @@ fn move_new_tasks_into_list(list: &mut MutexGuard<LazyInitialised<Vec<Option<Pro
 
 
 // Forcibly removes process from task list, calling it's destructor which deallocates all it's resources
-// NOTE: This skips the program state TERMINATED_WAITING_TO_BE_DEALLOCATED and just removes the process directly
+// NOTE: This skips the process state TERMINATED_WAITING_TO_BE_DEALLOCATED and just removes the process directly
 pub fn kill_task(pid: usize) {
     let mut list = TASK_LIST.lock();
     move_new_tasks_into_list(&mut list); // Since we have a lock might as well make sure we have all the tasks in one list
@@ -44,28 +49,29 @@ pub fn kill_task(pid: usize) {
 pub fn tick() -> bool {
     let mut list = TASK_LIST.lock();
     move_new_tasks_into_list(&mut list); // Since we have a lock might as well make sure we have all the tasks in one list
+
     for i in 0..list.len() {
         if list[i].is_none() { continue; }
         // SAFTEY: list[i].unwrap() is guaranteed to work because of the if above
 
         match list[i].as_ref().unwrap().data.state {
             ProcessState::RUNNING | crate::process::ProcessState::RUNNING_NEW_CHILD_JUST_FORKED  | ProcessState::FINISHED_WAITING_FOR_CHILD_PROCESS(_) => {
-                let program = list[i].as_mut().unwrap();
-                if program.tick().is_none() { // Program ended due to illegal instruction or another type of exception
+                let process = list[i].as_mut().unwrap();
+                if process.tick().is_none() { // Program ended due to illegal instruction or another type of exception
                     // FIXME: Should use SIGILL when i get around to implementing signals
-                    if program.data.parent_pid != None { // If we are a child we don't want to be deallocated until the parent acknowledges us
-                        program.data.state = ProcessState::TERMINATED_DUE_TO_ILLEGAL_INSTRUCTION_WAITING_TO_BE_DEALLOCATED;
+                    if process.data.parent_pid != None { // If we are a child we don't want to be deallocated until the parent acknowledges us
+                        process.data.state = ProcessState::TERMINATED_DUE_TO_ILLEGAL_INSTRUCTION_WAITING_TO_BE_DEALLOCATED;
                     } else {
-                        program.data.state = ProcessState::TERMINATED_DUE_TO_ILLEGAL_INSTRUCTION_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT;
+                        process.data.state = ProcessState::TERMINATED_DUE_TO_ILLEGAL_INSTRUCTION_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT;
                     }
                 }
                     
-                move_new_tasks_into_list(&mut list);
+                move_new_tasks_into_list(&mut list); // In case the process called a syscall which created a new process like fork, move the new process into the list
             }
 
             ProcessState::WAITING_FOR_CHILD_PROCESS{cpid} => {
-                // A state change is considered to
-                // be: the child terminated; the child was stopped by a signal; or
+                // A state change is considered to be:
+                // the child terminated; the child was stopped by a signal; or
                 // the child was resumed by a signal.
                 // Source: man waitpid 
                 let our_pid = list[i].as_ref().unwrap().data.pid.unwrap();
@@ -112,6 +118,15 @@ pub fn tick() -> bool {
                 }
             }
 
+            ProcessState::WAITING_FOR_READ_PIPE { pipe_index } => {
+                // Wait for pipe to get data
+                let pipes = PIPES.lock();
+                let pipe = pipes[pipe_index].as_ref().unwrap();
+                if pipe.buf.len() > 0 || pipe.writers_count == 0 {
+                    list[i].as_mut().unwrap().data.state = ProcessState::RUNNING;
+                }
+            }
+
             ProcessState::TERMINATED_NORMALLY_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT{exit_code} => {
                 // Check to see if we have been orphaned
                 let parents_pid = list[i].as_ref().unwrap().data.parent_pid.unwrap();
@@ -140,7 +155,7 @@ pub fn tick() -> bool {
 
             ProcessState::TERMINATED_NORMALLY_WAITING_TO_BE_DEALLOCATED{exit_code: _} => {
                 use core::fmt::Write;
-                writeln!(UART.lock(), "State after program ended normally: {:?}", list[i].as_ref().unwrap()).unwrap();
+                writeln!(UART.lock(), "State after process ended normally: {:?}", list[i].as_ref().unwrap()).unwrap();
                 list[i] = None;
                 // Drain None's if it wouldn't affect the indices of elements that are Some
                 while list.last().map(|val|val.is_none()).unwrap_or(false) { list.pop(); }
@@ -148,7 +163,7 @@ pub fn tick() -> bool {
 
             ProcessState::TERMINATED_DUE_TO_ILLEGAL_INSTRUCTION_WAITING_TO_BE_DEALLOCATED => {
                 use core::fmt::Write;
-                writeln!(UART.lock(), "State after program ended due to illegal instruction: {:?}", list[i].as_ref().unwrap()).unwrap();
+                writeln!(UART.lock(), "State after process ended due to illegal instruction: {:?}", list[i].as_ref().unwrap()).unwrap();
                 list[i] = None;
                 // Drain None's if it wouldn't affect the indices of elements that are Some
                 while list.last().map(|val|val.is_none()).unwrap_or(false) { list.pop(); }

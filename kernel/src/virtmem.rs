@@ -359,6 +359,9 @@ impl KernPointer<u16> {
     }
 }
 
+
+// NOTE: The order of first .add'ing the pointer before casting is correct since the offset is in bytes, and add offsets in units of T which is u8 since backing_storage is a vec of u8
+
 impl UserPointer<u8> {
     // SAFTEY: Constructors assume address is in correct space
     pub unsafe fn from_mem(addr: u64) -> Self {
@@ -372,6 +375,48 @@ impl UserPointer<u8> {
 
     pub fn try_as_val<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<u8> {
         Some(unsafe{*self.try_as_ptr(virtual_memory)?})
+    }
+}
+
+impl UserPointer<core::ffi::c_int> {
+    // SAFTEY: Constructors assume address is in correct space
+    pub unsafe fn from_mem(addr: u64) -> Self {
+        Self { inner: addr, phantom_hold: PhantomData }
+    }
+
+    pub fn try_as_ptr<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<*mut core::ffi::c_int> {
+        let region = virtual_memory.try_map_mut(self.inner)?;
+        Some(unsafe { region.0.backing_storage.as_mut_ptr().add(region.1.offset_in_region) as *mut core::ffi::c_int })
+    }
+
+    pub fn try_as_val<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<core::ffi::c_int> {
+        Some(unsafe{*self.try_as_ptr(virtual_memory)?})
+    }
+}
+
+impl UserPointer<[core::ffi::c_int]> {
+    // SAFTEY: Constructors assume address is in correct space
+    pub unsafe fn from_mem(addr: u64) -> Self {
+        Self { inner: addr, phantom_hold: PhantomData }
+    }
+
+    pub fn try_as_ptr<'mem>(&self, virtual_memory: &'mem impl VirtualMemory) -> Option<*const core::ffi::c_int> {
+        let region = virtual_memory.try_map(self.inner)?;
+        Some(unsafe { region.0.backing_storage.as_ptr().add(region.1.offset_in_region) as *const core::ffi::c_int})
+    }
+
+    pub fn try_as_mut_ptr<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory) -> Option<*mut core::ffi::c_int> {
+        let region = virtual_memory.try_map_mut(self.inner)?;
+        Some(unsafe { region.0.backing_storage.as_mut_ptr().add(region.1.offset_in_region) as *mut core::ffi::c_int})
+    }
+
+
+    pub fn try_as_mut<'mem>(&self, virtual_memory: &'mem mut impl VirtualMemory, count: usize) -> Option<&'mem mut [core::ffi::c_int]> {
+        Some(unsafe{ core::slice::from_raw_parts_mut(self.try_as_mut_ptr(virtual_memory)?, count) })
+    }
+
+    pub fn try_as_ref<'mem>(&self, virtual_memory: &'mem impl VirtualMemory, count: usize) -> Option<&'mem [core::ffi::c_int]> {
+        Some(unsafe{ core::slice::from_raw_parts(self.try_as_ptr(virtual_memory)?, count) })
     }
 }
 

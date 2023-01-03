@@ -1,4 +1,5 @@
 use alloc::borrow::ToOwned;
+use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec;
 use alloc::{ vec::Vec, collections::BTreeMap};
@@ -6,6 +7,7 @@ use core::fmt::Debug;
 use packed_struct::EnumCatchAll;
 
 use crate::allocator::{ProgramBasicAlloc, BasicAlloc};
+use crate::scheduler;
 use crate::{
     allocator,
     elf::{elf_header, elf_program_header, ElfFile},
@@ -14,18 +16,28 @@ use crate::{
     virtmem::{LittleEndianVirtualMemory, VirtualMemory},
 };
 
+#[derive(Debug)]
+pub struct ProcessPipe {
+    pub buf: VecDeque<u8>,
+    pub readers_count: usize,
+    pub writers_count: usize,
+}
+
 #[derive(Clone)]
 pub struct ProcessNode {
     pub vfs_node: vfs::Node,
     pub cursor: u64, /* Note cursor points at the byte to write to next, not before or after it */
     pub flags: usize,
     pub path: vfs::Path,
-    pub reference_count: usize // Keeps track of the number of references so that we don't close a fd that still has references to it
+    pub reference_count: usize // Keeps track of the number of references so that we don't close a node that still has fds to it
 }
 
-#[derive(Debug, Clone, Copy)]
+// WARNING: Cloning will *NOT* increment the ref count of the underlying data
+#[derive(Debug, Clone)]
 pub enum FdMapping {
-    Index(usize),
+    Regular(usize),
+    PipeReadEnd(usize),
+    PipeWriteEnd(usize),
     Stdin,
     Stdout,
     Stderr,
@@ -49,6 +61,7 @@ pub enum ProcessState {
     RUNNING,
     RUNNING_NEW_CHILD_JUST_FORKED,
     WAITING_FOR_CHILD_PROCESS{cpid: Option<usize>},
+    WAITING_FOR_READ_PIPE{pipe_index: usize},
     FINISHED_WAITING_FOR_CHILD_PROCESS(Option<WaitInformation>), // Used to allow the scheduler to inform the process that the child changed state
     TERMINATED_NORMALLY_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT{exit_code: usize}, // equivalent to ZOMBIE on linux
     TERMINATED_NORMALLY_WAITING_TO_BE_DEALLOCATED{exit_code: usize},
@@ -64,7 +77,7 @@ pub struct ProcessData {
     // In fd_mapping this is needed because indices into it are fds and the program
     // won't update it's fds just because i remove a fd from the middle
     pub open_nodes: Vec<Option<ProcessNode>>,
-    pub fd_mapping: Vec<Option<FdMapping>>, // Maps fds to node indices
+    pub fd_mappings: Vec<Option<FdMapping>>, // Maps fds to node indices
     pub cwd: vfs::Path,
     pub env: BTreeMap<String, u64>, // Maps environment variable names to a virtual pointer where the value of the variable is loaded as a c-string
     pub virtual_allocator: BasicAlloc, // Allows the process to manage virtual segments/mappings dynamically
@@ -79,7 +92,22 @@ impl ProcessData {
         env: BTreeMap<String, u64>,
         virtual_allocator: BasicAlloc
     ) -> Self {
-        ProcessData { open_nodes: Vec::new(), fd_mapping: vec![Some(FdMapping::Stdin), Some(FdMapping::Stdout), Some(FdMapping::Stderr)], cwd, env, virtual_allocator, state: ProcessState::RUNNING, pid: None, parent_pid: None}
+        ProcessData { open_nodes: Vec::new(), fd_mappings: vec![Some(FdMapping::Stdin), Some(FdMapping::Stdout), Some(FdMapping::Stderr)], cwd, env, virtual_allocator, state: ProcessState::RUNNING, pid: None, parent_pid: None}
+    }
+}
+
+impl Drop for ProcessData {
+    fn drop(&mut self) {
+        // Close any fds that have global state, like pipes
+        for fd in 0..self.fd_mappings.len() {
+            match self.fd_mappings[fd] {
+                Some(FdMapping::PipeReadEnd(_)) => {syscall::close(self, fd);},
+                Some(FdMapping::PipeWriteEnd(_)) => {syscall::close(self, fd);},
+                _ => (),
+            }
+        }
+
+  
     }
 }
 

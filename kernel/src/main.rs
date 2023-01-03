@@ -696,9 +696,6 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             writeln!(UART.lock(), "Program entry point: {}", elf.header.program_entry).unwrap();
                             writeln!(UART.lock(), "Number of parsed program headers in elf: {}", elf.program_headers.len())
                                 .unwrap();
-                            for header in elf.program_headers {
-                                writeln!(UART.lock(), "Found program header in elf file, type: {:?}, in-file offset: {}, in-file size: {}, virtual offset: {}, virtual size: {}, flags: 0b{:b}", header.segment_type, header.segment_file_offset, header.segment_file_size, header.segment_virtual_address, header.segment_virtual_size, header.flags).unwrap();
-                            }
                         }
 
                         let mut program_env = BTreeMap::new();
