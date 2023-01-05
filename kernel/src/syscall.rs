@@ -6,6 +6,7 @@ use core::{
 use alloc::{vec::Vec, string::String, borrow::ToOwned, collections::{BTreeMap, VecDeque}};
 use rlibc::sys::O_RDONLY;
 use rlibc::sys::SyscallNumber;
+use rlibc::sys::SignalType;
 
 use crate::{
     hio::KeyboardPacketType,
@@ -185,7 +186,11 @@ pub fn syscall_entry_point(emu: &mut Emulator, proc_data: &mut ProcessData) -> C
 }
 
 fn exit(proc_data: &mut ProcessData, exit_code: usize) {
-    proc_data.state = ProcessState::TERMINATED_NORMALLY_WAITING_TO_BE_DEALLOCATED{exit_code};
+    if proc_data.parent_pid == None {
+        proc_data.state = ProcessState::TERMINATED_NORMALLY_WAITING_TO_BE_DEALLOCATED{exit_code};
+    } else {
+        proc_data.state = ProcessState::TERMINATED_NORMALLY_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT{exit_code};
+    }
 }
 
 fn write(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, user_buf: UserPointer<[u8]>, count: usize) -> i32 {
@@ -752,6 +757,7 @@ fn waitpid(emu: &mut Emulator, proc_data: &mut ProcessData, pid: isize, wstatus:
     // FIXME: Support waiting for stopping and resuming once we have signals
 
     if let ProcessState::FINISHED_WAITING_FOR_CHILD_PROCESS(info) = proc_data.state {
+        proc_data.state = ProcessState::RUNNING;
         match info {
             Some(info) => {
                 let Some(wstatus_ptr) = wstatus.try_as_ptr(&mut emu.memory) else {
@@ -759,8 +765,10 @@ fn waitpid(emu: &mut Emulator, proc_data: &mut ProcessData, pid: isize, wstatus:
                 };
 
                 if wstatus_ptr != null_mut() {
-                    // FIXME: Right now we only support exit status
-                    unsafe{ *wstatus_ptr = 0b1_00000000 | info.exit_code & 0b11111111; }
+                    match info.action {
+                        crate::process::WaitAction::EXITED { exit_code } => unsafe{ *wstatus_ptr = 0b00_00000000 | exit_code & 0b11111111; },
+                        crate::process::WaitAction::TERMINATED_BY_SIGNAL { signal } => unsafe{ *wstatus_ptr = 0b01_00000000 | (u8::from(signal.signal_type) as usize) & 0b11111111; },
+                    }
                 }
 
                 return Some(info.cpid as isize);
@@ -768,17 +776,18 @@ fn waitpid(emu: &mut Emulator, proc_data: &mut ProcessData, pid: isize, wstatus:
 
             None => return Some(-1) // The child pid that we were waiting for is invalid or there is no child to wait for
         }
-    }
+    }else{
 
-    if pid == -1 { // Wait for any child process
-        proc_data.state = ProcessState::WAITING_FOR_CHILD_PROCESS{cpid: None};
-        return None; // Tell the cpu to repeat syscall so once the scheduler tells us that the child received an update we can return
-    } else if pid > 0 { // Wait for a specific child process
-        proc_data.state = ProcessState::WAITING_FOR_CHILD_PROCESS{cpid: Some(pid as usize)};
-        return None; // Tell the cpu to repeat syscall so once the scheduler tells us that the child received an update we can return
-    }
+        if pid == -1 { // Wait for any child process
+            proc_data.state = ProcessState::WAITING_FOR_CHILD_PROCESS{cpid: None};
+            return None; // Tell the cpu to repeat syscall so once the scheduler tells us that the child received an update we can return
+        } else if pid > 0 { // Wait for a specific child process
+            proc_data.state = ProcessState::WAITING_FOR_CHILD_PROCESS{cpid: Some(pid as usize)};
+            return None; // Tell the cpu to repeat syscall so once the scheduler tells us that the child received an update we can return
+        }
 
-    return Some(-1);
+        return Some(-1);
+    }
 }
 
 
@@ -833,7 +842,7 @@ pub fn exec(emu: &mut Emulator, proc_data: &mut ProcessData, node: vfs::Node, no
 
         let lower_virt_addr = Process::load_elf_into_virtual_memory(&elf, &file_bytes, &mut emu.memory)
         .ok_or_else(|| {
-            exit( proc_data, 1);
+            exit( proc_data, 0xDED);
             return -1isize; // We need to return something so just return -1 even if it doesn't matter
         })?; // Return -1 if we can't expand and map the elf into virtual memory
         
@@ -848,7 +857,7 @@ pub fn exec(emu: &mut Emulator, proc_data: &mut ProcessData, node: vfs::Node, no
             program_stack, // NOTE: We don't use [] because that would allocate 1MB on the stack, then move it to the heap, which might overflow the stack
         );
         if did_create_stack_region.is_none() { // We failed to add a stack region
-            exit( proc_data, 1);
+            exit( proc_data, 0xDED);
             return Err(-1); // We need to return something so just return -1 even if it doesn't matter
         }
 
@@ -864,7 +873,7 @@ pub fn exec(emu: &mut Emulator, proc_data: &mut ProcessData, node: vfs::Node, no
             &mut emu.memory, 
             &mut proc_data.virtual_allocator
         ) else {
-            exit( proc_data, 1);
+            exit( proc_data, 0xDED);
             return Err(-1); // We need to return something so just return -1 even if it doesn't matter
         };
 
@@ -874,7 +883,7 @@ pub fn exec(emu: &mut Emulator, proc_data: &mut ProcessData, node: vfs::Node, no
             &mut emu.memory, 
             &mut proc_data.virtual_allocator
         ) else {
-            exit( proc_data, 1);
+            exit( proc_data, 0xDED);
             return Err(-1); // We need to return something so just return -1 even if it doesn't matter
         };
 

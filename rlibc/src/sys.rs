@@ -191,6 +191,7 @@ pub unsafe extern "C" fn pipe(fds: *const core::ffi::c_int) -> core::ffi::c_int 
     read_syscall_return() as core::ffi::c_int
 }
 
+#[derive(Debug, Clone, Copy)]
 #[repr(usize)]
 pub enum SyscallNumber {
     Exit = 0,
@@ -214,6 +215,20 @@ pub enum SyscallNumber {
     Execvpe = 18,
     Pipe = 19,
     MaxValue,
+}
+
+
+#[derive(Debug, Clone, Copy)]
+#[repr(u8)]
+pub enum SignalType {
+    SIGILL = 0,
+    SIGKILL = 1,
+}
+
+impl From<SignalType> for u8  {
+    fn from(value: SignalType) -> Self {
+        unsafe{core::mem::transmute(value)}
+    }
 }
 
 impl TryFrom<usize> for SyscallNumber {

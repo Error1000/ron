@@ -4,10 +4,10 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::{ vec::Vec, collections::BTreeMap};
 use core::fmt::Debug;
+use rlibc::sys::SignalType;
 use packed_struct::EnumCatchAll;
 
 use crate::allocator::{ProgramBasicAlloc, BasicAlloc};
-use crate::scheduler;
 use crate::{
     allocator,
     elf::{elf_header, elf_program_header, ElfFile},
@@ -15,6 +15,14 @@ use crate::{
     syscall, vfs,
     virtmem::{LittleEndianVirtualMemory, VirtualMemory},
 };
+
+
+
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessSignal {
+    pub signal_type: SignalType
+}
+
 
 #[derive(Debug)]
 pub struct ProcessPipe {
@@ -51,23 +59,35 @@ impl Debug for ProcessNode {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub enum WaitAction {
+    EXITED{exit_code: usize},
+    TERMINATED_BY_SIGNAL{signal: ProcessSignal},
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct WaitInformation {
     pub cpid: usize,
-    pub exit_code: usize
+    pub action: WaitAction
 }
 
 #[derive(Debug, Clone)]
 pub enum ProcessState {
+    // Process will be ticked in this state
     RUNNING,
     RUNNING_NEW_CHILD_JUST_FORKED,
+    FINISHED_WAITING_FOR_CHILD_PROCESS(Option<WaitInformation>), // Used to allow the scheduler to inform the process that the child changed state
+
+    // Process will not be ticked in this state but is kept either fully or partially alive
     WAITING_FOR_CHILD_PROCESS{cpid: Option<usize>},
     WAITING_FOR_READ_PIPE{pipe_index: usize},
-    FINISHED_WAITING_FOR_CHILD_PROCESS(Option<WaitInformation>), // Used to allow the scheduler to inform the process that the child changed state
     TERMINATED_NORMALLY_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT{exit_code: usize}, // equivalent to ZOMBIE on linux
+    TERMINATED_DUE_TO_SIGNAL_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT{signal: ProcessSignal},
+
+    // Process will not be ticked and will not be kept alive 
     TERMINATED_NORMALLY_WAITING_TO_BE_DEALLOCATED{exit_code: usize},
-    TERMINATED_DUE_TO_ILLEGAL_INSTRUCTION_WAITING_TO_BE_DEALLOCATED,
-    TERMINATED_DUE_TO_ILLEGAL_INSTRUCTION_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT,
+    TERMINATED_DUE_TO_SIGNAL_WAITING_TO_BE_DEALLOCATED{signal: ProcessSignal},
 }
+
 
 #[derive(Debug, Clone)]
 pub struct ProcessData {
@@ -290,5 +310,34 @@ impl Process {
 
     pub fn tick(&mut self) -> Option<()> {
         self.emu.tick(&mut self.data)
+    }
+
+    pub fn recive_signal(&mut self, signal: ProcessSignal) {
+        let mut dispostion_terminate = || {
+            // Check to make sure we are not already dead
+            let is_dead = match self.data.state {
+                ProcessState::TERMINATED_NORMALLY_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT { exit_code: _ } => true,
+                ProcessState::TERMINATED_NORMALLY_WAITING_TO_BE_DEALLOCATED { exit_code: _ } => true,
+                ProcessState::TERMINATED_DUE_TO_SIGNAL_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT { signal: _ } => true,
+                ProcessState::TERMINATED_DUE_TO_SIGNAL_WAITING_TO_BE_DEALLOCATED { signal: _ } => true,
+                _ => false
+            };
+
+            if !is_dead {
+                if self.data.parent_pid.is_none() {
+                    self.data.state = ProcessState::TERMINATED_DUE_TO_SIGNAL_WAITING_TO_BE_DEALLOCATED { signal };
+                } else {
+                    self.data.state = ProcessState::TERMINATED_DUE_TO_SIGNAL_CHILD_WAITING_FOR_PARENT_ACKNOWLEDGEMENT { signal };
+                }
+            }   
+        };
+
+        // FIXME: Implement core dumping
+        let mut disposition_coredump = || dispostion_terminate();
+
+        match signal.signal_type {
+            SignalType::SIGKILL => dispostion_terminate(),
+            SignalType::SIGILL => disposition_coredump(),
+        }
     }
 }
