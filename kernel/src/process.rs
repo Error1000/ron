@@ -126,8 +126,6 @@ impl Drop for ProcessData {
                 _ => (),
             }
         }
-
-  
     }
 }
 

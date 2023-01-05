@@ -13,7 +13,7 @@ use crate::{
     ps2_8042::KEYBOARD_INPUT,
     vfs::{self, Path},
     virtmem::{self, UserPointer, VirtualMemory},
-    UART, allocator::{ProgramBasicAlloc, self, BasicAlloc}, scheduler, emulator::CpuAction, elf::{ElfFile, elf_header},
+    UART, allocator::{ProgramBasicAlloc, self, BasicAlloc}, scheduler, emulator::CpuAction, elf::{ElfFile, elf_header}, terminal::TERMINAL,
 };
 
 /* TODO: Add errno to program
@@ -338,6 +338,7 @@ fn read(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, user_buf: Us
 
                 let Ok(c) = standard_usa_qwerty::parse_key(packet.key, packet.modifiers) else { continue; };
                 buf[0] = if let Ok(val) = c.try_into() { val } else { continue };
+                TERMINAL.lock().recive_key(packet.key, packet.modifiers);
                 return Some(1);
             }
         }
@@ -428,6 +429,8 @@ pub fn close(proc_data: &mut ProcessData, fd: usize) -> isize {
                 while pipes.last().map(|val|val.is_none()).unwrap_or(false) {
                     pipes.pop();
                 }
+                
+                pipes.shrink_to_fit();
             } else if pipe.readers_count >= 1 { // Pipes can still exist with 0 writes, this is to allow readers to finish reading all the contents of the pipe
                 pipe.readers_count -= 1;
             }

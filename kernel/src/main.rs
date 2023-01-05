@@ -402,7 +402,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                     )
                     .unwrap();
 
-                    writeln!(TERMINAL.lock(), "Breakdown: {}% used of kernel heap, and {}% of program heap!", kernel_heap_used as f32/kernel_heap_max as f32, program_heap_used as f32/program_heap_max as f32).unwrap();
+                    writeln!(TERMINAL.lock(), "Breakdown: {}% used of kernel heap, and {}% of program heap!", (kernel_heap_used as f32/kernel_heap_max as f32) * 100.0, (program_heap_used as f32/program_heap_max as f32)*100.0).unwrap();
                 } else if cmnd.starts_with("mount.ext2") {
                     if let (Some(file), Some(mntpoint)) = (splat.next(), splat.next()) {
                         let mut file_node = vfs::Path::try_from(file.trim());

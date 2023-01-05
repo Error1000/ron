@@ -190,6 +190,7 @@ pub fn tick() -> bool {
 
                 // Drain None's if it wouldn't affect the indices of elements that are Some
                 while list.last().map(|val|val.is_none()).unwrap_or(false) { list.pop(); }
+                list.shrink_to_fit();
 
                 // Remove our signal queue
                 let mut signals = SIGNAL_QUEUES.lock();
@@ -197,6 +198,7 @@ pub fn tick() -> bool {
 
                 // Drain None's if it wouldn't affect the indices of elements that are Some
                 while signals.last().map(|val|val.is_none()).unwrap_or(false) { signals.pop(); }
+                signals.shrink_to_fit();
             }
 
             ProcessState::TERMINATED_DUE_TO_SIGNAL_WAITING_TO_BE_DEALLOCATED { signal } => {
@@ -206,6 +208,7 @@ pub fn tick() -> bool {
 
                 // Drain None's if it wouldn't affect the indices of elements that are Some
                 while list.last().map(|val|val.is_none()).unwrap_or(false) { list.pop(); }
+                list.shrink_to_fit();
 
                 // Remove our signal queue
                 let mut signals = SIGNAL_QUEUES.lock();
@@ -213,10 +216,12 @@ pub fn tick() -> bool {
 
                 // Drain None's if it wouldn't affect the indices of elements that are Some
                 while signals.last().map(|val|val.is_none()).unwrap_or(false) { signals.pop(); }
+                signals.shrink_to_fit();
             }
         }
         
     }
 
+    
     return list.len() > 0;
 }
