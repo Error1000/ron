@@ -3,7 +3,7 @@ use core::fmt::{Debug, Write};
 use crate::{
     char_device::CharDevice,
     framebuffer::{FrameBuffer, Pixel},
-    primitives::{LazyInitialised, Mutex},
+    primitives::{LazyInitialised, Mutex}, hio::{KeyboardKey, standard_usa_qwerty}, ps2_8042::KeyboardModifiers,
 };
 
 pub static TERMINAL: Mutex<LazyInitialised<Terminal<'static>>> = Mutex::from(LazyInitialised::uninit());
@@ -122,11 +122,32 @@ impl<'a> Terminal<'a> {
                 }
                 self.cursor_pos.0 = 0;
             }
-            '\r' => {
-                self.cursor_left(); // Go to char
-                self.erase_visual_cursor();
+
+            _ => {
+                self.fb.write_char(self.cursor_pos.0, self.cursor_pos.1, c, self.color);
+                self.cursor_right();
             }
-            c => {
+        }
+        self.update_visual_cursor();
+    }
+
+    pub fn recive_key(&mut self, key: KeyboardKey, modifiers: KeyboardModifiers) {
+        self.erase_visual_cursor(); // erase current cursor
+        match key {
+            KeyboardKey::Enter => {
+                self.cursor_down();
+                for x in 0..self.fb.get_cols() {
+                    self.fb.write_char(x, self.cursor_pos.1, ' ', self.color);
+                }
+                self.cursor_pos.0 = 0;
+            }
+
+            KeyboardKey::Backspace => {
+                self.cursor_left();
+            }
+
+            _ => {
+                let Ok(c) = standard_usa_qwerty::parse_key(key, modifiers) else { return; };
                 self.fb.write_char(self.cursor_pos.0, self.cursor_pos.1, c, self.color);
                 self.cursor_right();
             }

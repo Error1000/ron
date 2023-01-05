@@ -355,7 +355,7 @@ int history_line_count()
  *******************************************************************/
 void signalHandler()
 {
-	signal(SIGINT, signalHandler);
+//	signal(SIGINT, signalHandler);
 	getchar();
 }
 

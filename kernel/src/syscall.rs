@@ -6,10 +6,9 @@ use core::{
 use alloc::{vec::Vec, string::String, borrow::ToOwned, collections::{BTreeMap, VecDeque}};
 use rlibc::sys::O_RDONLY;
 use rlibc::sys::SyscallNumber;
-use rlibc::sys::SignalType;
 
 use crate::{
-    hio::KeyboardPacketType,
+    hio::{KeyboardPacketType, standard_usa_qwerty},
     process::{FdMapping, ProcessData, ProcessNode, Emulator, Process, ProcessState, ProcessPipe},
     ps2_8042::KEYBOARD_INPUT,
     vfs::{self, Path},
@@ -329,23 +328,15 @@ fn read(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, user_buf: Us
         }
 
         FdMapping::Stdin => {
-            // FIXME: Allow character echoing in the console
             loop {
-                // We only allow applications to read only one character from stdin at a time to stop the keyboard from being hogged by applications
+                // We only allow applications to read one character from stdin at a time to stop the keyboard from being hogged by applications
                 // FIXME: Implement better drivers
                 let packet = unsafe { KEYBOARD_INPUT.lock().read_packet() };
-                if packet.typ == KeyboardPacketType::KeyReleased {
+                if packet.packet_type == KeyboardPacketType::KeyReleased {
                     continue;
                 }
-                // FIXME: This shouldn't be here
-                if packet.special_keys.any_ctrl() && packet.char_codepoint == Some('c') {
-                    use crate::TERMINAL;
-                    use core::fmt::Write;
-                    write!(TERMINAL.lock(), "^C").unwrap();
-                    exit(proc_data, 1);
-                }
-                let c = if packet.special_keys.any_shift() { packet.shift_codepoint() } else { packet.char_codepoint };
-                let c = if let Some(val) = c { val } else { continue };
+
+                let Ok(c) = standard_usa_qwerty::parse_key(packet.key, packet.modifiers) else { continue; };
                 buf[0] = if let Ok(val) = c.try_into() { val } else { continue };
                 return Some(1);
             }

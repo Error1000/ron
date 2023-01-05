@@ -1,2 +1,2 @@
-#define SIGILL 0
-#define SIGKILL 1
+#define SIGILL 4
+#define SIGKILL 9

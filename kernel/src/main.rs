@@ -22,6 +22,7 @@ use alloc::vec::Vec;
 use allocator::PROGRAM_ALLOCATOR;
 use ata::{ATABus, ATADevice, ATADeviceFile};
 use char_device::CharDevice;
+use hio::{KeyboardKey, standard_usa_qwerty};
 use primitives::{LazyInitialised, Mutex};
 use process::Process;
 use ps2_8042::KEYBOARD_INPUT;
@@ -32,7 +33,6 @@ use vga::{Color256, Unblanked};
 use crate::allocator::ALLOCATOR;
 use crate::framebuffer::{FrameBuffer, Pixel};
 use crate::hio::KeyboardPacketType;
-use crate::ps2_8042::SpecialKeys;
 use crate::uart_16550::UARTDevice;
 use crate::vga::Vga;
 
@@ -301,40 +301,35 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         ignore_inc_x = false;
         let packet = unsafe { KEYBOARD_INPUT.lock().read_packet() };
 
-        if packet.typ == KeyboardPacketType::KeyReleased && packet.special_keys.esc {
+        if packet.packet_type == KeyboardPacketType::KeyReleased && packet.key == KeyboardKey::Escape {
             break;
         }
 
-        if packet.typ == KeyboardPacketType::KeyReleased {
+        if packet.packet_type == KeyboardPacketType::KeyReleased {
             continue;
         }
 
-        if packet.special_keys.up_arrow {
+        if packet.key == KeyboardKey::UpArrow {
             TERMINAL.lock().visual_cursor_up();
-        } else if packet.special_keys.down_arrow {
+        } else if packet.key == KeyboardKey::DownArrow {
             TERMINAL.lock().visual_cursor_down();
-        } else if packet.special_keys.right_arrow {
+        } else if packet.key == KeyboardKey::RightArrow {
             TERMINAL.lock().visual_cursor_right();
-        } else if packet.special_keys.left_arrow {
+        } else if packet.key == KeyboardKey::LeftArrow {
             TERMINAL.lock().visual_cursor_left();
         }
 
-        let mut c = match packet.char_codepoint {
-            Some(v) => v,
-            None => continue,
-        };
-
-        if packet.special_keys.any_shift() {
-            c = packet.shift_codepoint().unwrap();
-        }
-
-        TERMINAL.lock().write_char(c);
-        if c == '\r' {
+        if packet.key == KeyboardKey::Backspace {
             ignore_inc_x = true;
             if buf_ind > 0 {
                 buf_ind -= 1;
             }
         }
+
+        TERMINAL.lock().recive_key(packet.key, packet.modifiers);
+
+        let Ok(c) = standard_usa_qwerty::parse_key(packet.key, packet.modifiers) else { continue; };
+
         if c == '\n' {
             let bufs = unsafe { from_utf8_unchecked(&cmd_buf[..buf_ind]) }.trim();
             buf_ind = 0; // Flush buffer

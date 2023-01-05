@@ -221,8 +221,8 @@ pub enum SyscallNumber {
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 pub enum SignalType {
-    SIGILL = 0,
-    SIGKILL = 1,
+    SIGILL = 4,
+    SIGKILL = 9,
 }
 
 impl From<SignalType> for u8  {
