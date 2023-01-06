@@ -690,6 +690,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
 
                         let mut program_env = BTreeMap::new();
                         program_env.insert("HOME", "/");
+                        program_env.insert("PATH", "/");
 
                         let mut args = Vec::new();
                         args.push(cmnd);

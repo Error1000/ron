@@ -1492,7 +1492,7 @@ impl Ext2FS {
 
 impl Drop for Ext2FS {
     fn drop(&mut self) {
-        // FIXME: Figure out why drop isn't called
+        // FIXME: Figure out why Ext2FS is leaked
         self.flush_super_blocks();
     }
 }

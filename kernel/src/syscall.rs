@@ -76,12 +76,12 @@ pub fn syscall_entry_point(emu: &mut Emulator, proc_data: &mut ProcessData) -> C
         SyscallNumber::Open => {
             let val =
                 open(emu, proc_data, unsafe { virtmem::UserPointer::<[u8]>::from_mem(argument_1()) }, argument_2() as usize);
-            return_value(val as u64, emu);
+            return_value(val as i64 as u64, emu);
         }
 
         SyscallNumber::Close => {
             let val = close(proc_data, argument_1() as usize);
-            return_value(val as u64, emu);
+            return_value(val as i64 as u64, emu);
         }
 
         SyscallNumber::Malloc => {
@@ -114,17 +114,17 @@ pub fn syscall_entry_point(emu: &mut Emulator, proc_data: &mut ProcessData) -> C
 
         SyscallNumber::Fchdir => {
             let val = fchdir(proc_data, argument_1() as usize);
-            return_value(val as u64, emu);
+            return_value(val as i64 as u64, emu);
         }
 
         SyscallNumber::Dup => {
             let val = dup(proc_data, argument_1() as usize);
-            return_value(val as u64, emu);
+            return_value(val as i64 as u64, emu);
         }
 
         SyscallNumber::Dup2 => {
             let val = dup2(proc_data, argument_1() as usize, argument_2() as usize);
-            return_value(val as u64, emu);
+            return_value(val as i64 as u64, emu);
         }
 
         SyscallNumber::Fork => {
@@ -135,7 +135,7 @@ pub fn syscall_entry_point(emu: &mut Emulator, proc_data: &mut ProcessData) -> C
         SyscallNumber::Waitpid => {
             let val = waitpid(emu, proc_data, argument_1() as isize, unsafe{virtmem::UserPointer::<usize>::from_mem(argument_2())}, argument_3() as usize );
             if let Some(val) = val{
-                return_value(val as u64, emu);
+                return_value(val as i64 as u64, emu);
             }else{
                 // Waitpid will cause the scheduler to stop ticking the program until the change happens, however once the change does happen
                 // the instruction that it *would* execute would be the one after the syscall
@@ -153,7 +153,7 @@ pub fn syscall_entry_point(emu: &mut Emulator, proc_data: &mut ProcessData) -> C
             let res = fexecve(emu, proc_data, argument_1() as usize, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_2())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_3())});
             match res {
                 Ok(_) => return CpuAction::REPEAT_INSTRUCTION, // Don't advance to the next instruction as we want to start executing the new program from the first instruction
-                Err(val) => return_value(val as u64, emu)
+                Err(val) => return_value(val as i64 as u64, emu)
             }
         }
 
@@ -161,7 +161,7 @@ pub fn syscall_entry_point(emu: &mut Emulator, proc_data: &mut ProcessData) -> C
             let res = execve(emu, proc_data, unsafe{virtmem::UserPointer::<[u8]>::from_mem(argument_1())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_2())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_3())});
             match res {
                 Ok(_) => return CpuAction::REPEAT_INSTRUCTION, // Don't advance to the next instruction as we want to start executing the new program from the first instruction
-                Err(val) => return_value(val as u64, emu)
+                Err(val) => return_value(val as i64 as u64, emu)
             }
         }
 
@@ -169,13 +169,13 @@ pub fn syscall_entry_point(emu: &mut Emulator, proc_data: &mut ProcessData) -> C
             let res = execvpe(emu, proc_data, unsafe{virtmem::UserPointer::<[u8]>::from_mem(argument_1())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_2())}, unsafe{virtmem::UserPointer::<[u64]>::from_mem(argument_3())});
             match res {
                 Ok(_) => return CpuAction::REPEAT_INSTRUCTION, // Don't advance to the next instruction as we want to start executing the new program from the first instruction
-                Err(val) => return_value(val as u64, emu)
+                Err(val) => return_value(val as i64 as u64, emu)
             }
         }
 
         SyscallNumber::Pipe => {
             let res = pipe(emu, proc_data, unsafe{virtmem::UserPointer::<[core::ffi::c_int]>::from_mem(argument_1())});
-            return_value(res as u64, emu)
+            return_value(res as i64 as u64, emu)
         }
 
         SyscallNumber::MaxValue => (),
@@ -331,7 +331,7 @@ fn read(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, user_buf: Us
                 buf[0] = c as u8;
                 return Some(1);
             }
-            
+
             loop {
                 // We only allow applications to read one character from stdin at a time to stop the keyboard from being hogged by applications
                 // FIXME: Implement better drivers
@@ -863,11 +863,10 @@ pub fn exec(emu: &mut Emulator, proc_data: &mut ProcessData, node: vfs::Node, no
         emu.memory.clear_regions();
         emu.reset_registers(elf.header.program_entry);
 
-        let lower_virt_addr = Process::load_elf_into_virtual_memory(&elf, &file_bytes, &mut emu.memory)
-        .ok_or_else(|| {
+        let Some(lower_virt_addr) = Process::load_elf_into_virtual_memory(&elf, &file_bytes, &mut emu.memory) else {
             exit( proc_data, 0xDED);
-            return -1isize; // We need to return something so just return -1 even if it doesn't matter
-        })?; // Return -1 if we can't expand and map the elf into virtual memory
+            return Err(-1); // We need to return something so just return -1 even if it doesn't matter
+        }; // Return -1 if we can't expand and map the elf into virtual memory
         
         const PROGRAM_STACK_SIZE: u64 = 8 * 1024;
         let mut program_stack = Vec::new_in(&allocator::PROGRAM_ALLOCATOR);
@@ -1114,6 +1113,8 @@ fn execve(emu: &mut Emulator, proc_data: &mut ProcessData, pathname: virtmem::Us
         return Err(-1) 
     };
 
+    let path = path.canonicalize();
+
     let Some(node) = path.clone().get_node() else { return Err(-1) };
 
     let (parsed_args, parsed_env) = exec_internal::parse_argv_and_envp_with_envp_quirk(&emu.memory, proc_data, argv, envp)
@@ -1172,6 +1173,8 @@ fn execvpe(emu: &mut Emulator, proc_data: &mut ProcessData, file: virtmem::UserP
 
         found
     };
+
+    let path = path.canonicalize();
 
     let (parsed_args, parsed_env) = exec_internal::parse_argv_and_envp_with_envp_quirk(&emu.memory, proc_data, argv, envp)
     .ok_or_else(|| -1isize)?;
