@@ -327,6 +327,11 @@ fn read(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, user_buf: Us
         }
 
         FdMapping::Stdin => {
+            if let Some(c) = TERMINAL.lock().read_char() {
+                buf[0] = c as u8;
+                return Some(1);
+            }
+            
             loop {
                 // We only allow applications to read one character from stdin at a time to stop the keyboard from being hogged by applications
                 // FIXME: Implement better drivers
@@ -334,11 +339,11 @@ fn read(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, user_buf: Us
                 if packet.packet_type == KeyboardPacketType::KeyReleased {
                     continue;
                 }
-
-                let Ok(c) = standard_usa_qwerty::parse_key(packet.key, packet.modifiers) else { continue; };
-                buf[0] = if let Ok(val) = c.try_into() { val } else { continue };
                 TERMINAL.lock().recive_key(packet.key, packet.modifiers);
-                return Some(1);
+                if let Some(c) = TERMINAL.lock().read_char() {
+                    buf[0] = c as u8;
+                    return Some(1);
+                }
             }
         }
 

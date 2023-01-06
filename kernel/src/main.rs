@@ -145,10 +145,12 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
         }
         i += len as usize;
     }
+
     // FIXME: Don't hardcode the starting location of the heap
     // Stack size: 2mb, executable size (as of 17 sep 2022): ~6mb, so starting the heap at 8mb should be a safe bet.
     allocator::ALLOCATOR.lock().init((8 * 1024 * 1024) as *mut u8, 8 * 1024 * 1024);
     allocator::PROGRAM_ALLOCATOR.0.lock().init((16 * 1024 * 1024) as *mut u8, 240 * 1024 * 1024);
+
 
     vfs::VFS_ROOT.lock().set(Rc::new(RefCell::new(RootFSNode::new_root())));
 
@@ -293,12 +295,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
     let mut cur_dir = vfs::Path::try_from("/").unwrap();
     write!(TERMINAL.lock(), "{} # ", cur_dir).unwrap();
 
-    let mut ignore_inc_x: bool;
-    // Basically an ad-hoc ArrayString (arrayvec crate)
-    let mut cmd_buf: [u8; 2048] = [b' '; 2048];
-    let mut buf_ind = 0; // Also length of buf, a.k.a portion of buf used
     'big_loop: loop {
-        ignore_inc_x = false;
         let packet = unsafe { KEYBOARD_INPUT.lock().read_packet() };
 
         if packet.packet_type == KeyboardPacketType::KeyReleased && packet.key == KeyboardKey::Escape {
@@ -319,21 +316,15 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
             TERMINAL.lock().visual_cursor_left();
         }
 
-        if packet.key == KeyboardKey::Backspace {
-            ignore_inc_x = true;
-            if buf_ind > 0 {
-                buf_ind -= 1;
-            }
-        }
-
         TERMINAL.lock().recive_key(packet.key, packet.modifiers);
 
         let Ok(c) = standard_usa_qwerty::parse_key(packet.key, packet.modifiers) else { continue; };
 
         if c == '\n' {
-            let bufs = unsafe { from_utf8_unchecked(&cmd_buf[..buf_ind]) }.trim();
-            buf_ind = 0; // Flush buffer
-            let mut splat = bufs.split_inclusive(' ');
+            let splat = TERMINAL.lock().line_buffer.iter().collect::<String>();
+            TERMINAL.lock().line_buffer.clear();
+
+            let mut splat = splat.split_inclusive(' ');
             if let Some(cmnd) = splat.next() {
                 // Handle shell built-ins
                 if cmnd.starts_with("puts") {
@@ -657,7 +648,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                     writeln!(TERMINAL.lock(), "NOPERS, no elp!").unwrap();
                 } else if cmnd.starts_with("exit") {
                     break 'big_loop;
-                } else {
+                } else if !cmnd.trim().is_empty() {
                     let executable_path = if cmnd.starts_with('/') {
                         vfs::Path::try_from(cmnd)
                     } else if cmnd.starts_with('.') {
@@ -700,8 +691,11 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         let mut program_env = BTreeMap::new();
                         program_env.insert("HOME", "/");
 
+                        let mut args = Vec::new();
+                        args.push(cmnd);
+                        args.extend(splat);
                         let program =
-                            if let Some(p) = Process::from_elf(&contents, &bufs.split(' ').collect::<Vec<&str>>(), cur_dir.clone(), &program_env) {
+                            if let Some(p) = Process::from_elf(&contents, &args, cur_dir.clone(), &program_env) {
                                 p
                             } else {
                                 writeln!(TERMINAL.lock(), "Failed to load elf file into program!").unwrap();
@@ -723,12 +717,6 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
             continue;
         }
 
-        if buf_ind < cmd_buf.len() {
-            cmd_buf[buf_ind] = c as u8;
-            if !ignore_inc_x {
-                buf_ind += 1;
-            }
-        }
     }
 
     writeln!(UART.lock(), "Kernel heap usage: {} bytes", allocator::ALLOCATOR.lock().get_heap_used()).unwrap();

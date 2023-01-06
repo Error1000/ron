@@ -1,5 +1,7 @@
 use core::fmt::{Debug, Write};
 
+use alloc::{string::String, collections::VecDeque};
+
 use crate::{
     char_device::CharDevice,
     framebuffer::{FrameBuffer, Pixel},
@@ -13,6 +15,7 @@ pub struct Terminal<'a> {
     cursor_pos: (usize, usize),
     cursor_char: char,
     color: Pixel,
+    pub line_buffer: VecDeque<char>
 }
 
 impl Debug for Terminal<'_> {
@@ -34,7 +37,7 @@ impl<'a> Write for Terminal<'a> {
 
 impl<'a> Terminal<'a> {
     pub fn new(fb: &'a mut dyn FrameBuffer, color: Pixel) -> Self {
-        Terminal { fb, cursor_pos: (0, 0), cursor_char: ' ', color }
+        Terminal { fb, cursor_pos: (0, 0), cursor_char: ' ', color, line_buffer: VecDeque::new() }
     }
 
     pub fn clear(&mut self) {
@@ -131,10 +134,19 @@ impl<'a> Terminal<'a> {
         self.update_visual_cursor();
     }
 
+    pub fn read_char(&mut self) -> Option<char> {
+        if self.line_buffer.contains(&'\n') {
+            return self.line_buffer.pop_front()
+        }else{
+            return None
+        }
+    }
+
     pub fn recive_key(&mut self, key: KeyboardKey, modifiers: KeyboardModifiers) {
         self.erase_visual_cursor(); // erase current cursor
         match key {
             KeyboardKey::Enter => {
+                self.line_buffer.push_back('\n');
                 self.cursor_down();
                 for x in 0..self.fb.get_cols() {
                     self.fb.write_char(x, self.cursor_pos.1, ' ', self.color);
@@ -144,10 +156,15 @@ impl<'a> Terminal<'a> {
 
             KeyboardKey::Backspace => {
                 self.cursor_left();
+                // Make sure we can't delete previous lines
+                if self.line_buffer.pop_back() == Some('\n') {
+                    self.line_buffer.push_back('\n');
+                }
             }
 
             _ => {
                 let Ok(c) = standard_usa_qwerty::parse_key(key, modifiers) else { return; };
+                self.line_buffer.push_back(c);
                 self.fb.write_char(self.cursor_pos.0, self.cursor_pos.1, c, self.color);
                 self.cursor_right();
             }
