@@ -589,7 +589,7 @@ fn getcwd(emu: &mut Emulator, proc_data: &mut ProcessData, virtual_ptr: virtmem:
         buf[i] = c as u8;
     }
 
-    buf[buf.len() - 1] = b'\0';
+    buf[proc_data.cwd.len()] = b'\0';
     return virtual_ptr.get_inner();
 }
 
