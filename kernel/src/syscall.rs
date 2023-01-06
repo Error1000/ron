@@ -389,16 +389,33 @@ fn open(emu: &mut Emulator, proc_data: &mut ProcessData, pathname: virtmem::User
                 return -1;
             }
         }
+    } else { // The path points to the root directory
+        let Some(node ) = Path::root().get_node() else { return -1; };
+        node
     };
 
-    // FIXME: This is non-compliant
-    // NOTE: Consider changing it so it actually uses the lowest fd number, instead of using a fd number that is known to be free
-    proc_data.open_nodes.push(Some(ProcessNode { vfs_node: node, cursor: 0, flags, path, reference_count: 1 }));
-    let node_index = proc_data.open_nodes.len() - 1;
-    proc_data.fd_mappings.push(Some(FdMapping::Regular(node_index)));
+    let new_open_process_node = ProcessNode { vfs_node: node, cursor: 0, flags, path, reference_count: 1 };
+    let node_index =
+    if let Some((index, location )) = proc_data.open_nodes.iter_mut().enumerate().filter(|(_, val)|val.is_none()).next() {
+        *location = Some(new_open_process_node);
+        index
+    }else {
+        proc_data.open_nodes.push(Some(new_open_process_node));
+        proc_data.open_nodes.len()-1
+    };
 
-    // -1 because we just added a new one
-    proc_data.fd_mappings.len() as isize - 1
+    let new_fd_mapping = FdMapping::Regular(node_index);
+
+    let fd =
+    if let Some((index, location )) = proc_data.fd_mappings.iter_mut().enumerate().filter(|(_, val)|val.is_none()).next() {
+        *location = Some(new_fd_mapping);
+        index
+    }else {
+        proc_data.fd_mappings.push(Some(new_fd_mapping));
+        proc_data.fd_mappings.len()-1
+    };
+
+    fd as isize
 }
 
 // source: man close
@@ -653,11 +670,17 @@ fn dup(proc_data: &mut ProcessData, oldfd: usize) -> isize {
         FdMapping::Stdin | FdMapping::Stdout | FdMapping::Stderr => {} // No need to update ref count of stdin, stdout or stderr since they are handled specially anyways
     }
 
-    // FIXME: This is non-compliant
-    // NOTE: Consider changing it so it uses the lowest fd number available instead of a fd number that is known to be free
-    proc_data.fd_mappings.push(Some(node_mapping));
-    // -1 because we just added the new one
-    proc_data.fd_mappings.len() as isize - 1
+
+    let fd =
+    if let Some((index, location )) = proc_data.fd_mappings.iter_mut().enumerate().filter(|(_, val)|val.is_none()).next() {
+        *location = Some(node_mapping);
+        index
+    }else {
+        proc_data.fd_mappings.push(Some(node_mapping));
+        proc_data.fd_mappings.len()-1
+    };
+
+    fd as isize
 }
 
 fn dup2(proc_data: &mut ProcessData, oldfd: usize, newfd: usize) -> isize {
@@ -1157,13 +1180,26 @@ fn pipe(emu: &mut Emulator, proc_data: &mut ProcessData, fds: virtmem::UserPoint
     let pipe_index = pipes.len();
     pipes.push(Some(ProcessPipe{buf: VecDeque::new(), readers_count: 1, writers_count: 1}));
 
-    // FIXME: This is non-compliant
-    // NOTE: Consider using the lowest free fd instead of a fd that is known to be free
-    let read_fd = proc_data.fd_mappings.len();
-    proc_data.fd_mappings.push(Some(FdMapping::PipeReadEnd(pipe_index)));
-    let write_fd = proc_data.fd_mappings.len();
-    proc_data.fd_mappings.push(Some(FdMapping::PipeWriteEnd(pipe_index)));
-    
+    let pipe_read_end_mapping = FdMapping::PipeReadEnd(pipe_index);
+    let read_fd =
+    if let Some((index, location )) = proc_data.fd_mappings.iter_mut().enumerate().filter(|(_, val)|val.is_none()).next() {
+        *location = Some(pipe_read_end_mapping);
+        index
+    }else {
+        proc_data.fd_mappings.push(Some(pipe_read_end_mapping));
+        proc_data.fd_mappings.len()-1
+    };
+
+    let pipe_write_end_mapping = FdMapping::PipeWriteEnd(pipe_index);
+    let write_fd =
+    if let Some((index, location )) = proc_data.fd_mappings.iter_mut().enumerate().filter(|(_, val)|val.is_none()).next() {
+        *location = Some(pipe_write_end_mapping);
+        index
+    }else {
+        proc_data.fd_mappings.push(Some(pipe_write_end_mapping));
+        proc_data.fd_mappings.len()-1
+    };
+ 
     fds[0] = read_fd as core::ffi::c_int;
     fds[1] = write_fd as core::ffi::c_int;
 
