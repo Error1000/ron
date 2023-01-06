@@ -65,24 +65,45 @@ impl Path {
         Self { inner: String::from("/") }
     }
 
-    pub fn last(&self) -> &str {
-        self.inner.split("/").last().expect("Path should be valid at all times!")
+    pub fn last(&self) -> Option<&str> {
+        self.inner.split("/").filter(|val|!val.is_empty()).last()
     }
 
+    // Removes .. and replaces // with /
+    pub fn canonicalize(self) -> Self {
+        let mut canonical_path = Vec::new();
+        let mut parts_to_skip = 0; 
+        // Walk the path backwards splitting at /
+        for part in self.inner.rsplit("/") {
+            if part == "." || part == "" /* for // */ { continue; }
+            if part == ".." { parts_to_skip += 1; continue; }
+            if parts_to_skip > 0 { parts_to_skip -= 1; continue; }
+            canonical_path.push(part);
+        }
+
+        if canonical_path.is_empty() { 
+            return Path::root(); 
+        } else {
+            return Path::try_from(canonical_path.iter().rev().map(|part| ["/", part].concat()).collect::<String>()).unwrap();
+        }
+    }
+
+    // NOTE: Won't delete initial /
     pub fn del_last(&mut self) -> &mut Self {
         loop {
-            if let Some(c) = self.inner.pop() {
-                if c == '/' {
-                    if self.inner.len() == 0 {
-                        self.inner.push('/');
-                    }
-                    break;
+            let Some(c) = self.inner.pop() else {
+                return self;
+            };
+
+            if c == '/' {
+                if self.inner.len() == 0 {
+                    self.inner.push('/');
+                    return self;
+                }else{
+                    return self;
                 }
-            } else {
-                break;
             }
         }
-        self
     }
 
     pub fn append_str(&mut self, subnode: &str) {
@@ -145,7 +166,7 @@ impl Path {
             }
 
             for child in &cur_node.clone().borrow().children {
-                if child.borrow().path.last() == to_find {
+                if child.borrow().path.last() == Some(to_find) {
                     cur_node = child.clone();
                     cur_path.append_str(to_find);
                     continue 'path_traversal_loop;
@@ -255,7 +276,7 @@ impl RootFSNode {
             if (**c).borrow().get_children().len() != 0 {
                 continue;
             }
-            if (**c).borrow().path.last() == name {
+            if (**c).borrow().path.last() == Some(name) {
                 di = Some(i);
                 break;
             }
@@ -270,7 +291,7 @@ impl RootFSNode {
 
     pub fn find_folder(slf: Rc<RefCell<RootFSNode>>, name: &str) -> Option<Rc<RefCell<RootFSNode>>> {
         for c in &(*slf).borrow().children {
-            if (**c).borrow().path.last() == name {
+            if (**c).borrow().path.last() == Some(name) {
                 return Some(c.clone());
             }
         }
@@ -298,10 +319,11 @@ impl IFolder for RootFSNode {
 
         for c in &self.children {
             // Name resolution
-            if v.iter().any(|(child_name, _)| *child_name == (**c).borrow().path.last()) {
+            if v.iter().any(|(child_name, _)| Some(child_name.as_str()) == (**c).borrow().path.last()) {
                 continue;
             }
-            v.push((c.as_ref().borrow().path.last().to_owned(), Node::Folder(c.clone() as Rc<RefCell<dyn IFolder>>)));
+
+            v.push((c.as_ref().borrow().path.last().expect("Child must have valid path!").to_owned(), Node::Folder(c.clone() as Rc<RefCell<dyn IFolder>>)));
         }
         v
     }

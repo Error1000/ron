@@ -335,7 +335,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
             buf_ind = 0; // Flush buffer
             let mut splat = bufs.split_inclusive(' ');
             if let Some(cmnd) = splat.next() {
-                // Handle shell built ins
+                // Handle shell built-ins
                 if cmnd.starts_with("puts") {
                     let mut puts_output: String = String::new();
                     let mut redirect: Option<String> = None;
@@ -411,6 +411,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             actual_node.append_str(file);
                             file_node = Ok(actual_node);
                         }
+
                         let Ok(file_node) = file_node else {
                             writeln!(TERMINAL.lock(), "Malformed source path: \"{}\"!", file).unwrap();
                             continue;
@@ -548,7 +549,11 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             writeln!(TERMINAL.lock(), "Bad path!").unwrap();
                             continue;
                         };
-                        let name = arg_path.last().to_owned();
+                        let Some(name) = arg_path.last().map(|name| name.to_owned()) else {
+                            writeln!(TERMINAL.lock(), "Touch argument path must have a last element!").unwrap();
+                            continue;
+                        };
+
                         arg_path.del_last();
 
                         let Some(node) = arg_path.get_node() else {
@@ -565,17 +570,16 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                     if let Some(name) = splat.next() {
                         let name = name.trim();
                         let old_dir = cur_dir.clone();
-                        if name == ".." {
-                            cur_dir.del_last();
-                        } else if name.starts_with("/") {
+                        if name.starts_with("/") {
                             if let Ok(new_dir) = name.try_into() {
                                 cur_dir = new_dir;
                             } else {
                                 writeln!(TERMINAL.lock(), "Invalid cd path!").unwrap();
-                            }
+                            };
                         } else {
                             cur_dir.append_str(name);
                         }
+
                         if cur_dir.get_node().is_none() {
                             writeln!(TERMINAL.lock(), "Invalid cd path: {}!", cur_dir).unwrap();
                             cur_dir = old_dir;
@@ -620,7 +624,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                             writeln!(TERMINAL.lock(), "Bad path!").unwrap();
                             continue;
                         };
-                        let file_name = arg_path.last().to_owned();
+                        let file_name = arg_path.last().map(|name|name.to_owned());
                         arg_path.del_last();
 
                         let Some(node) = arg_path.get_node() else {
@@ -629,7 +633,7 @@ pub extern "C" fn main(r1: u32, r2: u32) -> ! {
                         };
                         
                         if let Node::Folder(folder) = node {
-                            let Some((_, child)) = folder.borrow_mut().get_children().into_iter().find(|child| child.0 == file_name) else {
+                            let Some((_, child)) = folder.borrow_mut().get_children().into_iter().find(|child| Some(&child.0) == file_name.as_ref()) else {
                                 writeln!(TERMINAL.lock(), "File doesn't exist in folder!").unwrap();
                                 continue;
                             };

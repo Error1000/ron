@@ -246,7 +246,6 @@ fn write(emu: &mut Emulator, proc_data: &mut ProcessData, fd: usize, user_buf: U
         }
 
         FdMapping::Stdout | crate::process::FdMapping::Stderr => {
-            use crate::TERMINAL;
             use core::fmt::Write;
             let Ok(str_buf) = core::str::from_utf8(buf) else {
                 return -1;
@@ -355,14 +354,14 @@ fn open(emu: &mut Emulator, proc_data: &mut ProcessData, pathname: virtmem::User
         current.append_str(path);
         current
     };
-
-    // Get directory containing file
-    let Some(parent_node) = path.clone().del_last().get_node() else { return -1 };
-    let parent_node = if let vfs::Node::Folder(val) = parent_node { val } else { return -1 };
-
-    let node = {
-        let search_result = (*parent_node).borrow_mut().get_children().into_iter().find(|child| child.0 == path.last());
-        if let Some((_, mut node)) = search_result {
+    let path = path.canonicalize();
+    // Get directory containing node
+    let node = 
+    if let Some(node_to_search_for_name) = path.last(){
+        let Some(parent_node) = path.clone().del_last().get_node() else { return -1 };
+        let parent_node = if let vfs::Node::Folder(val) = parent_node { val } else { return -1 };
+        let search_result = (*parent_node).borrow_mut().get_children().into_iter().find(|child| child.0 == node_to_search_for_name);
+        if let Some((_, mut node)) = search_result { // Found the node
             // O_TRUNC
             // If the file already exists and is a regular file and the
             //   access mode allows writing (i.e., is O_RDWR or O_WRONLY)
@@ -377,11 +376,11 @@ fn open(emu: &mut Emulator, proc_data: &mut ProcessData, pathname: virtmem::User
             }
 
             node
-        } else {
+        } else { // Node does not exist, maybe we need to create it?
             if flags & rlibc::sys::O_CREAT != 0 {
                 // FIXME: Deal with permissions
                 // Create file
-                if let Some(val) = (*parent_node).borrow_mut().create_empty_child(path.last(), vfs::NodeType::File) {
+                if let Some(val) = (*parent_node).borrow_mut().create_empty_child(node_to_search_for_name, vfs::NodeType::File) {
                     val
                 } else {
                     return -1;
@@ -429,7 +428,7 @@ pub fn close(proc_data: &mut ProcessData, fd: usize) -> isize {
                 while pipes.last().map(|val|val.is_none()).unwrap_or(false) {
                     pipes.pop();
                 }
-                
+
                 pipes.shrink_to_fit();
             } else if pipe.readers_count >= 1 { // Pipes can still exist with 0 writes, this is to allow readers to finish reading all the contents of the pipe
                 pipe.readers_count -= 1;
@@ -447,6 +446,8 @@ pub fn close(proc_data: &mut ProcessData, fd: usize) -> isize {
                 while pipes.last().map(|val|val.is_none()).unwrap_or(false) {
                     pipes.pop();
                 }
+
+                pipes.shrink_to_fit();
             } else if pipe.writers_count >= 1 { // Pipes can still exist with 0 readers, this is to make it so that a FdMapping to a pipe is always valid to keep the system simple
                 pipe.writers_count -= 1;
             } 
