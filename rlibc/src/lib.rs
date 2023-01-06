@@ -408,6 +408,11 @@ pub unsafe extern "C" fn vfscanf(f: *mut FILE, format_str: *const core::ffi::c_c
                 }
 
                 ConversionSpecifier::String => { // 's'
+                    // Read until stream_char is no longer whitespace
+                    while isspace(stream_char as core::ffi::c_int) != 0 {
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                    }
+                
                     // FIXME: Maybe don't allow the opportunity to write to null, but to be fair right now the only alternative that i can think of is duplicating the entire logic which also seems iffy
                     let s = if !specification.assignment_suppression{ args.arg::<*mut core::ffi::c_char>() } else { core::ptr::null_mut() };
                     let mut s_pos = 0;
@@ -447,6 +452,11 @@ pub unsafe extern "C" fn vfscanf(f: *mut FILE, format_str: *const core::ffi::c_c
                 ConversionSpecifier::SignedDecimalInteger | ConversionSpecifier::UnsignedDecimalInteger => { // 'd' / 'u'
                     // Read a number with optional + or -
 
+                    // Read until stream_char is no longer whitespace
+                    while isspace(stream_char as core::ffi::c_int) != 0 {
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                    }
+
                     let mut number_sign = ParsedSign::POSITIVE;
                     if stream_char == b'+' || stream_char == b'-' {
                         if stream_char == b'+' { number_sign = ParsedSign::POSITIVE; } else if stream_char == b'-' { number_sign = ParsedSign::NEGATIVE; }
@@ -472,6 +482,11 @@ pub unsafe extern "C" fn vfscanf(f: *mut FILE, format_str: *const core::ffi::c_c
 
                 ConversionSpecifier::SignedInteger => { // 'i'
                     // Read a number with optional + or - and possible base marking ("0x"/"0")
+
+                    // Read until stream_char is no longer whitespace
+                    while isspace(stream_char as core::ffi::c_int) != 0 {
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                    }
 
                     let mut number_sign = ParsedSign::POSITIVE;
                     if stream_char == b'+' || stream_char == b'-' {
@@ -535,6 +550,11 @@ pub unsafe extern "C" fn vfscanf(f: *mut FILE, format_str: *const core::ffi::c_c
                 ConversionSpecifier::UnsignedOctalInteger => { // 'o'
                     // Read a number with optional + or - and possible base marking ("0")
 
+                    // Read until stream_char is no longer whitespace
+                    while isspace(stream_char as core::ffi::c_int) != 0 {
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                    }
+
                     let mut number_sign = ParsedSign::POSITIVE;
                     if stream_char == b'+' || stream_char == b'-' {
                         if stream_char == b'+' { number_sign = ParsedSign::POSITIVE; } else if stream_char == b'-' { number_sign = ParsedSign::NEGATIVE; }
@@ -565,6 +585,11 @@ pub unsafe extern "C" fn vfscanf(f: *mut FILE, format_str: *const core::ffi::c_c
 
                 ConversionSpecifier::Pointer => { // 'p'
                     // Read a number with base marking ("0x")
+
+                    // Read until stream_char is no longer whitespace
+                    while isspace(stream_char as core::ffi::c_int) != 0 {
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                    }
 
                     if stream_char == b'0' {
                         if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
@@ -598,6 +623,11 @@ pub unsafe extern "C" fn vfscanf(f: *mut FILE, format_str: *const core::ffi::c_c
                 ConversionSpecifier::UnsignedHexIntegerLowerCase | ConversionSpecifier::UnsignedHexIntegerUpperCase => { // 'x' / 'X'
                     // Read a number with optional + or - and possible base marking ("0x")
 
+                    // Read until stream_char is no longer whitespace
+                    while isspace(stream_char as core::ffi::c_int) != 0 {
+                        if read((*f).fileno, (&mut stream_char) as *mut u8 as *mut core::ffi::c_char, 1) < 0 { return arguments_assigned.unwrap_or(EOF); } else { characters_read += 1;}
+                    }
+                    
                     let mut number_sign = ParsedSign::POSITIVE;
                     if stream_char == b'+' || stream_char == b'-' {
                         if stream_char == b'+' { number_sign = ParsedSign::POSITIVE; } else if stream_char == b'-' { number_sign = ParsedSign::NEGATIVE; }
